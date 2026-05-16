@@ -1,0 +1,93 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:vecrm_phone",
+ "creation": "2026-05-16 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "employee_name",
+  "vecrm_phone",
+  "vecrm_email",
+  "role",
+  "vecrm_base_city",
+  "reporting_approver",
+  "vecrm_account_status"
+ ],
+ "fields": [
+  {
+   "fieldname": "employee_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Employee Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "vecrm_phone",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Phone (OTP Identity)",
+   "reqd": 1,
+   "set_only_once": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "vecrm_email",
+   "fieldtype": "Data",
+   "label": "Email (Magic-Link / Notifications)",
+   "options": "Email"
+  },
+  {
+   "fieldname": "role",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Role",
+   "options": "Admin\nSales Head\nHR\nSales Rep\nField Engineer\nHead of Engineers",
+   "reqd": 1
+  },
+  {
+   "fieldname": "vecrm_base_city",
+   "fieldtype": "Data",
+   "label": "Base City",
+   "reqd": 1
+  },
+  {
+   "fieldname": "reporting_approver",
+   "fieldtype": "Link",
+   "label": "Reporting Approver",
+   "options": "VECRM Employee"
+  },
+  {
+   "default": "Active",
+   "fieldname": "vecrm_account_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Account Status",
+   "options": "Active\nSuspended",
+   "reqd": 1
+  }
+ ],
+ "idx": 0,
+ "links": [],
+ "modified": "2026-05-16 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "VECRM",
+ "name": "VECRM Employee",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}
