@@ -16,8 +16,16 @@ class VECRMUserAuditLog(Document):
 
 	def on_update(self):
 		# Append-only: a row may be inserted, never modified thereafter.
-		# is_new() is True only during the insert path; any later save throws.
-		if not self.is_new():
+		# Frappe 16: on_update also fires DURING insert (run_post_save_methods,
+		# _action == "save"); set_new_name() has already run so is_new() is
+		# False on the insert path. flags.in_insert is the version-grounded
+		# "inside insert()" signal (document.py sets it around the
+		# run_post_save_methods call). get_doc_before_save() is None on insert
+		# and non-None only on a genuine modification of a committed row -
+		# the same predicate the Employee controller uses for immutability.
+		if self.flags.in_insert:
+			return
+		if self.get_doc_before_save() is not None:
 			frappe.throw(
 				_("VECRM User Audit Log is append-only. Existing entries cannot be modified."),
 				frappe.PermissionError,
