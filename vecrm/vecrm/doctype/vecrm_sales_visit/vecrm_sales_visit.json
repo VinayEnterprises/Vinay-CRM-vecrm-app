@@ -1,0 +1,109 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "naming_series:",
+ "creation": "2026-05-16 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "employee",
+  "visit_date",
+  "customer_name",
+  "base_city",
+  "distance_km",
+  "purpose",
+  "lead",
+  "reimbursement_amount"
+ ],
+ "fields": [
+  {
+   "default": "SV-.YYYY.-",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "options": "SV-.YYYY.-",
+   "reqd": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Employee",
+   "options": "VECRM Employee",
+   "reqd": 1
+  },
+  {
+   "fieldname": "visit_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Visit Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "customer_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Customer Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "base_city",
+   "fieldtype": "Data",
+   "label": "Base City",
+   "read_only": 1
+  },
+  {
+   "fieldname": "distance_km",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Distance (KM)",
+   "non_negative": 1,
+   "precision": "2",
+   "reqd": 1
+  },
+  {
+   "fieldname": "purpose",
+   "fieldtype": "Small Text",
+   "label": "Purpose"
+  },
+  {
+   "fieldname": "lead",
+   "fieldtype": "Data",
+   "label": "Lead (Optional)"
+  },
+  {
+   "fieldname": "reimbursement_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Reimbursement Amount",
+   "non_negative": 1,
+   "precision": "2",
+   "read_only": 1
+  }
+ ],
+ "idx": 0,
+ "links": [],
+ "modified": "2026-05-16 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "VECRM",
+ "name": "VECRM Sales Visit",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}
