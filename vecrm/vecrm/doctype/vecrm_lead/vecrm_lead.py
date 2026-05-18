@@ -16,7 +16,7 @@ class VECRMLead(Document):
 		# rollback returns the counter to its pre-allocation value, so
 		# numbering stays gap-free across failed saves.
 		# fy_label() throws loud on a missing/unparseable contact_date.
-		from vecrm.voucher_counter import fy_label, next_number
+		from vecrm.vecrm.voucher_counter import fy_label, next_number
 		fy = fy_label(self.contact_date)
 		n = next_number(series="LEAD", fy=fy)
 		self.name = f"VE/LEAD/{n:05d}/{fy}"

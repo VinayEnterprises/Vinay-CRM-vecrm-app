@@ -35,7 +35,7 @@ class VECRMInquiry(Document):
 		# (CR-class hardening — the counter mints permanent numbers).
 		from datetime import date, datetime
 		from frappe.utils import getdate
-		from vecrm.voucher_counter import fy_label, next_number
+		from vecrm.vecrm.voucher_counter import fy_label, next_number
 		raw = self.creation or now()
 		basis = getdate(raw)  # frappe.utils.getdate -> datetime.date, parses
 		                      # date | datetime | ISO str uniformly; raises
