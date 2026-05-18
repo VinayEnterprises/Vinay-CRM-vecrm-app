@@ -1,0 +1,119 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "Prompt",
+ "creation": "2026-05-18 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "source_lead",
+  "company_name",
+  "territory",
+  "contact_person",
+  "contact_phone",
+  "contact_email",
+  "requirement",
+  "priority",
+  "priority_override_log",
+  "inquiry_owner",
+  "status"
+ ],
+ "fields": [
+  {
+   "fieldname": "source_lead",
+   "fieldtype": "Link",
+   "label": "Source Lead",
+   "options": "VECRM Lead",
+   "read_only": 1
+  },
+  {
+   "fieldname": "company_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Company Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "territory",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Territory"
+  },
+  {
+   "fieldname": "contact_person",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Contact Person",
+   "reqd": 1
+  },
+  {
+   "fieldname": "contact_phone",
+   "fieldtype": "Data",
+   "label": "Contact Phone",
+   "reqd": 1
+  },
+  {
+   "fieldname": "contact_email",
+   "fieldtype": "Data",
+   "label": "Contact Email",
+   "options": "Email"
+  },
+  {
+   "fieldname": "requirement",
+   "fieldtype": "Long Text",
+   "label": "Requirement",
+   "reqd": 1
+  },
+  {
+   "fieldname": "priority",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Priority (1=Cold, 5=Very Hot)",
+   "reqd": 1
+  },
+  {
+   "fieldname": "priority_override_log",
+   "fieldtype": "Table",
+   "label": "Priority Override Log",
+   "options": "VECRM Assignment Log Row"
+  },
+  {
+   "fieldname": "inquiry_owner",
+   "fieldtype": "Link",
+   "label": "Inquiry Owner",
+   "options": "User"
+  },
+  {
+   "default": "Open",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Open\nQuoting\nClosed-by-Ops",
+   "reqd": 1
+  }
+ ],
+ "idx": 0,
+ "links": [],
+ "modified": "2026-05-18 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "VECRM",
+ "name": "VECRM Inquiry",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

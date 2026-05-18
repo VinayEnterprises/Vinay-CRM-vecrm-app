@@ -1,0 +1,101 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "Prompt",
+ "creation": "2026-05-18 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "company_name",
+  "territory",
+  "contact_date",
+  "priority",
+  "status",
+  "lead_owner",
+  "converted_inquiry",
+  "reassignment_history"
+ ],
+ "fields": [
+  {
+   "fieldname": "company_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Company Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "territory",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Territory",
+   "reqd": 1
+  },
+  {
+   "fieldname": "contact_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Contact Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "priority",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Priority (1=Cold, 5=Very Hot)",
+   "reqd": 1
+  },
+  {
+   "default": "Open",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Open\nConverted\nClosed-Lost",
+   "reqd": 1
+  },
+  {
+   "fieldname": "lead_owner",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Lead Owner",
+   "options": "User",
+   "reqd": 1
+  },
+  {
+   "fieldname": "converted_inquiry",
+   "fieldtype": "Link",
+   "label": "Converted Inquiry",
+   "options": "VECRM Inquiry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reassignment_history",
+   "fieldtype": "Table",
+   "label": "Reassignment History",
+   "options": "VECRM Assignment Log Row"
+  }
+ ],
+ "idx": 0,
+ "links": [],
+ "modified": "2026-05-18 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "VECRM",
+ "name": "VECRM Lead",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}
