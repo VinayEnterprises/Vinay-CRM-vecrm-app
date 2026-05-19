@@ -1,7 +1,12 @@
 # Copyright (c) 2026, Vinay Enterprises and contributors
 # For license information, please see license.txt
 
+import base64
+import hashlib
+import hmac
 import json
+
+import requests
 
 import frappe
 from frappe import _
@@ -118,12 +123,58 @@ class VECRMInquiry(Document):
 		self._q9_transport(payload)
 
 	def _q9_transport(self, payload):
-		# Q9-TRANSPORT: pending — see S14 Q9-build dispatch (vemio-dashboard
-		# HMAC route + email-sender vecrm-inquiry-converted template +
-		# catchall tenant_id resolution). Until then this is a no-op by
-		# design: conversion succeeds, intent is audit-logged above, the
-		# built payload is correct and ready. Swap this single function
-		# body when the Q9-build workstream lands. Do NOT add SMTP/
-		# frappe.sendmail here (architectural drift — host uses the
-		# email_jobs queue + email-sender worker exclusively).
-		return
+		"""Best-effort signed POST of inquiry-converted to the dashboard
+		(Q9 Surface 1). NON-FATAL: the VECRM Inquiry Audit Log row is
+		written before this call and is the durable record. Any failure
+		here is logged and swallowed — conversion must not roll back on a
+		notification transport error."""
+		url = "https://app.vemio.io/api/internal/vecrm/inquiry-converted"
+
+		secret = frappe.conf.get("vecrm_internal_secret")
+		if not secret:
+			frappe.log_error(
+				message=(
+					"vecrm_internal_secret missing from site config; Q9 "
+					f"transport skipped for {self.name}. Audit row stands; "
+					"intent is recoverable."
+				),
+				title="VECRM Q9 transport",
+			)
+			return
+
+		# Serialize ONCE; sign exactly the bytes sent. The dashboard route
+		# verifies the HMAC over the raw request bytes, so
+		# signed-bytes == sent-bytes is the only correctness condition.
+		raw = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+		raw_bytes = raw.encode("utf-8")
+		secret_bytes = (
+			secret.encode("utf-8") if isinstance(secret, str) else secret
+		)
+		signature = base64.b64encode(
+			hmac.new(secret_bytes, raw_bytes, hashlib.sha256).digest()
+		).decode("ascii")
+
+		try:
+			resp = requests.post(
+				url,
+				data=raw_bytes,
+				headers={
+					"Content-Type": "application/json",
+					"x-vecrm-signature": signature,
+				},
+				timeout=10,
+			)
+			if resp.status_code != 200:
+				frappe.log_error(
+					message=(
+						f"Q9 transport non-200 ({resp.status_code}) for "
+						f"{self.name}: {resp.text[:300]}"
+					),
+					title="VECRM Q9 transport",
+				)
+		except Exception as e:
+			frappe.log_error(
+				message=f"Q9 transport failed for {self.name}: {e}",
+				title="VECRM Q9 transport",
+			)
+			# swallow — non-fatal by design
