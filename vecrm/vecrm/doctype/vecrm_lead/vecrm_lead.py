@@ -101,22 +101,33 @@ class VECRMLead(Document):
 			"event_timestamp": ts,
 		}).insert(ignore_permissions=True)
 
-	def convert_to_inquiry(self):
+	def convert_to_inquiry(
+		self,
+		contact_person,
+		contact_phone,
+		requirement,
+		status="Open",
+	):
 		"""Convert this Lead into a VECRM Inquiry.
 
 		Per S1 §2C: copy company_name / territory / priority, set
-		source_lead = self.name on the new Inquiry. The Inquiry's
-		own reqd-field gate enforces contact_person / contact_phone
-		/ requirement — those fields are the STRUCTURAL conversion
-		gate (an Inquiry cannot exist empty).
+		source_lead = self.name on the new Inquiry. The four
+		Inquiry-stage reqd fields (contact_person, contact_phone,
+		requirement, status) are supplied by the caller — typically
+		a future portal/button form that prompts the rep for them
+		at conversion time. Lead does not store these fields; they
+		are the structural Lead→Inquiry boundary per §2C.
 
-		Author per dispatch shape. The future portal/button caller
-		is expected to supply the contact_* + requirement fields so
-		the new Inquiry's insert() does not throw on missing reqd
-		fields. Until then, calling convert_to_inquiry() against a
-		Lead with no companion form will throw a Frappe validation
-		error from Inquiry.validate() / reqd enforcement — that is
-		the conversion gate working as designed.
+		S19 WIRING (PD-S18-Q9WIRE Option b): after the Inquiry is
+		inserted, Q9 is fired directly via
+		inquiry.enqueue_conversion_email(). Inquiry is NOT submittable
+		in this install, by design — Inquiries are mutable living
+		documents that move through Open / Quoting / Closed-by-Ops.
+
+		Inquiry ownership: the rep who owned the Lead at conversion
+		time is the rep who needs to handle the Inquiry. Set
+		inquiry_owner = self.lead_owner so the Q9 email carries the
+		rep's identity and Krunal's team knows who to talk to.
 
 		Returns the new Inquiry's name on success.
 		"""
@@ -129,8 +140,19 @@ class VECRMLead(Document):
 			"company_name": self.company_name,
 			"territory": self.territory,
 			"priority": self.priority,
+			"contact_person": contact_person,
+			"contact_phone": contact_phone,
+			"requirement": requirement,
+			"status": status,
+			"inquiry_owner": self.lead_owner,
 		})
 		inquiry.insert(ignore_permissions=True)
+
+		# Q9 fan-out fires at the semantic event (Lead → Inquiry),
+		# not the lifecycle event. Per S19 Option b. Errors from
+		# transport are logged-and-swallowed inside _q9_transport;
+		# the durable audit row is written before transport.
+		inquiry.enqueue_conversion_email()
 
 		self.status = "Converted"
 		self.converted_inquiry = inquiry.name
