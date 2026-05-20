@@ -62,18 +62,25 @@ class VECRMInquiry(Document):
 			frappe.throw(_("Priority must be an integer 1–5 (no default)."))
 
 	def on_submit(self):
-		# Conversion-creation Q9 fan-out. Triggers on submit; if this
-		# install keeps Inquiry docs editable (no submit lifecycle),
-		# the convert path can call _enqueue_conversion_email directly.
-		self._enqueue_conversion_email()
+		# Vestigial — Inquiry is NOT submittable in this install (per S19
+		# operator decision: Option b). Inquiries are mutable living
+		# documents that move through Open / Quoting / Closed-by-Ops, not
+		# draft-then-submit records. Q9 now fires from
+		# Lead.convert_to_inquiry() via enqueue_conversion_email() at the
+		# semantic event (Lead → Inquiry), not the lifecycle event.
+		# This hook is retained as a safety net for any future submittable
+		# variant; in the current install it is unreachable code, by design.
+		pass
 
-	def _enqueue_conversion_email(self):
+	def enqueue_conversion_email(self):
 		"""Build the S1 §2C Q9 payload, write a fail-loud audit row,
-		then call the (currently no-op) transport.
+		then call the transport.
 
-		The audit row is the source-of-truth fail-loud record. Even if
-		the transport silently no-ops (current state per the Q9-build
-		dependency), the intent is recoverable from the audit log.
+		Renamed from _enqueue_conversion_email in S19: this is now part of
+		the public surface, called by Lead.convert_to_inquiry. The audit
+		row is the source-of-truth fail-loud record. Even if the transport
+		silently no-ops (e.g. missing vecrm_internal_secret in site config),
+		the intent is recoverable from the audit log.
 		"""
 		recipients = [
 			"ajay@vinayenterprises.co.in",
@@ -81,13 +88,20 @@ class VECRMInquiry(Document):
 			"info@vinayenterprises.co.in",
 		]
 		subject = (
-			f"[VECRM Inquiry] {self.name} — {self.company_name} — {self.territory}"
+			f"[VECRM Inquiry] {self.name} | {self.company_name} | {self.territory}"
 		)
 		priority_int = int(self.priority) if self.priority is not None else 0
 		priority_label = PRIORITY_LABELS.get(priority_int, "Unknown")
-		deep_link = (
-			f"https://crm.vinayenterprises.co.in/app/vecrm-inquiry/{self.name}"
+		# Deep-link host is site-config-driven (PD-S18-DEEPLINK).
+		# Default is the operator-confirmed production host. To override
+		# (e.g. staging), set vecrm_deep_link_host in the site's
+		# site_config.json. The default already covers production, so
+		# no config edit is required for normal operation.
+		deep_link_host = frappe.conf.get(
+			"vecrm_deep_link_host",
+			"https://app.vinayenterprises.co.in",
 		)
+		deep_link = f"{deep_link_host}/app/vecrm-inquiry/{self.name}"
 		body = {
 			"inquiry_ref": self.name,
 			"company_name": self.company_name,
@@ -107,7 +121,7 @@ class VECRMInquiry(Document):
 		}
 
 		# Fail-loud audit row to VECRM Inquiry Audit Log (Layer-3
-		# doctype authored in this PR; the existing VECRM User Audit
+		# doctype authored in PR #1; the existing VECRM User Audit
 		# Log schema does not accommodate inquiry events — its
 		# event_type Select is locked to user-lifecycle values). The
 		# audit row is the durable intent record; it must be written
