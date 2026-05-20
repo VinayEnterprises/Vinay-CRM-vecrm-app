@@ -20,7 +20,13 @@ import frappe
 
 
 @frappe.whitelist()
-def convert_lead_to_inquiry(lead_name, contact_person, contact_phone, requirement, status="Open"):
+def convert_lead_to_inquiry(
+	lead_name: str,
+	contact_person: str,
+	contact_phone: str,
+	requirement: str,
+	status: str = "Open",
+) -> str:
 	"""Convert a VECRM Lead to an Inquiry via the Lead's document method.
 
 	Thin HTTP wrapper around ``VECRMLead.convert_to_inquiry``. The
