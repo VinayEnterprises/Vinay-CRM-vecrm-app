@@ -53,6 +53,19 @@ class VECRMInquiry(Document):
 		self.name = f"VE/INQ/{n:05d}/{fy}"
 
 	def validate(self):
+		# Defensive name guard (PD-S23-AUTONAME-HYGIENE): name MUST be
+		# canonical VE/INQ/####/FY format, set by autoname(). Validated
+		# at validate() (not before_insert) because Frappe v16.18.2 runs
+		# before_insert BEFORE set_new_name (document.py L441 before L442),
+		# so self.name is None at before_insert time. validate() runs after
+		# autoname has populated self.name.
+		if not self.name or not self.name.startswith("VE/INQ/"):
+			frappe.throw(
+				f"VECRM Inquiry name must be allocated via voucher_counter "
+				f"(VE/INQ/####/FY format). Got: {self.name!r}. Do not "
+				f"pre-populate name; let autoname() handle allocation.",
+				frappe.ValidationError,
+			)
 		# Priority gate: integer 1..5, no default. Same rule as Lead.
 		# contact_person / contact_phone / requirement reqd at the
 		# field level — Frappe's reqd enforcement is the structural
