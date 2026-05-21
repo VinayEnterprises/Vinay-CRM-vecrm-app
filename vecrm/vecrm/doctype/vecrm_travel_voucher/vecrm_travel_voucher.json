@@ -1,0 +1,186 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "prompt",
+ "creation": "2026-05-21 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "is_submittable": 1,
+ "naming_rule": "Set by user",
+ "field_order": [
+  "submitter",
+  "submitter_role",
+  "employee_base_city",
+  "rate_per_km_applied",
+  "business_date",
+  "fy_label",
+  "visit_lines",
+  "total_km",
+  "total_amount",
+  "approver_role_set",
+  "approved_by_employee",
+  "approved_by_role",
+  "approved_at",
+  "approval_notes"
+ ],
+ "fields": [
+  {
+   "description": "The employee submitting this voucher. Frozen at create.",
+   "fieldname": "submitter",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Submitter",
+   "options": "VECRM Employee",
+   "reqd": 1,
+   "set_only_once": 1
+  },
+  {
+   "description": "Frozen at create from VECRM Employee.role. Drives approver_set.",
+   "fieldname": "submitter_role",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Submitter Role (snapshot)",
+   "read_only": 1
+  },
+  {
+   "description": "Frozen at create from VECRM Employee.vecrm_base_city. Re-validated on submit (S1 §2C).",
+   "fieldname": "employee_base_city",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Base City (snapshot)",
+   "read_only": 1
+  },
+  {
+   "description": "Frozen at create from Rate Card by employee_base_city.",
+   "fieldname": "rate_per_km_applied",
+   "fieldtype": "Currency",
+   "label": "Rate ₹/km (snapshot)",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "description": "Business date — drives FY allocation.",
+   "fieldname": "business_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Voucher Date",
+   "reqd": 1
+  },
+  {
+   "description": "Computed from business_date on submit, e.g. '26-27'.",
+   "fieldname": "fy_label",
+   "fieldtype": "Data",
+   "label": "FY (snapshot)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "visit_lines",
+   "fieldtype": "Table",
+   "label": "Visits",
+   "options": "VECRM Visit Line",
+   "reqd": 1
+  },
+  {
+   "fieldname": "total_km",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Total KM",
+   "precision": "1",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Total Amount",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "description": "JSON array of VECRM Employee.role values eligible to approve. Snapshotted at submit.",
+   "fieldname": "approver_role_set",
+   "fieldtype": "Small Text",
+   "label": "Eligible Approvers (JSON)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approved_by_employee",
+   "fieldtype": "Link",
+   "label": "Approved By",
+   "options": "VECRM Employee",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approved_by_role",
+   "fieldtype": "Data",
+   "label": "Approved By Role",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approved_at",
+   "fieldtype": "Datetime",
+   "label": "Approved At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approval_notes",
+   "fieldtype": "Small Text",
+   "label": "Approval Notes"
+  }
+ ],
+ "idx": 0,
+ "links": [],
+ "modified": "2026-05-21 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "VECRM",
+ "name": "VECRM Travel Voucher",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "amend": 1,
+   "cancel": 1,
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "amend": 1,
+   "cancel": 1,
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "VECRM Admin",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 0,
+   "print": 1,
+   "read": 1,
+   "role": "VECRM Submitter",
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "delete": 0,
+   "print": 1,
+   "read": 1,
+   "role": "VECRM Approver"
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

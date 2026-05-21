@@ -37,7 +37,9 @@ sha256sum /opt/vecrm/vecrm-src/vecrm/vecrm/voucher_counter.py
 
 ## Current banked SHA
 
-- **S20 verified:** `7ad2b3a32757346de742365b197803e911cf000af5e9439d2ca1d8c76511b59d`
+- **S22 verified:** `91556a7d07359d91f5d0fd61f27b849b5dc0d098012cc45357025575bcc572a9`
+  - S22 §6 hard-gate fix: read `last_value` inside FOR UPDATE statement (see VECRM-S22-A)
+- **S20 verified (superseded):** `7ad2b3a32757346de742365b197803e911cf000af5e9439d2ca1d8c76511b59d`
 
 This is the canonical allocator sha256 at S20 close. Any change requires a new entry here.
 

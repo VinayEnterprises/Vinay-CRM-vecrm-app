@@ -1,0 +1,23 @@
+[
+  {
+    "doctype": "Role",
+    "name": "VECRM Submitter",
+    "role_name": "VECRM Submitter",
+    "desk_access": 1,
+    "disabled": 0
+  },
+  {
+    "doctype": "Role",
+    "name": "VECRM Approver",
+    "role_name": "VECRM Approver",
+    "desk_access": 1,
+    "disabled": 0
+  },
+  {
+    "doctype": "Role",
+    "name": "VECRM Admin",
+    "role_name": "VECRM Admin",
+    "desk_access": 1,
+    "disabled": 0
+  }
+]
