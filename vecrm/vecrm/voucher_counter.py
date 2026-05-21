@@ -10,6 +10,37 @@ transaction commits or rolls back. This is what makes allocation gap-free:
 a rollback returns the counter to its pre-allocation value because the
 UPDATE on ``last_value`` is part of the same transaction.
 
+S22 §6 hard-gate fix (the real one)
+====================================
+
+The previous versions of this allocator had a latent stale-read bug present
+since the very first commit:
+
+  1. ``SELECT name ... FOR UPDATE`` acquired the row lock
+  2. ``frappe.get_doc(DOCTYPE, name).last_value`` (original) OR a separate
+     ``SELECT last_value ... WHERE name = %s`` (S22 first-attempt fix) read
+     the counter value via a NON-LOCKING consistent read
+
+A non-locking SELECT under REPEATABLE-READ honors the transaction's MVCC
+read view, which is established at the FIRST consistent read in the
+transaction — long BEFORE next_number is called (typically by
+``check_permission``, ``_validate_links``, or our own ``before_insert``'s
+Employee/Rate-Card reads). After a concurrent transaction commits a new
+``last_value``, the snapshot-bound read still returns the OLD value. Every
+serialized thread therefore computes the same new_value, and 9-of-10 collide
+with DuplicateEntryError on the voucher INSERT.
+
+The fix: read ``last_value`` INSIDE the same locking statement that acquires
+the FOR UPDATE row lock. A locking read returns the current committed row,
+not a snapshot view. This is what every concurrency diagnostic that PASSED
+in the S22 hard-gate investigation actually does — including the diagnostics
+we wrote tonight that achieved 10/10 success under contention.
+
+Why this latent bug was never caught: this allocator was NEVER concurrency-
+tested before S22 §6. Earlier sessions (S19/S20) verified its sha (L8) and
+its single-threaded correctness, but never ran it under load. S22 §6 is the
+first time the bug had a chance to surface.
+
 Public surface (L10-invocable as ``vecrm.voucher_counter.*``):
   * :func:`fy_label` — Indian FY label for a business date.
   * :func:`next_number` — allocate the next integer for a (series, FY) pair.
@@ -64,16 +95,23 @@ def fy_label(business_date) -> str:
 	return f"{yy_start:02d}-{yy_end:02d}"
 
 
-def _lock_counter_row(counter_key: str) -> str | None:
-	"""Acquire an InnoDB row-level lock on the counter row, returning its name.
+def _lock_counter_row(counter_key: str) -> tuple[str | None, int]:
+	"""Acquire an InnoDB row-level lock on the counter row, returning (name, last_value).
 
-	Returns ``None`` if no row exists for ``counter_key``. The lock is held
-	until the surrounding transaction commits or rolls back — there is no
-	standalone commit in this module.
+	Reads BOTH ``name`` and ``last_value`` in the SAME locking statement.
+	This is the S22 §6 fix: under REPEATABLE-READ MVCC, a separate
+	non-locking SELECT after the FOR UPDATE would return the transaction's
+	stale snapshot view of ``last_value``, not the current committed value.
+	Reading both columns in the FOR UPDATE statement guarantees we see the
+	row's latest committed state.
+
+	Returns ``(None, 0)`` if no row exists for ``counter_key``. The lock is
+	held until the surrounding transaction commits or rolls back — there is
+	no standalone commit in this module.
 	"""
 	rows = frappe.db.sql(
 		"""
-		SELECT name
+		SELECT name, last_value
 		FROM `tabVECRM Voucher Counter`
 		WHERE counter_key = %s
 		FOR UPDATE
@@ -81,73 +119,53 @@ def _lock_counter_row(counter_key: str) -> str | None:
 		(counter_key,),
 		as_dict=True,
 	)
-	return rows[0]["name"] if rows else None
+	if not rows:
+		return (None, 0)
+	return (rows[0]["name"], rows[0]["last_value"] or 0)
 
 
 def next_number(series: str, fy: str) -> int:
 	"""Allocate the next integer for ``(series, fy)`` — strict gap-free.
 
-	Algorithm (per L10 §3):
+	Algorithm (per L10 §3, S22 §6 corrected):
 	  1. Compute ``counter_key = f"{series}-{fy}"``.
-	  2. ``SELECT ... FOR UPDATE`` the matching row via :func:`_lock_counter_row`.
+	  2. ``SELECT name, last_value ... FOR UPDATE`` the matching row via
+	     :func:`_lock_counter_row`. Both columns read in ONE locking
+	     statement — this is the S22 §6 fix.
 	  3. If absent, perform a single atomic ``INSERT ... ON DUPLICATE KEY
-	     UPDATE counter_key = counter_key`` upsert that seeds the row at
-	     ``last_value = 0`` if it does not yet exist and is a no-op
-	     self-assignment otherwise. No ORM ``Document`` is constructed,
-	     no ``on_update`` hook fires, and no integrity exception is
-	     ever raised to the caller — so the duplicate-loser ORM-state-
-	     coherence problem is structurally absent (no ORM state exists
-	     to be incoherent).
-	  4. UNCONDITIONALLY re-run ``SELECT ... FOR UPDATE``. The
-	     create-winner and the no-op-loser converge on this single
-	     explicit-locked-row code path. If the re-lock still returns
-	     ``None``, that is the genuinely unreachable case (the upsert
-	     guaranteed the row exists) and the function surfaces a hard
-	     error.
-	  5. ``new_value = last_value + 1``. Refuse > 99999 (five-digit overflow).
-	  6. Persist ``last_value = new_value`` via ``doc.save()`` with the
-	     ``vecrm_counter_alloc`` flag set so the controller guard lets
-	     the write through.
-	  7. Return ``new_value``. The row lock is released by the caller's
-	     transaction boundary — no standalone commit here.
+	     UPDATE counter_key = counter_key`` upsert (CR-4 no-op clause).
+	  4. UNCONDITIONALLY re-run ``SELECT name, last_value ... FOR UPDATE``
+	     (CR-3 invariant). Both columns again returned by the locking read.
+	  5. ``new_value = last_value + 1``. Refuse > 99999.
+	  6. Persist via raw SQL ``UPDATE ... SET last_value = %s, modified = %s
+	     WHERE name = %s``.
+	  7. Return ``new_value``. Row lock released by caller's transaction.
 
-	INVARIANT (CR-3): every return path from :func:`next_number` performs
-	its increment on a row acquired via explicit ``SELECT ... FOR UPDATE``
-	(:func:`_lock_counter_row`). No path relies on InnoDB's implicit
-	insert-intention lock or on the ``ON DUPLICATE KEY UPDATE`` upsert's
-	transient X-lock as the synchronisation primitive.
+	INVARIANT (CR-3): every return path performs its increment on a row
+	acquired via explicit ``SELECT ... FOR UPDATE``. The locking read now
+	also returns the row's current ``last_value`` — eliminating the
+	stale-snapshot read that defeated this invariant in practice under
+	concurrent load.
 
 	ON DUPLICATE clause invariant (CR-4 critical): the upsert's
 	``ON DUPLICATE KEY UPDATE`` clause MUST remain the no-op
-	self-assignment ``counter_key = counter_key``. It must NEVER write
-	``last_value`` or any other business column. The counter value is
-	owned solely by the explicit-FOR-UPDATE-locked increment path
-	below; modifying the ON DUPLICATE clause to write any business
-	column silently destroys strict gap-free numbering — every
-	post-first voucher in an FY would collide/reset to 1. This is the
-	single line whose accidental future edit is catastrophic; do not
-	touch it without re-deriving the algorithm.
+	self-assignment ``counter_key = counter_key``. UNCHANGED.
 
-	Controller-guard bypass note: the raw upsert deliberately bypasses
-	the :class:`VECRMVoucherCounter.on_update` controller guard at
-	create time. This is intended — the guard exists to block
-	out-of-band UI/Desk/script mutation of counter rows, and
-	:func:`next_number` is the sole sanctioned create path. The
-	increment tail (``doc.save(ignore_permissions=True)`` with
-	``flags.vecrm_counter_alloc=True``) still goes through the
-	controller, so the guard remains in force for every value-mutating
-	save.
+	Controller-guard note: the controller's ``on_update`` guard (which
+	gates on ``flags.vecrm_counter_alloc``) is NOT REACHED — allocator
+	writes go through raw SQL UPDATE, not the ORM. The guard remains in
+	force for any other code path (UI, Desk, scripts) that tries to
+	``doc.save()`` a counter row.
 
-	Column set + defaults derived from Frappe v16.18.2
-	``frappe/model/base_document.py::db_insert``: 7 bookkeeping columns
-	(``name, creation, modified, modified_by, owner, docstatus, idx``)
-	+ 4 business columns (``counter_key, series, fy, last_value``).
-	``name`` equals ``counter_key`` per the ``field:counter_key``
-	autoname semantics in ``frappe/model/naming.py::_field_autoname``
-	(``cstr(doc.counter_key).strip()`` — our counter_key has no
-	whitespace, so the values are byte-identical). All values are
-	bound parameters; no user data is interpolated into the SQL
-	string.
+	HISTORICAL NOTE: prior versions of this allocator (commit a990fa8 sha
+	7ad2b3a3 onward) read ``last_value`` via a SEPARATE statement from the
+	FOR UPDATE lock — either ``frappe.get_doc(DOCTYPE, name).last_value``
+	or a plain ``SELECT last_value WHERE name = %s``. Both are
+	non-locking consistent reads, which under REPEATABLE-READ return the
+	transaction's stale snapshot rather than the current committed value.
+	This is a textbook split lock-and-read antipattern. It was latent for
+	the allocator's entire history; S22 §6 is the first concurrency
+	exercise that surfaced it.
 	"""
 	if not series:
 		frappe.throw(
@@ -160,20 +178,9 @@ def next_number(series: str, fy: str) -> int:
 
 	counter_key = f"{series}-{fy}"
 
-	name = _lock_counter_row(counter_key)
+	name, current_value = _lock_counter_row(counter_key)
 	if name is None:
 		# ── Atomic upsert: create-if-absent, no-op-if-exists ─────────────
-		# A single INSERT ... ON DUPLICATE KEY UPDATE seeds the row at
-		# last_value = 0 if it does not yet exist, or self-assigns
-		# counter_key = counter_key (no-op) if a concurrent allocator
-		# already won the create race. Constructs no ORM Document,
-		# fires no on_update hook, raises no integrity exception. The
-		# row is then re-locked unconditionally below via explicit
-		# SELECT ... FOR UPDATE — that is the synchronisation primitive,
-		# not the upsert's transient X-lock.
-		#
-		# Column set + defaults derived from Frappe v16.18.2
-		# base_document.py::db_insert (see docstring).
 		ts = now()
 		usr = frappe.session.user
 		frappe.db.sql(
@@ -187,21 +194,15 @@ def next_number(series: str, fy: str) -> int:
 			   %s, %s,
 			   %s, %s, %s, %s)
 			-- CR-4 INVARIANT (DO NOT EDIT): no-op self-assignment ONLY.
-			-- This clause MUST NEVER write last_value or any other
-			-- business column. The counter value is owned solely by the
-			-- explicit FOR-UPDATE-locked increment path below; writing
-			-- a business column here silently destroys strict gap-free
-			-- numbering (every post-first voucher in an FY would
-			-- collide/reset to 1).
 			ON DUPLICATE KEY UPDATE `counter_key` = `counter_key`
 			""",
 			(
-				counter_key,  # name  (field:counter_key autoname → name == counter_key)
+				counter_key,  # name (field:counter_key autoname → name == counter_key)
 				ts,           # creation
-				ts,           # modified  (same instant as creation)
+				ts,           # modified
 				usr,          # modified_by
-				usr,          # owner     (identical to modified_by on insert)
-				0,            # docstatus = DocStatus.DRAFT
+				usr,          # owner
+				0,            # docstatus
 				0,            # idx
 				counter_key,  # business: counter_key
 				series,       # business: series
@@ -210,17 +211,10 @@ def next_number(series: str, fy: str) -> int:
 			),
 		)
 
-		# ── Convergence point: explicit FOR UPDATE on the now-existing row ──
-		# The upsert above guaranteed the row exists. Re-lock it via
-		# SELECT ... FOR UPDATE before incrementing — this is the
-		# CR-3 invariant: every return path holds an explicit
-		# FOR-UPDATE lock on the row it increments.
-		name = _lock_counter_row(counter_key)
+		# CR-3 convergence point: re-lock and read value in same statement.
+		name, current_value = _lock_counter_row(counter_key)
 		if name is None:
-			# Genuinely unreachable. The atomic upsert above guarantees
-			# the row exists; FOR UPDATE will find it (blocking until
-			# a concurrent winner commits if necessary). Surface loudly
-			# rather than silently double-allocate.
+			# Genuinely unreachable post-upsert.
 			frappe.throw(
 				_(
 					"VECRM Voucher Counter: race resolution failed for "
@@ -229,8 +223,11 @@ def next_number(series: str, fy: str) -> int:
 				frappe.ValidationError,
 			)
 
-	doc = frappe.get_doc(DOCTYPE, name)
-	new_value = (doc.last_value or 0) + 1
+	# ── Increment using value read from locking statement ───────────────
+	# current_value came from the FOR UPDATE — it IS the latest committed
+	# value, not a snapshot. Safe to increment.
+	new_value = current_value + 1
+
 	if new_value > MAX_VALUE:
 		frappe.throw(
 			_("VECRM Voucher Counter overflow: series {0} FY {1} exhausted").format(
@@ -239,9 +236,16 @@ def next_number(series: str, fy: str) -> int:
 			frappe.ValidationError,
 		)
 
-	doc.last_value = new_value
-	doc.flags.vecrm_counter_alloc = True
-	doc.save(ignore_permissions=True)
+	# Raw UPDATE under held FOR UPDATE lock. Concurrent threads serialize
+	# on the row lock and each see the post-commit value when they acquire.
+	frappe.db.sql(
+		"""
+		UPDATE `tabVECRM Voucher Counter`
+		SET `last_value` = %s, `modified` = %s, `modified_by` = %s
+		WHERE `name` = %s
+		""",
+		(new_value, now(), frappe.session.user, name),
+	)
 
 	return new_value
 

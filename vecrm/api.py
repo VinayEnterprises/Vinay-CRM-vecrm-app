@@ -52,3 +52,28 @@ def convert_lead_to_inquiry(
 		requirement=requirement,
 		status=status,
 	)
+
+
+@frappe.whitelist()
+def approve_travel_voucher(
+	voucher_name: str, approver_employee: str, notes: str = ""
+) -> str:
+	"""Approve a submitted VECRM Travel Voucher.
+
+	Thin HTTP wrapper around the doctype module's ``approve_travel_voucher``.
+	First-to-approve wins; the approver's ``VECRM Employee.role`` must be in
+	the voucher's snapshotted ``approver_role_set``.
+
+	Args:
+	  voucher_name: The Travel Voucher's ``name`` (e.g. ``"VE/TV/00001/26-27"``).
+	  approver_employee: The approving ``VECRM Employee`` document name.
+	  notes: Optional free-text approval note.
+
+	Returns:
+	  The voucher's name on success.
+	"""
+	from vecrm.vecrm.doctype.vecrm_travel_voucher.vecrm_travel_voucher import (
+		approve_travel_voucher as _approve,
+	)
+
+	return _approve(voucher_name, approver_employee, notes or None)

@@ -5,6 +5,25 @@ app_description = "Vinay Enterprises CRM - Lead/Inquiry pipeline and field-staff
 app_email = "info@vinayenterprises.co.in"
 app_license = "mit"
 
+# Fixtures
+# ------------------
+# Frappe Roles created/synced on migrate (Desk-side access discipline).
+# The actual approval-set logic in controllers is data-driven from
+# VECRM Employee.role — these Roles exist purely for Desk access, NOT as
+# the source of truth for who may approve a voucher.
+fixtures = [
+	{
+		"doctype": "Role",
+		"filters": [
+			[
+				"role_name",
+				"in",
+				["VECRM Submitter", "VECRM Approver", "VECRM Admin"],
+			]
+		],
+	}
+]
+
 # Apps
 # ------------------
 
