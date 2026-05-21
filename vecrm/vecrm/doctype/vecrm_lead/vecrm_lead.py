@@ -22,6 +22,19 @@ class VECRMLead(Document):
 		self.name = f"VE/LEAD/{n:05d}/{fy}"
 
 	def validate(self):
+		# Defensive name guard (PD-S23-AUTONAME-HYGIENE): name MUST be
+		# canonical VE/LEAD/####/FY format, set by autoname(). Validated
+		# at validate() (not before_insert) because Frappe v16.18.2 runs
+		# before_insert BEFORE set_new_name (document.py L441 before L442),
+		# so self.name is None at before_insert time. validate() runs after
+		# autoname has populated self.name.
+		if not self.name or not self.name.startswith("VE/LEAD/"):
+			frappe.throw(
+				f"VECRM Lead name must be allocated via voucher_counter "
+				f"(VE/LEAD/####/FY format). Got: {self.name!r}. Do not "
+				f"pre-populate name; let autoname() handle allocation.",
+				frappe.ValidationError,
+			)
 		self._validate_priority()
 
 	def _validate_priority(self):

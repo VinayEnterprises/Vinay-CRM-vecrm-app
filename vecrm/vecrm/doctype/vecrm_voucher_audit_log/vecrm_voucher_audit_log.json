@@ -1,0 +1,76 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-05-21 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "event",
+  "event_timestamp",
+  "payload"
+ ],
+ "fields": [
+  {
+   "fieldname": "event",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Event",
+   "reqd": 1,
+   "description": "Dotted event name, e.g. 'voucher.travel.submitted', 'voucher.travel.approved'."
+  },
+  {
+   "fieldname": "event_timestamp",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Event Timestamp",
+   "reqd": 1
+  },
+  {
+   "fieldname": "payload",
+   "fieldtype": "Long Text",
+   "label": "Payload (JSON)",
+   "description": "JSON object. Auto-merged keys: voucher_name, voucher_doctype, actor_user. Caller adds: actor_employee, actor_role, from_state, to_state, and any event-specific fields."
+  }
+ ],
+ "idx": 0,
+ "links": [],
+ "modified": "2026-05-21 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "VECRM",
+ "name": "VECRM Voucher Audit Log",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 0
+  },
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "VECRM Admin",
+   "share": 1,
+   "write": 0
+  },
+  {
+   "delete": 0,
+   "print": 1,
+   "read": 1,
+   "role": "VECRM Approver",
+   "write": 0
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

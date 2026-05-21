@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 
 import frappe
+from frappe import _
 from frappe.model.document import Document
 from frappe.model.naming import make_autoname
 
@@ -103,6 +104,23 @@ class VECRMTravelVoucher(Document):
         Runs on every save (draft + submit). The rate, base_city, and
         submitter_role are read from snapshot fields (never re-fetched).
         """
+        # Defensive name guard (PD-S23-AUTONAME-HYGIENE): name MUST be
+        # canonical VE/TV/####/FY format, set by autoname(). Validated
+        # at validate() (not before_insert) because Frappe v16.18.2 runs
+        # before_insert BEFORE set_new_name (document.py L441 before L442),
+        # so self.name is None at before_insert time. validate() runs via
+        # run_before_save_methods (L447) after autoname has populated
+        # self.name, and runs on every save thereafter — so a non-canonical
+        # name from any source (prompt-mode user input, hash fallback,
+        # future rename attempt) is caught here.
+        if not self.name or not self.name.startswith("VE/TV/"):
+            frappe.throw(
+                f"VECRM Travel Voucher name must be allocated via "
+                f"voucher_counter (VE/TV/####/FY format). Got: {self.name!r}. "
+                f"Do not pre-populate name; let autoname() handle allocation.",
+                frappe.ValidationError,
+            )
+
         if not self.visit_lines:
             frappe.throw("At least one visit line is required.")
 
@@ -154,24 +172,47 @@ class VECRMTravelVoucher(Document):
         # if we want to refuse submit when employee role changed since
         # draft creation, but that's a separate guard not part of S22 §6.
     def on_submit(self) -> None:
-        """Audit log."""
-        # PD-S22-VOUCHER-AUDIT (S23): VECRM User Audit Log Links actor and target
-        # both to VECRM Employee. Not fit for document-action audit. Defer to S23.
-        # self._audit("submit", f"Travel Voucher {self.name} submitted by {self.submitter}.")
+        """Audit log on submit (PD-S22-VOUCHER-AUDIT — wired S23 PR via VECRM Voucher Audit Log)."""
+        self._audit("voucher.travel.submitted", {
+            "actor_employee": self.submitter,
+            "actor_role": self.submitter_role,
+            "total_amount": float(self.total_amount or 0),
+            "total_km": float(self.total_km or 0),
+            "fy_label": self.fy_label,
+            "from_state": "draft",
+            "to_state": "submitted",
+        })
 
-    def _audit(self, event_type: str, detail: str) -> None:
-        """Append-only audit row in VECRM User Audit Log.
+    def _audit(self, event: str, payload: dict | None = None) -> None:
+        """Append-only audit row in VECRM Voucher Audit Log.
 
-        Field names match the existing VECRM User Audit Log schema:
-        event_type, actor, target, event_timestamp, detail.
+        Args:
+          event: Dotted event name, e.g. "voucher.travel.submitted",
+            "voucher.travel.approved". Convention: voucher.<type>.<state>.
+          payload: Optional dict, JSON-serialized into the audit row's
+            payload field. Auto-merged keys (do not override): voucher_name,
+            voucher_doctype, actor_user. Caller should add: actor_employee,
+            actor_role, from_state, to_state, and event-specific fields.
+
+        Per VECRM Voucher Audit Log doctype contract: this row, once
+        inserted, is append-only (controller raises on modification or
+        deletion).
         """
+        import json as _json
+
+        merged_payload = {
+            "voucher_name": self.name,
+            "voucher_doctype": self.doctype,
+            "actor_user": frappe.session.user,
+        }
+        if payload:
+            merged_payload.update(payload)
+
         frappe.get_doc({
-            "doctype": "VECRM User Audit Log",
-            "event_type": event_type,
-            "actor": frappe.session.user,
-            "target": self.name,
+            "doctype": "VECRM Voucher Audit Log",
+            "event": event,
             "event_timestamp": frappe.utils.now_datetime(),
-            "detail": detail,
+            "payload": _json.dumps(merged_payload, default=str),
         }).insert(ignore_permissions=True)
 
 def approve_travel_voucher(
@@ -213,11 +254,13 @@ def approve_travel_voucher(
     if notes:
         voucher.db_set("approval_notes", notes, update_modified=False)
 
-    # PD-S22-VOUCHER-AUDIT (S23): see on_submit comment
-    # voucher._audit(
-    #     "approve",
-    #     f"Travel Voucher {voucher.name} approved by {approver_employee} "
-    #     f"(role={approver.role}).",
-    # )
+    voucher._audit("voucher.travel.approved", {
+        "actor_employee": approver_employee,
+        "actor_role": approver.role,
+        "approver_set": approver_set,
+        "notes": notes or "",
+        "from_state": "submitted",
+        "to_state": "approved",
+    })
 
     return voucher.name

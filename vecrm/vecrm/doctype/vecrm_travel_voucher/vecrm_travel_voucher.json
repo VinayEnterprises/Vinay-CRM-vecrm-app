@@ -1,13 +1,13 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "prompt",
+ "autoname": "",
  "creation": "2026-05-21 12:00:00.000000",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "is_submittable": 1,
- "naming_rule": "Set by user",
+ "naming_rule": "",
  "field_order": [
   "submitter",
   "submitter_role",
