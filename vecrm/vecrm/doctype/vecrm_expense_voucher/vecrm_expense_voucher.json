@@ -1,0 +1,169 @@
+{
+  "actions": [],
+  "allow_rename": 0,
+  "autoname": "",
+  "creation": "2026-05-21 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "is_submittable": 1,
+  "naming_rule": "",
+  "field_order": [
+    "submitter",
+    "submitter_role",
+    "expense_date",
+    "fy_label",
+    "expense_lines",
+    "total_amount",
+    "approver_set",
+    "approved_by_employee",
+    "approved_by_role",
+    "approved_at",
+    "approval_notes"
+  ],
+  "fields": [
+    {
+      "fieldname": "submitter",
+      "fieldtype": "Link",
+      "options": "VECRM Employee",
+      "in_list_view": 1,
+      "label": "Submitter",
+      "reqd": 1,
+      "description": "The employee submitting this voucher. Frozen at create."
+    },
+    {
+      "fieldname": "submitter_role",
+      "fieldtype": "Data",
+      "label": "Submitter Role (snapshot)",
+      "read_only": 1,
+      "description": "Frozen at create from VECRM Employee.role. Drives approver_set."
+    },
+    {
+      "fieldname": "expense_date",
+      "fieldtype": "Date",
+      "in_list_view": 1,
+      "label": "Expense Date",
+      "reqd": 1,
+      "description": "Business date — drives FY allocation."
+    },
+    {
+      "fieldname": "fy_label",
+      "fieldtype": "Data",
+      "label": "FY (snapshot)",
+      "read_only": 1,
+      "description": "Computed from expense_date on autoname, e.g. '26-27'."
+    },
+    {
+      "fieldname": "expense_lines",
+      "fieldtype": "Table",
+      "options": "VECRM Expense Line",
+      "label": "Expense Lines",
+      "reqd": 1,
+      "description": "Per-item expense rows. At least one row required."
+    },
+    {
+      "fieldname": "total_amount",
+      "fieldtype": "Currency",
+      "in_list_view": 1,
+      "label": "Total Amount (₹)",
+      "read_only": 1,
+      "description": "Sum of expense_lines.amount. Computed in validate()."
+    },
+    {
+      "fieldname": "approver_set",
+      "fieldtype": "Long Text",
+      "label": "Eligible Approvers (JSON)",
+      "read_only": 1,
+      "description": "JSON list snapshot derived from submitter_role on before_submit. e.g. ['Sales Head', 'HR', 'Admin']."
+    },
+    {
+      "fieldname": "approved_by_employee",
+      "fieldtype": "Link",
+      "options": "VECRM Employee",
+      "label": "Approved By (Employee)",
+      "read_only": 1,
+      "description": "Set by approve_expense_voucher() after approval."
+    },
+    {
+      "fieldname": "approved_by_role",
+      "fieldtype": "Data",
+      "label": "Approved By (Role)",
+      "read_only": 1,
+      "description": "Set by approve_expense_voucher() — approver's role at time of approval."
+    },
+    {
+      "fieldname": "approved_at",
+      "fieldtype": "Datetime",
+      "label": "Approved At",
+      "read_only": 1,
+      "description": "Timestamp of approval."
+    },
+    {
+      "fieldname": "approval_notes",
+      "fieldtype": "Small Text",
+      "label": "Approval Notes",
+      "read_only": 1,
+      "description": "Notes from approver, captured at approval time."
+    }
+  ],
+  "idx": 0,
+  "links": [],
+  "modified": "2026-05-21 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "VECRM",
+  "name": "VECRM Expense Voucher",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 0,
+      "email": 1,
+      "print": 1,
+      "read": 1,
+      "role": "System Manager",
+      "share": 1,
+      "submit": 1,
+      "cancel": 1,
+      "write": 1
+    },
+    {
+      "create": 1,
+      "delete": 0,
+      "email": 1,
+      "print": 1,
+      "read": 1,
+      "role": "VECRM Admin",
+      "share": 1,
+      "submit": 1,
+      "cancel": 1,
+      "write": 1
+    },
+    {
+      "create": 1,
+      "delete": 0,
+      "email": 1,
+      "print": 1,
+      "read": 1,
+      "role": "VECRM Submitter",
+      "share": 0,
+      "submit": 1,
+      "cancel": 0,
+      "write": 1
+    },
+    {
+      "create": 0,
+      "delete": 0,
+      "email": 1,
+      "print": 1,
+      "read": 1,
+      "role": "VECRM Approver",
+      "share": 1,
+      "submit": 0,
+      "cancel": 0,
+      "write": 0
+    }
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC",
+  "states": []
+}
