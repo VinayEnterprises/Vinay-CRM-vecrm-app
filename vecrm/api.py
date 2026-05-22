@@ -16,6 +16,8 @@ Conventions:
   * Function names use snake_case verbs (e.g. ``convert_lead_to_inquiry``).
 """
 
+import json
+
 import frappe
 
 
@@ -77,3 +79,150 @@ def approve_travel_voucher(
 	)
 
 	return _approve(voucher_name, approver_employee, notes or None)
+
+
+@frappe.whitelist()
+def create_travel_voucher_draft(
+	submitter: str,
+	business_date: str,
+	visit_lines: str,
+) -> dict:
+	"""Create a VECRM Travel Voucher in DRAFT state (docstatus=0).
+
+	Sub-A (S24) is Admin-only — callers MUST pass submitter explicitly.
+	When VECRM Auth ships in S25, the portal's BFF route will resolve
+	submitter from the authenticated session and pass it here; the
+	backend signature does not change.
+
+	Uses the ORM pattern (new_doc -> append -> insert). The REST
+	equivalent (frappe.client.insert with a nested visit_lines array) is
+	unverified in-repo per A1 §4.1 and intentionally avoided.
+
+	Args:
+	  submitter: VECRM Employee name (= phone-id, e.g. "+91-9999900001").
+	  business_date: Date of visits (YYYY-MM-DD). Drives FY.
+	  visit_lines: JSON-encoded array of visit-line objects with fields
+	    visit_date, customer_name, start_odometer, end_odometer, notes?
+
+	Returns:
+	  Dict with name, submitter, business_date, fy_label, total_km,
+	  total_amount, rate_per_km_applied, employee_base_city,
+	  submitter_role, docstatus, visit_lines (computed children).
+
+	Raises:
+	  frappe.ValidationError: invalid JSON, empty visit_lines, or any
+	    controller validation failure (employee not found/inactive, rate
+	    card missing the base city, etc.)
+	"""
+	if not submitter:
+		frappe.throw(
+			"submitter is required (VECRM Employee phone-id).",
+			frappe.ValidationError,
+		)
+
+	if not frappe.db.exists("VECRM Employee", submitter):
+		frappe.throw(
+			f"VECRM Employee {submitter!r} does not exist.",
+			frappe.ValidationError,
+		)
+
+	try:
+		lines = json.loads(visit_lines)
+	except json.JSONDecodeError as exc:
+		frappe.throw(f"visit_lines is not valid JSON: {exc}", frappe.ValidationError)
+
+	if not isinstance(lines, list) or not lines:
+		frappe.throw(
+			"visit_lines must be a non-empty JSON array.", frappe.ValidationError
+		)
+
+	doc = frappe.new_doc("VECRM Travel Voucher")
+	doc.submitter = submitter
+	doc.business_date = business_date
+
+	for line in lines:
+		doc.append("visit_lines", {
+			"visit_date": line.get("visit_date"),
+			"customer_name": line.get("customer_name"),
+			"start_odometer": line.get("start_odometer"),
+			"end_odometer": line.get("end_odometer"),
+			"notes": line.get("notes", ""),
+		})
+
+	# insert() runs before_insert (snapshot rate/role/city), validate
+	# (compute totals via Rate Card lookup), and DB insert atomically.
+	doc.insert()
+
+	return {
+		"name": doc.name,
+		"submitter": doc.submitter,
+		"business_date": str(doc.business_date),
+		"fy_label": doc.fy_label,
+		"total_km": doc.total_km,
+		"total_amount": doc.total_amount,
+		"rate_per_km_applied": doc.rate_per_km_applied,
+		"employee_base_city": doc.employee_base_city,
+		"submitter_role": doc.submitter_role,
+		"docstatus": doc.docstatus,
+		"visit_lines": [
+			{
+				"visit_date": str(line.visit_date),
+				"customer_name": line.customer_name,
+				"start_odometer": line.start_odometer,
+				"end_odometer": line.end_odometer,
+				"total_km": line.total_km,
+				"line_amount": line.line_amount,
+				"notes": line.notes or "",
+			}
+			for line in doc.visit_lines
+		],
+	}
+
+
+@frappe.whitelist()
+def submit_travel_voucher_draft(voucher_name: str) -> dict:
+	"""Submit a previously-created draft Travel Voucher (docstatus 0 -> 1).
+
+	Sub-A (S24) is Admin-only — the only session in production at this
+	point belongs to an Admin who can submit any draft. Ownership checks
+	are deferred to S25 when real non-Admin sessions exist.
+
+	Calls doc.submit() which triggers on_submit -> voucher.travel.submitted
+	audit emission.
+
+	Args:
+	  voucher_name: Name (e.g. 'VE/TV/00090/26-27') of the draft to submit.
+
+	Returns:
+	  Dict with name, docstatus (1), total_amount, submitted_at.
+
+	Raises:
+	  frappe.ValidationError: voucher doesn't exist or not in draft state.
+	"""
+	if not frappe.db.exists("VECRM Travel Voucher", voucher_name):
+		frappe.throw(
+			f"Travel Voucher {voucher_name!r} does not exist.",
+			frappe.ValidationError,
+		)
+
+	doc = frappe.get_doc("VECRM Travel Voucher", voucher_name)
+
+	if doc.docstatus != 0:
+		frappe.throw(
+			f"Travel Voucher {voucher_name} is not in draft state "
+			f"(docstatus={doc.docstatus}).",
+			frappe.ValidationError,
+		)
+
+	# No ownership check in Sub-A — Admin-only interim. S25 VECRM Auth
+	# will add session-based ownership verification.
+
+	# Submit — triggers on_submit -> _audit("voucher.travel.submitted", ...)
+	doc.submit()
+
+	return {
+		"name": doc.name,
+		"docstatus": doc.docstatus,
+		"total_amount": doc.total_amount,
+		"submitted_at": str(frappe.utils.now_datetime()),
+	}
