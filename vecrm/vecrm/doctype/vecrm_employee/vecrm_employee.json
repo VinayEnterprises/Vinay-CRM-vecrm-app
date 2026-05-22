@@ -80,7 +80,7 @@
   },
   {
    "fieldname": "password_hash",
-   "fieldtype": "Password",
+   "fieldtype": "Data",
    "label": "Password Hash",
    "read_only": 1,
    "no_copy": 1

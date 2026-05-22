@@ -310,8 +310,7 @@ from typing import Any
 
 from frappe import _
 from frappe.utils import now_datetime, get_datetime
-from frappe.utils.password import passlibctx, get_decrypted_password, set_encrypted_password
-# Note: set_encrypted_password imported for S26 reset flow; unused in S25 scope (OBS-S25-AB)
+from frappe.utils.password import passlibctx
 
 
 # Constants
@@ -383,13 +382,25 @@ def _on_success(employee_doc: Any) -> None:
 
 def _issue_session(employee_doc: Any) -> None:
     """Issue a Frappe session as the shared VECRM Portal User; stash employee
-    identity in session data per D8."""
+    identity in session data per D8.
+
+    The login_as call runs Session.start() → insert_session_record(), which
+    persists self.data["data"] BEFORE our custom keys exist. We then mutate
+    frappe.session.data (which IS self.data["data"]) to add the vecrm_*
+    keys, and call frappe.local.session_obj.update(force=True) to re-persist
+    BOTH the DB sessiondata row AND the cache slot with the correct outer
+    Session.data shape.
+
+    force=True is required: Session.update()'s default time-threshold gate
+    no-ops on a fresh session where last_updated was just set by start().
+    OBS-S25-AL.
+    """
     frappe.local.login_manager.login_as(_VECRM_PORTAL_USER)
     frappe.session.data.vecrm_employee_phone = employee_doc.vecrm_phone
     frappe.session.data.vecrm_employee_name = employee_doc.employee_name
     frappe.session.data.vecrm_employee_role = employee_doc.role
     frappe.session.data.vecrm_login_path = "password"
-    frappe.cache.hset("session", frappe.session.sid, frappe.session.data)
+    frappe.local.session_obj.update(force=True)
 
 
 @frappe.whitelist(allow_guest=True, methods=["POST"])
@@ -432,16 +443,7 @@ def login_with_password(email: str = "", password: str = "") -> dict[str, Any]:
         )
         frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
 
-    # Verify against stored hash (Frappe encrypts the Password field at rest).
-    # NOTE: employee_doc.password_hash is NOT populated with the actual value on
-    # get_doc — Frappe loads Password fields as None/placeholder. Must use
-    # get_decrypted_password to read the actual stored hash. (OBS-S25-AH)
-    try:
-        stored_hash = get_decrypted_password("VECRM Employee", employee_doc.name, "password_hash")
-    except (frappe.AuthenticationError, Exception):
-        stored_hash = None
-
-    if not stored_hash:
+    if not employee_doc.password_hash:
         _audit_auth(
             "auth.login.failed",
             employee=employee_doc.name, identifier=email, path="password",
@@ -449,7 +451,7 @@ def login_with_password(email: str = "", password: str = "") -> dict[str, Any]:
         )
         frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
 
-    if not passlibctx.verify(password, stored_hash):
+    if not passlibctx.verify(password, employee_doc.password_hash):
         _on_failure(employee_doc)
         _audit_auth(
             "auth.login.failed",

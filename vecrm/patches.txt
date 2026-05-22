@@ -8,3 +8,4 @@ vecrm.patches.v1_1.add_auth_fields
 vecrm.patches.v1_1.create_vecrm_portal_user
 vecrm.patches.v1_1.create_auth_doctypes
 vecrm.patches.v1_1.fix_portal_user_type
+vecrm.patches.v1_1.convert_password_hash_to_data
