@@ -432,7 +432,16 @@ def login_with_password(email: str = "", password: str = "") -> dict[str, Any]:
         )
         frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
 
-    if not employee_doc.password_hash:
+    # Verify against stored hash (Frappe encrypts the Password field at rest).
+    # NOTE: employee_doc.password_hash is NOT populated with the actual value on
+    # get_doc — Frappe loads Password fields as None/placeholder. Must use
+    # get_decrypted_password to read the actual stored hash. (OBS-S25-AH)
+    try:
+        stored_hash = get_decrypted_password("VECRM Employee", employee_doc.name, "password_hash")
+    except (frappe.AuthenticationError, Exception):
+        stored_hash = None
+
+    if not stored_hash:
         _audit_auth(
             "auth.login.failed",
             employee=employee_doc.name, identifier=email, path="password",
@@ -440,13 +449,7 @@ def login_with_password(email: str = "", password: str = "") -> dict[str, Any]:
         )
         frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
 
-    # Verify against stored hash (Frappe encrypts the Password field at rest)
-    try:
-        stored_hash = get_decrypted_password("VECRM Employee", employee_doc.name, "password_hash")
-    except frappe.AuthenticationError:
-        stored_hash = None
-
-    if not stored_hash or not passlibctx.verify(password, stored_hash):
+    if not passlibctx.verify(password, stored_hash):
         _on_failure(employee_doc)
         _audit_auth(
             "auth.login.failed",
