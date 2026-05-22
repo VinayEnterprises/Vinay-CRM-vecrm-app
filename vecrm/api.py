@@ -393,7 +393,7 @@ def _issue_session(employee_doc: Any) -> None:
 
 
 @frappe.whitelist(allow_guest=True, methods=["POST"])
-def login_with_password(email: str, password: str) -> dict[str, Any]:
+def login_with_password(email: str = "", password: str = "") -> dict[str, Any]:
     """Authenticate VECRM Employee via email + password.
 
     Returns:
