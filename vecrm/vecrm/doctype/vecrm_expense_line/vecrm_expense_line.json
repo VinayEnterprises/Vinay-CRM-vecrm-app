@@ -1,0 +1,59 @@
+{
+  "actions": [],
+  "allow_rename": 0,
+  "creation": "2026-05-21 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "istable": 1,
+  "field_order": [
+    "category",
+    "amount",
+    "description",
+    "attachment"
+  ],
+  "fields": [
+    {
+      "fieldname": "category",
+      "fieldtype": "Select",
+      "in_list_view": 1,
+      "label": "Category",
+      "reqd": 1,
+      "options": "Hotel\nFood\nSupplies\nCommunication\nMisc",
+      "description": "Expense category. Locked Select; no free-text."
+    },
+    {
+      "fieldname": "amount",
+      "fieldtype": "Currency",
+      "in_list_view": 1,
+      "label": "Amount (₹)",
+      "reqd": 1,
+      "description": "Absolute amount in INR. Must be > 0 (validated by parent's validate())."
+    },
+    {
+      "fieldname": "description",
+      "fieldtype": "Small Text",
+      "in_list_view": 1,
+      "label": "Description",
+      "reqd": 1,
+      "description": "What the expense was for. Free-form text, reqd for audit trail."
+    },
+    {
+      "fieldname": "attachment",
+      "fieldtype": "Attach",
+      "label": "Receipt / Attachment",
+      "description": "Receipt or supporting document. Optional but strongly recommended."
+    }
+  ],
+  "idx": 0,
+  "links": [],
+  "modified": "2026-05-21 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "VECRM",
+  "name": "VECRM Expense Line",
+  "owner": "Administrator",
+  "permissions": [],
+  "sort_field": "creation",
+  "sort_order": "DESC",
+  "states": []
+}
