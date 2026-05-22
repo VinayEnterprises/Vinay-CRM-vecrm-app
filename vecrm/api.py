@@ -226,3 +226,62 @@ def submit_travel_voucher_draft(voucher_name: str) -> dict:
 		"total_amount": doc.total_amount,
 		"submitted_at": str(frappe.utils.now_datetime()),
 	}
+
+
+@frappe.whitelist()
+def create_lead(
+	company_name: str,
+	territory: str,
+	contact_date: str,
+	priority: int,
+) -> dict:
+	"""Create a VECRM Lead from the portal.
+
+	PD-S24-PORTAL-LEAD-CREATE. lead_owner and status are set server-side
+	(session user / "Open") — the client cannot supply or spoof either.
+	priority is validated to the documented 1-5 range here, at the API
+	boundary, in addition to the controller's own validate() check.
+
+	Lead is not submittable; the row lands usable (docstatus 0, status
+	"Open") and is immediately convertible to an Inquiry.
+
+	Args:
+	  company_name: Company / lead name (reqd).
+	  territory: Free-text territory, e.g. "Ahmedabad" (reqd).
+	  contact_date: Date of contact (YYYY-MM-DD). Drives FY allocation.
+	  priority: Integer 1-5 (1=Cold .. 5=Very Hot).
+
+	Returns:
+	  Dict with name, company_name, territory, contact_date, priority,
+	  status, lead_owner.
+
+	Raises:
+	  frappe.ValidationError: priority outside 1-5, or any controller
+	    validation failure.
+	"""
+	try:
+		priority_int = int(priority)
+	except (TypeError, ValueError):
+		frappe.throw("Priority must be an integer 1-5.", frappe.ValidationError)
+
+	if not (1 <= priority_int <= 5):
+		frappe.throw("Priority must be 1-5.", frappe.ValidationError)
+
+	doc = frappe.new_doc("VECRM Lead")
+	doc.company_name = company_name
+	doc.territory = territory
+	doc.contact_date = contact_date
+	doc.priority = priority_int
+	doc.status = "Open"
+	doc.lead_owner = frappe.session.user
+	doc.insert()
+
+	return {
+		"name": doc.name,
+		"company_name": doc.company_name,
+		"territory": doc.territory,
+		"contact_date": str(doc.contact_date),
+		"priority": doc.priority,
+		"status": doc.status,
+		"lead_owner": doc.lead_owner,
+	}
