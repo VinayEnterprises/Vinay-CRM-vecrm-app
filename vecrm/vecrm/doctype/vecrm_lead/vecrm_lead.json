@@ -13,6 +13,7 @@
   "priority",
   "status",
   "lead_owner",
+  "creating_employee",
   "converted_inquiry",
   "reassignment_history"
  ],
@@ -61,6 +62,15 @@
    "label": "Lead Owner",
    "options": "User",
    "reqd": 1
+  },
+  {
+   "fieldname": "creating_employee",
+   "fieldtype": "Link",
+   "label": "Creating Employee",
+   "options": "VECRM Employee",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "VECRM Employee who created this lead via the portal. Set automatically by vecrm.api.create_lead from session.data.vecrm_employee_phone. Schema substrate for PD-S28 per-rep scoping; do not edit directly."
   },
   {
    "fieldname": "converted_inquiry",

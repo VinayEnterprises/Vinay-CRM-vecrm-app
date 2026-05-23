@@ -274,6 +274,12 @@ def create_lead(
 	doc.priority = priority_int
 	doc.status = "Open"
 	doc.lead_owner = frappe.session.user
+	# Per-rep attribution for PD-S28 scoping (S27 PR #20). Reads the
+	# session-data key set by _issue_session at portal login. None for
+	# Desk-side admin creation — the column stays NULL there, which is
+	# acceptable per the schema (no NOT NULL constraint) since Desk-side
+	# leads are admin-created and not subject to per-rep scoping.
+	doc.creating_employee = frappe.session.data.get("vecrm_employee_phone")
 	doc.insert()
 
 	return {
