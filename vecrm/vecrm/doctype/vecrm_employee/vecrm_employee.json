@@ -18,7 +18,11 @@
   "password_hash",
   "failed_password_attempts",
   "locked_until",
-  "last_login_at"
+  "last_login_at",
+  "pin_hash",
+  "failed_pin_attempts",
+  "pin_locked_until",
+  "last_pin_login_at"
  ],
  "fields": [
   {
@@ -104,6 +108,35 @@
    "fieldname": "last_login_at",
    "fieldtype": "Datetime",
    "label": "Last Login At",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "pin_hash",
+   "fieldtype": "Data",
+   "label": "PIN Hash",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "failed_pin_attempts",
+   "fieldtype": "Int",
+   "label": "Failed PIN Attempts",
+   "read_only": 1,
+   "default": 0,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "pin_locked_until",
+   "fieldtype": "Datetime",
+   "label": "PIN Locked Until",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "last_pin_login_at",
+   "fieldtype": "Datetime",
+   "label": "Last PIN Login At",
    "read_only": 1,
    "no_copy": 1
   }

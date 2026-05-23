@@ -380,7 +380,69 @@ def _on_success(employee_doc: Any) -> None:
     frappe.db.commit()
 
 
-def _issue_session(employee_doc: Any) -> None:
+def _normalize_phone(phone: str) -> str:
+    """Canonicalize portal-submitted phone to match VECRM Employee.name format.
+
+    Target: '+91-' followed by exactly 10 digits.
+    Accepts variants: with/without country code, with/without separators
+    (spaces, dashes, parens), with/without leading 0.
+
+    Returns the input unchanged if normalization fails — the caller is
+    expected to emit invalid_credentials on lookup failure (R5).
+    """
+    if not phone:
+        return ""
+    digits = "".join(c for c in phone if c.isdigit())
+    if len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    if len(digits) != 10:
+        return phone
+    return f"+91-{digits}"
+
+
+def _is_pin_locked(employee_doc: Any) -> bool:
+    """True if PIN auth is currently within a lockout window.
+
+    Mirrors _is_locked exactly but reads pin_locked_until — independent
+    lockout state per R6.
+    """
+    if not employee_doc.pin_locked_until:
+        return False
+    return get_datetime(employee_doc.pin_locked_until) > now_datetime()
+
+
+def _on_pin_failure(employee_doc: Any) -> None:
+    """Increment failed PIN attempts; set PIN-specific lockout if threshold reached.
+
+    Mirrors _on_failure but operates on pin_ prefixed fields. Independent
+    state — password lockout is NOT affected (R6).
+    """
+    current = (employee_doc.failed_pin_attempts or 0) + 1
+    employee_doc.failed_pin_attempts = current
+    if current >= _MAX_FAILED_ATTEMPTS:
+        employee_doc.pin_locked_until = now_datetime() + timedelta(minutes=_LOCKOUT_MINUTES)
+        _audit_auth(
+            "auth.account_locked",
+            employee=employee_doc.name,
+            path="pin",
+            extra={"pin_locked_until": str(employee_doc.pin_locked_until)},
+        )
+    employee_doc.db_update()
+    frappe.db.commit()
+
+
+def _on_pin_success(employee_doc: Any) -> None:
+    """Reset failed PIN attempts + record last PIN login."""
+    employee_doc.failed_pin_attempts = 0
+    employee_doc.pin_locked_until = None
+    employee_doc.last_pin_login_at = now_datetime()
+    employee_doc.db_update()
+    frappe.db.commit()
+
+
+def _issue_session(employee_doc: Any, login_path: str) -> None:
     """Issue a Frappe session as the shared VECRM Portal User; stash employee
     identity in session data per D8.
 
@@ -399,7 +461,7 @@ def _issue_session(employee_doc: Any) -> None:
     frappe.session.data.vecrm_employee_phone = employee_doc.vecrm_phone
     frappe.session.data.vecrm_employee_name = employee_doc.employee_name
     frappe.session.data.vecrm_employee_role = employee_doc.role
-    frappe.session.data.vecrm_login_path = "password"
+    frappe.session.data.vecrm_login_path = login_path
     frappe.local.session_obj.update(force=True)
 
 
@@ -461,8 +523,80 @@ def login_with_password(email: str = "", password: str = "") -> dict[str, Any]:
         frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
 
     _on_success(employee_doc)
-    _issue_session(employee_doc)
+    _issue_session(employee_doc, "password")
     _audit_auth("auth.login.success", employee=employee_doc.name, path="password")
+
+    return {
+        "success": True,
+        "employee": employee_doc.name,
+        "name": employee_doc.employee_name,
+        "role": employee_doc.role,
+    }
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def login_with_pin(phone: str = "", pin: str = "") -> dict[str, Any]:
+    """Authenticate VECRM Employee via phone + PIN.
+
+    Companion to login_with_password (S25). Independent lockout state per R6.
+
+    Returns:
+        {"success": True, "employee": "<phone>", "name": "<full_name>",
+         "role": "<role>"}
+
+    Raises:
+        frappe.AuthenticationError with generic "Invalid credentials" for
+        all failure modes (no enumeration: bad PIN, unknown phone, locked
+        account, inactive employee — all return the same error).
+    """
+    if not phone or not pin:
+        _audit_auth("auth.login.failed", identifier=phone, path="pin", reason="missing_input")
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    normalized = _normalize_phone(phone)
+    employee_name = frappe.db.get_value("VECRM Employee", normalized, "name")
+    if not employee_name:
+        _audit_auth("auth.login.failed", identifier=phone, path="pin", reason="unknown_phone")
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    employee_doc = frappe.get_doc("VECRM Employee", employee_name)
+
+    if employee_doc.vecrm_account_status != "Active":
+        _audit_auth(
+            "auth.login.failed",
+            employee=employee_doc.name, identifier=phone, path="pin",
+            reason="account_inactive",
+        )
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    if _is_pin_locked(employee_doc):
+        _audit_auth(
+            "auth.login.failed",
+            employee=employee_doc.name, identifier=phone, path="pin",
+            reason="account_locked",
+        )
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    if not employee_doc.pin_hash:
+        _audit_auth(
+            "auth.login.failed",
+            employee=employee_doc.name, identifier=phone, path="pin",
+            reason="no_pin_configured",
+        )
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    if not passlibctx.verify(pin, employee_doc.pin_hash):
+        _on_pin_failure(employee_doc)
+        _audit_auth(
+            "auth.login.failed",
+            employee=employee_doc.name, identifier=phone, path="pin",
+            reason="invalid_credentials",
+        )
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    _on_pin_success(employee_doc)
+    _issue_session(employee_doc, "pin")
+    _audit_auth("auth.login.success", employee=employee_doc.name, path="pin")
 
     return {
         "success": True,
