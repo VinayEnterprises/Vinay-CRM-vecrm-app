@@ -1,435 +1,406 @@
 # VECRM-PENDENCY-REGISTER
 
-**Last updated:** 2026-05-22 (post-S23 close)
-**Maintained by:** Session-close handovers
-**Purpose:** Single source of truth for ALL deferred work — tactical AND strategic. Regenerated comprehensively at S23 close per operator directive (do not repeat prior-session pattern of dropping strategic items).
+**Last regenerated:** S25 close, 23 May 2026
+**Maintained by:** Session-close handovers (per VECRM-L2 — decisions written, not remembered)
+**Scope:** Active backlog, strategic priorities, infrastructure debt, known schema drift, out-of-scope clarifications.
+
+This register is **regenerated comprehensively at every session close**. Surgical edits between session closes are acceptable for adding/closing individual PDs but the register is fully reviewed and regenerated at session boundaries.
 
 ---
 
-## How this document is organized
+## PART A — Tactical pendencies (active backlog, S26)
 
-- **PART A — Active pendencies (PD-S24-*)** — explicit deferred items with priority + estimate
-- **PART B — Strategic backlog (Session-0 pillars status)** — high-level features still pending
-- **PART C — Infrastructure debt** — CI, tests, deploy patterns, test data in production
-- **PART D — Architectural locks active** — full list governing development
-- **PART E — Component-by-component build status** — every doctype + portal screen with ground-truth status
-- **PART F — Production data state** — counters, row counts, version anchors
-- **PART G — Schema drift + cleanup items** — known vestigial / inconsistent items
-- **PART H — Out-of-scope items** — clarifications of what VECRM does NOT own
+### Highest priority — Auth backlog (the natural S26 frontier)
 
----
+These items are the direct continuation of S25's PD-S25-VECRM-AUTH v2.
 
-## PART A — Active pendencies (PD-S24-*)
+#### PD-S26-AUTH-PHONE-PIN — Phone+PIN backend (companion to email+password)
 
-### PD-S24-PORTAL-VOUCHER-SCREENS — HIGH
+**Estimated:** 4-6 hours
+**Scope:**
+- Add `pin_hash` (Data fieldtype, NOT Password — per VECRM-LOCK-PASSWORD-FIELDTYPE-AVOIDANCE), `failed_pin_attempts`, `pin_locked_until`, `last_pin_login_at` fields to VECRM Employee
+- New whitelisted endpoint `vecrm.api.login_with_pin(phone: str, pin: str)`
+- Same lockout (5/15min), audit emission, generic 401 mechanics as email+password
+- Update `_issue_session` to set `login_path: "pin"` instead of `"password"`
+- Migration patch + paired rollback
 
-**Scope:** Build Travel Voucher + Expense Voucher submission UI on vecrm-portal. Field sales reps currently cannot submit vouchers from their phones — only Frappe Desk works, which is unusable for field-rep UX.
+**Why this is priority 1 for S26:** Field reps will use phones; PIN entry is faster than email+password on mobile.
 
-**Required components:**
-- Travel Voucher create form with visit-line dynamic rows, KM calculator, business-date picker, total auto-compute
-- Expense Voucher create form with expense-line dynamic rows, category Select, amount entry, receipt upload (Attach)
-- Voucher list view (filter by status: Draft / Submitted / Approved / Cancelled)
-- Voucher detail view (read-only post-submit; cancel action for Admin role only)
-- Optimistic UI for offline scenarios (PWA storage)
+#### PD-S26-AUTH-RESET — Email-based password reset flow
 
-**Dependencies:**
-- Voucher Audit Log (✅ shipped S23 PR #11)
-- Travel Voucher backend (✅ shipped S22 PR #9)
-- Expense Voucher backend (✅ shipped S23 PR #12)
-- approve_*_voucher APIs (✅ all shipped)
-- SSR auth hydration (✅ shipped S23 PR #4)
+**Estimated:** 6-10 hours
+**Scope:**
+- New doctype `VECRM Auth Reset Token`: token (Data, unique), employee (Link), expires_at (Datetime), used_at (Datetime, nullable)
+- New whitelisted endpoint `vecrm.api.request_password_reset(email: str)` — issues token, sends email via Microsoft Graph
+- New whitelisted endpoint `vecrm.api.complete_password_reset(token: str, new_password: str)` — validates token + TTL + not-used, sets password
+- Rate-limit: 3 reset requests per hour per email (probably via Frappe `frappe.rate_limiter` if signature confirms in S26 probe; else custom)
+- Portal UI: `/reset` page with email-entry form; `/reset/[token]` page with new-password form
 
-**Estimated effort:** 15-25h, multi-session. Decompose into:
-- Session A: Travel Voucher create form + list (8-10h)
-- Session B: Expense Voucher create form + list (5-7h)
-- Session C: Detail view + cancel action + polish (4-6h)
-- Possibly Session D: PWA install prompt + offline draft storage (deferred until TRAI DLT clears)
+**Dependencies:** PD-S26-AUTH-MS-GRAPH must land first.
 
-**Status:** Not started. **This is the single biggest gap between "backend works" and "production rollout."**
+#### PD-S26-AUTH-MS-GRAPH — Microsoft Graph wiring for outbound email
 
-### PD-S24-VOUCHER-CANCEL-AUDIT — LOW
+**Estimated:** 3-5 hours
+**Scope:**
+- Reuse Microsoft Graph credentials from VEMIO's existing config if available (verify in S26 A1 recon)
+- New `vecrm/vecrm/utils/email.py` with `send_email(to: str, subject: str, body: str)` helper
+- Token refresh logic
+- Configuration via site config (NOT committed to repo)
 
-**Scope:** Add `on_cancel(self)` hook to Travel Voucher and Expense Voucher controllers emitting `voucher.travel.cancelled` and `voucher.expense.cancelled` events to VECRM Voucher Audit Log.
+**Optional Phase 2 (after reset works):** Use this same wiring for weekly meeting reports (B3 pillar from Session-0 vision).
 
-**Discovery:** S23 PR #12 Phase B. VE/EV/00002/26-27 was cancelled via Desk after approval; cancellation produced no audit row. Same gap exists for Travel Voucher.
+#### PD-S26-AUTH-ADMIN-SET — `admin_set_credential` portal endpoint
 
-**Implementation:** ~10 lines per controller, ~30 min total work + PR cycle.
+**Estimated:** 3-4 hours
+**Scope:**
+- New whitelisted endpoint `vecrm.api.admin_set_credential(employee: str, password: str = None, pin: str = None)` — requires caller to have VECRM Admin role
+- Today: equivalent functionality only via bench console (Ajay used this for Phase 5.A in S25)
+- Portal UI: VECRM Admin gets a "Set credentials" button on Employee detail page
 
-```python
-def on_cancel(self) -> None:
-    self._audit("voucher.expense.cancelled", {
-        "actor_employee": frappe.session.user,  # or resolve via lookup
-        "from_state": "submitted" if self.docstatus == 2 else "approved",
-        "to_state": "cancelled",
-        # ... other relevant snapshot fields
-    })
-```
+**Why deferred from S25:** S25 scope explicitly locked at email+password only; admin-set was console-only as a known limitation.
 
-**Priority:** LOW because production rollout can proceed without it (cancellations are rare). Bank for clean-audit-trail compliance before any real auditor review.
+#### PD-S26-AUTH-CREDS-ROTATE — Rotate `encryption_key` and `vecrm_internal_secret`
 
-**Effort:** 30 min + smoke + PR + merge.
+**Estimated:** 2-3 hours
+**Scope per OBS-S25-D:** rotate the Frappe encryption_key and the vecrm_internal_secret (used for any future internal-API signing). Coordinated procedure: capture old keys → generate new keys → re-encrypt any encrypted fields (Frappe handles this on `bench set-config` for encryption_key) → roll out → verify nothing broke → invalidate old keys.
 
-### PD-S24-PHANTOM-SALES-VISIT-TABLE — LOW
+**Note:** Now that `password_hash` is Data fieldtype (not Password), this rotation is *less* risky than it would have been mid-S25; passlib hashes don't depend on `encryption_key`.
 
-**Scope:** Drop vestigial `tabVECRM Sales Visit` table.
+### Highest priority — Portal continuation backlog
 
-**Discovery:** S22 schema audit. The table exists from a deferred design decision but has 0 rows and no live code paths reference it.
+#### PD-S26-PORTAL-SUB-B-EXPENSE — Expense Voucher portal
 
-**Implementation:** `DROP TABLE` after confirming no Frappe doctype references. Single migration script.
+**Estimated:** 10-16 hours
+**Scope:** Portal-screens work on top of the existing Expense Voucher doctype family (already shipped in S23 PR #12). A1 recon banked from S24 dispatch D. Includes:
+- `/expense-vouchers/new` (Compose + Review)
+- `/expense-vouchers` (list)
+- `/expense-vouchers/[name]` (detail)
+- 3-4 new BFF routes mirroring Travel Voucher shape
+- New backend endpoints: `create_expense_voucher_draft`, `submit_expense_voucher_draft`
+- Attachment upload (MVP scope, per operator decision in S24)
 
-**Priority:** LOW. Doesn't block anything; just cleanup hygiene.
+**Why now:** Sub-A (Travel Voucher portal) works for all 3 roles post-S25. Sub-B is the symmetric next.
 
-**Effort:** 5 min execution + 10 min recon-before-drop verification.
+#### PD-S26-PORTAL-SUB-B2-APPROVER — Approver queue UI
 
----
+**Estimated:** 6-10 hours
+**Scope:** Backend `approve_travel_voucher` and `approve_expense_voucher` APIs already exist. Need:
+- `/approver/queue` page — list submitted vouchers awaiting approval, filtered by approver_set
+- Approve/Reject action UI on each row
+- Detail view with action slots (placeholders exist from S24 PR #5)
 
-## PART B — Strategic backlog (Session-0 pillars status)
+**Dependencies:** Sub-B should land first so the queue can include EVs.
 
-Tracking the Session-0 vision against current ground truth. Per OBS-S22-E, strategic pillars have historically been silently dropped from the active register; this section corrects that.
+### Medium priority — quality-of-life
 
-### B1 — Voucher portal (field-rep submission UI)
+#### PD-S26-DEAD-AUTH-ME-ROUTE — Delete `app/api/auth/me/` (vecrm-portal)
 
-**Session-0 intent:** Field sales reps submit travel + expense vouchers from their phones. Approver (Sales Head / HR / Admin) reviews on Desk or portal.
+**Estimated:** 10 min
+**Scope:** Dead route; not touched in S25 Phase 3 because Option A scope locked the touch surface to 4 routes. Just delete the file + verify nothing imports it.
 
-**Current state:** Backend fully functional. **Frontend not built.** This is PD-S24-PORTAL-VOUCHER-SCREENS (PART A).
+#### PD-S26-PORTAL-VECRMSESSION-TYPE — Expand `getFrappeUser` return type
 
-**Effort to feature-complete:** 15-25h multi-session.
+**Estimated:** 1-2 hours
+**Scope:** `getFrappeUser()` currently returns `string` (the employee_name). Expand to a `VecrmSession` interface with employee, name, vecrm_email, role, base_city, login_path. Update all call sites.
 
-### B2 — Approver portal (queue + workflow UI)
+#### PD-S26-VOUCHER-DRAFT-CLEANUP — GC orphan voucher drafts
 
-**Session-0 intent:** Approver-role users see incoming vouchers in a queue, click to approve/reject with notes.
+**Estimated:** 30 min
+**Scope:** Scheduled task in `vecrm/hooks.py`: nightly job that deletes Travel/Expense Voucher drafts (`docstatus=0`) older than 7 days.
 
-**Current state:** Backend APIs functional (`approve_travel_voucher`, `approve_expense_voucher`). **No queue UI.** Approvers currently use Desk's default list view.
+#### PD-S26-VOUCHER-DRAFT-RESUME — Resume-from-draft flow
 
-**Effort to feature-complete:** 10-15h. Lower priority than B1 (field reps must submit before approvers can approve).
+**Estimated:** 2-3 hours
+**Scope:** Currently, "Back to edit" on the new-voucher form creates a fresh draft each time. Implement proper resume: if a draft for the current user exists, load it instead of creating new.
 
-### B3 — Weekly meeting report (Layer 4)
+### Low priority — schema cleanup (carried)
 
-**Session-0 intent:** Automated weekly digest of sales activity (leads / inquiries / vouchers) emailed/Slack'd to leadership.
+#### PD-S26-VOUCHER-CANCEL-AUDIT (CARRIED FROM S24)
 
-**Current state:** Not started. Layer 4 = 0%.
+**Estimated:** 30 min
+**Scope:** `on_cancel(self)` hook on both VECRM Travel Voucher and VECRM Expense Voucher controllers, emitting to VECRM Voucher Audit Log. Cancellation is currently un-audited.
 
-**Effort:** 8-12h. Lower priority — depends on having real sales activity data (gated by B1 + B2 production rollout).
+#### PD-S26-PHANTOM-SALES-VISIT-TABLE (CARRIED FROM S23)
 
-### B4 — PWA validation (install prompt, service worker, offline storage)
+**Estimated:** 15 min
+**Scope:** `DROP TABLE tabVECRM Sales Visit` after verifying 0 rows. Doctype was retired in S8 but table cleanup never ran.
 
-**Session-0 intent:** Portal installable as PWA on Android/iOS; offline draft of voucher when no connectivity.
+### Low priority — auth code cleanup
 
-**Current state:** Manifest exists; install prompt not surfaced; no service worker; no offline storage.
+#### PD-S26-AUTH-FORMATTING-CONSISTENCY
 
-**Blocked by:** TRAI DLT registration (deferred 2-4 weeks per S22). Push notifications require DLT compliance; without push, PWA install prompt has limited value.
+**Estimated:** 30 min
+**Scope:** Run `black` and `ruff` across the vecrm app. The S25 work introduced inconsistent quote styles and line-length patterns.
 
-**Effort:** 8-12h once DLT clears.
+#### PD-S26-AUTH-VECRM-INIT-INVESTIGATION
 
-### B5 — Role differentiation (Frappe Roles + permission matrices)
+**Estimated:** 1 hour (could be 5 min, could be 4 hours)
+**Scope:** Investigate `vecrm/__init__.py` auto-import behavior surfaced as Phase 0.5 byproduct in S25 (OBS-S25-V). Possibly related to why runtime-added `@frappe.whitelist()` endpoints don't register.
 
-**Session-0 intent:** Roles: VECRM Submitter, VECRM Approver, VECRM Admin, Sales Head, HR. Per-role visibility on voucher fields, approver-only fields, admin-only actions.
+#### PD-S26-AUTH-OBS-Z-AUDIT
 
-**Current state:** Roles defined as Frappe Roles. Permission matrices set on Travel Voucher + Expense Voucher + Voucher Audit Log doctypes per S22 + S23. **Functional.**
+**Estimated:** 30 min
+**Scope:** Audit any remaining `get_decrypted_password` call sites in vecrm to confirm they're appropriate now that `password_hash` is Data fieldtype (per OBS-S25-Z).
 
-**Open items:**
-- Lead and Inquiry doctypes don't have explicit role permissions yet (they inherit System Manager defaults). Add per-role permissions when Layer-3 sales pipeline gets prioritized.
+#### PD-S26-DISPATCHER-DISCIPLINE-MECHANICAL-RULES
 
-### B6 — Lead → Inquiry pipeline
-
-**Session-0 intent (corrected S23):** VECRM owns Lead → Inquiry. Beyond Inquiry (Quote, Order, invoicing) is ERPNext's domain.
-
-**Current state:**
-- Lead doctype: ✅ functional S23 (was latent since S18)
-- Inquiry doctype: ✅ functional S23 (was latent since S18)
-- Lead.convert_to_inquiry API: ✅ functional
-- Inquiry Audit Log + Q9 transport (notify vemio.io): ✅ exists; Q9 transport not exhaustively tested but doesn't error
-
-**Open items:**
-- Customer doctype is a minimal skeleton; real schema needs flesh out if VECRM is the source-of-truth for customer master data (decision pending; might be deferred to ERPNext if Tally migration starts)
-- Q9 transport reliability untested (vemio.io endpoint not exhaustively verified)
-- Inquiry → Customer conversion API not built
-
-**Effort to feature-complete:** 5-10h for full schema + conversion logic. Lower priority than B1.
-
-### B7 — Tally → ERPNext migration
-
-**Session-0 intent:** Migrate Vinay Enterprises' accounting from Tally to ERPNext when feasible. VECRM integrates via API once ERPNext is live.
-
-**Current state:** Deferred indefinitely. Decision: API-driven migration (not UI entry); ERPNext UI used as-is for back-office; Ahmedabad ERPNext partner engagement for opening-balance recon and GST account restructuring.
-
-**Effort:** Multi-month, multi-party (operator + partner + finance team). Out of S24 scope.
-
-### B8 — TRAI DLT registration
-
-**Session-0 intent:** Register vinayenterprises.co.in for DLT to enable transactional SMS + push notifications.
-
-**Current state:** Deferred 2-4 weeks per S22.
-
-**Effort:** Operator-driven business process, not engineering work.
+**Estimated:** 1-2 hours
+**Scope:** Codify the OBS-S25 patterns as mechanical prevention rules. Mostly already locked via the 5 new S25 architectural lock files. Track any remaining gaps:
+- Source artifacts via `present_files` (locked: VECRM-LOCK-FILE-DELIVERY-NOT-PASTE)
+- `git log --oneline -5` before flagging a blocker (OBS-S25-AS — not yet locked; consider promoting if recurs in S26)
+- No cross-turn source references (OBS-S25-AM/AN/AO — covered by FILE-DELIVERY lock)
+- No mental-model code (general principle, recurs across sessions)
+- Verified-symbol-only prescriptions (OBS-S25-AT — not yet locked)
+- §risk → §verification-gate (locked: VECRM-LOCK-RISK-NEEDS-VERIFICATION-GATE)
 
 ---
 
-## PART C — Infrastructure debt
+## PART B — Strategic backlog (Session-0 pillars)
 
-### C1 — Concurrency §6 hard-gates as permanent tests
-
-**Issue:** S22 / S23 §6 concurrency hard-gates are bespoke per doctype. Diagnostic scripts ferried to container, run, removed. Pattern works but not durable — no regression protection.
-
-**Resolution path:** Promote §6 hard-gates to a permanent `tests/` directory under `vecrm/`. Run via `bench --site crm.vinayenterprises.co.in run-tests --app vecrm` in CI when CI exists (see C2).
-
-**Deferred since:** S22.
-
-**Effort:** 4-6h authoring + integration. Lower priority — manual §6 still works for new doctype additions.
-
-### C2 — No CI on either repo
-
-**Issue:** No GitHub Actions / Dependabot / lint / type-check / test runs on PRs. All verification today is local pre-commit (`npm run build` for portal, `python -m py_compile` + AST checks for backend) + manual phase-A/B/C smoke + §6 hard-gates.
-
-**Risk:** Layer-1 CI (security advisories, lint, build verification) would catch what slips today. Pattern to copy: VEMIO S56-S58 (Dependabot + lint/build CI + Semgrep report-only).
-
-**Effort:** 4-6h for Layer 1 CI. Deferred since S22.
-
-### C3 — Test data persisted in production
-
-**Issue:** Per audit append-only design, all S22 + S23 §6 test vouchers, leads, inquiries persist in production tables. 21 vouchers, 11 leads, 11 inquiries, 27 audit rows from S23 alone. Mixed with real data when real rollout begins.
-
-**Mitigation considered:** Tag test data with a `is_test_data` flag, exclude from reports. Or use a `_test_` prefix in counter series. Or operator-driven cleanup script (delete by date-range).
-
-**Decision:** **Keep as-is.** Per audit append-only design, removing audit rows is forbidden. The voucher rows themselves could be cancelled (docstatus=2) to exclude from active reports without deletion. Defer this decision until first real customer rollout when test/prod data separation becomes a real concern.
-
-### C4 — Container deploy pattern formalization
-
-**Issue:** Worker deploy pattern is: scp file → `docker compose build --no-cache <service>` → `docker compose up -d <service>`. `docker restart` alone is insufficient (reuses stale image). Empirically verified S22.
-
-**Status:** Pattern is correct and used consistently. Document this in VECRM-DEPENDENCY-MAP.md (new S23 doc) for future maintainers.
-
-### C5 — Diagnostic script cleanup discipline
-
-**Issue:** S23 §6 diagnostic scripts (`_s23_*_concurrency.py`, `_s23_ev_phase_a_smoke.py`) were ferried to container, run, then cleaned up at Phase D. Pattern works but relies on explicit Phase D cleanup steps.
-
-**Resolution path:** Use `/tmp/` for ephemeral scripts where possible. Or add a session-close cleanup checklist.
-
-**Effort:** None today; banked as discipline note.
-
-### C6 — Q9 transport reliability untested
-
-**Issue:** Inquiry's `enqueue_conversion_email()` calls `_q9_transport(payload)` which HTTP POSTs to `https://app.vemio.io/api/internal/vecrm/inquiry-converted` with HMAC signature. Wrapped in try/except, errors are logged and swallowed.
-
-**Risk:** Transport might be silently broken (vemio.io endpoint changed, secret mismatch, etc.). The conversion proceeds even on transport failure (non-fatal design).
-
-**Resolution path:** S24+ task — test Q9 end-to-end. Verify the inquiry-converted event reaches vemio.io. Check `frappe.log_error` for accumulated Q9 failures.
-
-**Effort:** 30 min recon + endpoint verification.
+| Pillar | S22 status | S24 close | **S25 close** | Notes |
+|---|---|---|---|---|
+| B1 — Voucher portal | ❌ | ✅ Sub-A (Admin-only) | ✅ **Sub-A multi-user** | Sub-B (Expense) + Sub-B2 (Approver) pending |
+| B2 — Approver portal | ❌ | ❌ | ❌ | PD-S26-PORTAL-SUB-B2-APPROVER |
+| B3 — Weekly meeting report | ❌ | ❌ | ❌ | Could leverage PD-S26-AUTH-MS-GRAPH wiring |
+| B4 — PWA validation | ⚠️ Manifest only | ⚠️ | ⚠️ | Blocked on TRAI DLT |
+| B5 — Role differentiation | ⚠️ Backend-only | ⚠️ Blocked on auth | ✅ **UNBLOCKED** | Session→employee→role resolution works |
+| B6 — Lead → Inquiry pipeline | ⚠️ Backend works | ✅ End-to-end | ✅ **Multi-user** | |
+| B7 — Tally → ERPNext | ⚠️ Deferred | ⚠️ Deferred | ⚠️ Deferred | API-driven migration when started |
+| B8 — TRAI DLT | ⚠️ Deferred | ⚠️ Deferred | ⚠️ Deferred | Multi-day operator-side paperwork |
 
 ---
 
-## PART D — Architectural locks active
+## PART C — Infrastructure debt & operational items
 
-Full list. Three new in S23.
+### C1. No automated test suite
 
-### Pre-S23 locks (S1-S22)
+Promoting `§6` concurrency hard-gates to a permanent `tests/` directory is a register item carried since S22. **Still deferred.** Pattern to copy: VEMIO S56-S58 (Layer 1 CI: Dependabot, lint, Semgrep report-only).
 
-| Lock | Purpose |
+### C2. No CI on PRs
+
+Local pre-commit verification only (`npm run build`, `python -m py_compile`, AST checks). PRs merged on dispatcher-review of diffs, not on CI gates. Layer 1 CI would catch what slips today. **Carried.**
+
+### C3. Test data in production database (CARRIED FROM S22)
+
+`tabVECRM Voucher Counter` has rows from S22 §6 hard-gate tests. **Retained per audit policy** (no-delete rule from Session 0). Identifiable by submitter `+91-9999900001`. Acceptable to keep for regression testing.
+
+S25 added more test data: VECRM Auth Audit Log has ~10 rows from Phase 4/5 smoke runs. Same policy — keep.
+
+### C4. Container deploy pattern (carried documentation)
+
+Pattern established across S20+:
+- For Python file changes: `tar` → `scp` → `docker cp` → `docker exec ... tar -xzf` (NOT direct file replacement)
+- For full image changes: `docker compose build --no-cache <service>` → `docker compose up -d <service>`
+- VPS container at `/home/frappe/frappe-bench/apps/vecrm/` is NOT a git checkout (OBS-S25-AX); deployments are tar-based
+- Post-deploy verification via `docker exec ... bench --site ... migrate` + smoke
+
+### C5. Credential rotation procedure (NEW S25, partially scoped)
+
+Per OBS-S25-D and PD-S26-AUTH-CREDS-ROTATE: site has `encryption_key` and `vecrm_internal_secret` that should be rotated. The procedure is documented at high level but not yet executed. S26 will execute and document the procedure.
+
+### C6. Shared-VPS discipline (carried)
+
+VECRM and VEMIO share Contabo Mumbai VPS at `217.216.58.117`. Per VECRM-LOCK-VPS-DESTRUCTIVE-OPS: VECRM dispatcher NEVER touches VEMIO containers, files, or DB. Honored throughout S25.
+
+---
+
+## PART D — Architectural locks status
+
+### Active locks (full list at S25 close)
+
+**Numeric (pre-S23):**
+
+- **VECRM-L8** — Allocator dual-surface sha verification. Banked sha: `91556a7d07359d91f5d0fd61f27b849b5dc0d098012cc45357025575bcc572a9` (unchanged through S25)
+- **VECRM-L10** — Strict gap-free allocator invariant
+- **VECRM-L13** — Squash-merge + branch delete on PR merge (honored throughout S25)
+- **VECRM-S22-A** — Counter allocator value-read invariant (read counter value INSIDE `SELECT ... FOR UPDATE`)
+
+**Named (S23):**
+
+- **VECRM-LOCK-AUTONAME-HYGIENE** — `autoname=''` is the only safe value (OBS-S23-B)
+- **VECRM-LOCK-FRAPPE-LIFECYCLE-ORDER** — name guards in `validate()` not `before_insert()` (OBS-S23-C)
+- **VECRM-LOCK-VPS-DESTRUCTIVE-OPS** — destructive VPS ops require dispatcher authorization
+
+**Named (S24):**
+
+- **VECRM-LOCK-NEXTJS-NAME-PARAM-DECODE** — `app/[name]/...` routes decode at entry (OBS-S24-L/N/P)
+
+**Named (S25, NEW):**
+
+- **VECRM-LOCK-FRAPPE-SESSION-PERSISTENCE** — Custom session-data writes via `frappe.session.data.*` + `frappe.local.session_obj.update(force=True)`. Never raw `frappe.cache.hset` on session slots. (OBS-S25-AL)
+- **VECRM-LOCK-PASSWORD-FIELDTYPE-AVOIDANCE** — Fields storing one-way hashes use Data fieldtype, not Password. (OBS-S25-AK)
+- **VECRM-LOCK-PORTAL-USER-ROLES** — Shared portal user is Website User + Submitter+Approver only; role JSON has `desk_access:0` on portal roles. (OBS-S25-H/Y)
+- **VECRM-LOCK-RISK-NEEDS-VERIFICATION-GATE** — §risk sections in dispatches MUST have a concrete verification check at the moment the risk becomes structurally concrete. (OBS-S25-AV)
+- **VECRM-LOCK-FILE-DELIVERY-NOT-PASTE** — Source artifacts > ~30 lines via `present_files`, not inline chat code blocks. (OBS-S25-AP)
+
+**Cross-cutting (PERMANENT):**
+
+- **OBS-S71-A** — `git branch --show-current` before AND after every commit-bearing or merge-bearing bash invocation
+
+### S25 OBS observations promoted to locks
+
+5 of 47 OBS observations promoted to formal locks. The remaining 42 are filed in the close handover §11 but did not graduate this session.
+
+### Hard constraints (carry forward)
+
+- Schema migrations require atomic transaction + paired rollback file (VEMIO L22, observed in VECRM via S25 patches)
+- File-scope `scp` only, no `scp -r` for file edits (VEMIO L24)
+- Always run schema introspection (`bench --site ... console` + `frappe.get_meta(...)` or `\d <table>`) before any SQL probe
+
+---
+
+## PART E — Component-by-component build status (S25 close ground truth)
+
+Per OBS-S22-B: this is the ACTUAL state, not what handover prose claims. Cross-check before relying.
+
+### Layer 1 — Foundation doctypes
+
+| Component | Status | Notes |
+|---|---|---|
+| VECRM Employee | ✅ | autoname=field:vecrm_phone. **S25: 4 credential fields added (password_hash Data, failed_password_attempts Int, locked_until Datetime, last_login_at Datetime). unique:1 on vecrm_email. 3 Active rows.** |
+| VECRM Voucher Counter | ✅ | TV/EV/LEAD/INQ -26-27 all live. TV at 94. |
+| VECRM Voucher Audit Log | ✅ | append-only, shared TV+EV |
+| VECRM Inquiry Audit Log | ✅ | Q9 transport works |
+| **VECRM Auth Audit Log (NEW S25)** | ✅ | append-only auth events |
+| **VECRM Portal User (Frappe User, NEW S25)** | ✅ | `vecrm-portal@vinayenterprises.co.in` Website User + Submitter+Approver |
+| Frappe Roles | ✅ | Submitter/Approver/Admin/Sales Head/HR; S25 fix: Submitter/Approver desk_access:0 |
+
+### Layer 2 — Voucher pillar
+
+| Component | Status | Notes |
+|---|---|---|
+| Travel Voucher | ✅ | **S25: multi-user via auth** |
+| Visit Line (TV child) | ✅ | |
+| Expense Voucher | ✅ | backend only; portal screens pending |
+| Expense Line (EV child) | ✅ | |
+| Rate Card | ✅ | Ahmedabad ₹2.5/km, Mumbai+Pune ₹3.5/km |
+| approve_travel_voucher API | ✅ | |
+| approve_expense_voucher API | ✅ | |
+| Travel Voucher portal | ✅ | **S25: multi-user** |
+| Expense Voucher portal | ❌ | **PD-S26-PORTAL-SUB-B-EXPENSE** |
+| Approver portal | ❌ | **PD-S26-PORTAL-SUB-B2-APPROVER** |
+| Voucher cancel audit | ❌ | **PD-S26-VOUCHER-CANCEL-AUDIT** (carried) |
+
+### Layer 3 — Sales pipeline
+
+| Component | Status | Notes |
+|---|---|---|
+| VECRM Lead | ✅ | **S25: Submitter+Approver perms added (Phase 5.5)** |
+| VECRM Inquiry | ✅ | **S25: Admin+Submitter+Approver perms added (Phase 5.5; Admin row was missing pre-S25 — latent bug)** |
+| convert_lead_to_inquiry API | ✅ | |
+| Lead portal — list / detail / create | ✅ | |
+| Inquiry portal — list / detail | ✅ | |
+| VECRM Customer (skeleton) | ⚠️ | minimal; deferred to ERPNext migration |
+| Quote / Order / Invoice | N/A | ERPNext domain |
+
+### Layer 4 — Reporting & Workflow
+
+| Component | Status | Notes |
+|---|---|---|
+| Weekly meeting report | ❌ | B3 backlog; could leverage MS Graph wiring from PD-S26-AUTH-MS-GRAPH |
+| Sales activity dashboard | ❌ | depends on data accumulation |
+| PWA (manifest only) | ⚠️ | blocked on TRAI DLT |
+| Push notifications | ❌ | blocked on TRAI DLT |
+
+### Authentication & Authorization (NEW LAYER, S25)
+
+| Component | Status | Notes |
+|---|---|---|
+| Email+password login | ✅ | vecrm.api.login_with_password |
+| Phone+PIN login | ❌ | **PD-S26-AUTH-PHONE-PIN** |
+| Logout | ✅ | vecrm.api.vecrm_logout |
+| Session→employee resolver | ✅ | vecrm.api.get_session_employee |
+| Account lockout | ✅ | 5 attempts → 15 min window |
+| Audit log emission | ✅ | success/failed/locked/logout |
+| Password reset flow | ❌ | **PD-S26-AUTH-RESET** |
+| Admin credential set | ❌ | **PD-S26-AUTH-ADMIN-SET** (console-only today) |
+| MS Graph email delivery | ❌ | **PD-S26-AUTH-MS-GRAPH** |
+
+### Cross-cutting infrastructure
+
+| Component | Status | Notes |
+|---|---|---|
+| SSR cookie hydration (S23 shim) | ⚠️ | Admin-only; less critical post-S25 but not replaced |
+| docs/portal-conventions.md | ✅ | S24 PR #14, 11 sections |
+| docs/architectural-locks/ | ✅ | All locks have files; 5 new files added S25 |
+| docs/session-handovers/ | ✅ | S22, S23, S24, S25 all present |
+
+---
+
+## PART F — Production data state
+
+| Anchor | Value |
 |---|---|
-| VECRM-L1 | Single-spec docs authoritative |
-| VECRM-L2 | Strategic decisions written, not remembered |
-| VECRM-L3 | Append-only audit invariant |
-| VECRM-L4 | Defense-in-depth: controller + permission both enforce |
-| VECRM-L5 | Per-session opener cold-checks |
-| VECRM-L6 | Layer boundaries are hard |
-| VECRM-L7 | Image rebuild lifecycle (scp → build --no-cache → up -d) |
-| **VECRM-L8** | **Allocator sha verification — `91556a7d07359d91f5d0fd61f27b849b5dc0d098012cc45357025575bcc572a9`** |
-| VECRM-L10 | Gap-free allocator invariant |
-| VECRM-L13 | Squash-merge + branch delete |
-| VECRM-L17-L26 | (various; see prior handovers) |
-| **VECRM-L27** | **Permanent.** Verify history/inventory at every layer-transition checkpoint |
-| **VECRM-S22-A** | **Counter allocator value-read inside FOR UPDATE** |
-| **OBS-S71-A** | **Permanent.** `git branch --show-current` before AND after commit-bearing bash |
-
-### S23 new locks (3 promotions)
-
-| Lock | Purpose |
-|---|---|
-| **VECRM-LOCK-AUTONAME-HYGIENE** | `autoname=""` is the only safe value for controller-driven naming in Frappe v16+ |
-| **VECRM-LOCK-FRAPPE-LIFECYCLE-ORDER** | Name-related guards belong in validate(), not before_insert() |
-| **VECRM-LOCK-VPS-DESTRUCTIVE-OPS** | Destructive VPS ops require dispatcher authorization; VECRM-scoped only; never touch VEMIO |
-
-Lock files in `docs/architectural-locks/`. Each ~50 lines: rationale, examples, enforcement points, surfacing session.
+| Site | `crm.vinayenterprises.co.in` |
+| VPS | 217.216.58.117 (Contabo Mumbai) |
+| VPS RAM / CPU | 12GB / 6 cores |
+| Frappe version | v16.18.2 |
+| `require_type_annotated_api_methods` | ENABLED site-wide |
+| Container | `vecrm-backend-1` |
+| **`vecrm` main HEAD** | **`5e0df3b`** (post-PR #16) + S25-docs PR will increment |
+| **`vecrm-portal` main HEAD** | **`8165f7a`** (post-PR #8, Vercel auto-deployed) |
+| Allocator sha (L8) | `91556a7d07359d91f5d0fd61f27b849b5dc0d098012cc45357025575bcc572a9` |
+| Counter TV-26-27 | 94 |
+| Counter LEAD-26-27 | 13 |
+| Counter INQ-26-27 | 12 |
+| Counter EV-26-27 | 12 |
+| Production Frappe Users | 2 real (`ajay@`, `vecrm-portal@`), 3 demo seed |
+| **Production VECRM Employees** | **3 Active** (Test Sales Rep +91-9999900001, Test HR Approver +91-9999900002, Ajay Salvi +91-9327547536) |
+| Voucher audit log rows | ~13 (append-only) |
+| **VECRM Auth Audit Log rows** | **~10** (Phase 4/5 smoke; append-only) |
 
 ---
 
-## PART E — Component-by-component build status
+## PART G — Known schema drift (S25 close)
 
-Single comprehensive table. ✅ = production-ready. ⚠️ = exists but partial/needs work. ❌ = not built.
+### G1. Phantom `tabVECRM Sales Visit` table (CARRIED)
 
-### Layer 1 — Foundation (HR / Employee / Audit)
+Doctype retired in S8, table not dropped. PD-S26-PHANTOM-SALES-VISIT-TABLE.
 
-| Component | Status | Notes |
-|---|---|---|
-| VECRM Employee doctype | ✅ | autoname=`field:vecrm_phone`; identity = phone (immutable, set_only_once=1) |
-| VECRM Rate Card doctype | ✅ | per-city rates (Ahmedabad ₹2.50/km, Mumbai+Pune ₹3.50/km) |
-| VECRM User Audit Log doctype | ✅ | append-only; for general user actions (auth, role changes) |
-| Employee Active/Suspended status field | ✅ | OTP-layer auth integration locked elsewhere |
-| Reporting approver Link field | ✅ | self-reference to VECRM Employee |
-| Sales Visit cleanup (PHANTOM-SALES-VISIT-TABLE) | ⚠️ | Vestigial table to drop, PD-S24-PHANTOM-SALES-VISIT-TABLE |
+### G2. Counter test data (CARRIED)
 
-### Layer 2 — Voucher (financial reimbursement)
+S22 §6 hard-gate test rows. Retained per audit policy.
 
-| Component | Status | Notes |
-|---|---|---|
-| VECRM Voucher Counter doctype | ✅ | per-series FY-partitioned; allocator at sha `91556a7d...` (L8) |
-| VECRM Travel Voucher doctype | ✅ | submittable; autoname='' (S23 fix); guard in validate (S23) |
-| VECRM Visit Line child doctype | ✅ | child of Travel Voucher |
-| VECRM Voucher Audit Log doctype | ✅ NEW S23 | append-only; serves TV + EV (and future voucher types) |
-| VECRM Expense Voucher doctype | ✅ NEW S23 | submittable; mirrors TV with per-line items |
-| VECRM Expense Line child doctype | ✅ NEW S23 | category Select: Hotel/Food/Supplies/Communication/Misc |
-| approve_travel_voucher API | ✅ | emits voucher.travel.approved |
-| approve_expense_voucher API | ✅ NEW S23 | emits voucher.expense.approved |
-| Voucher cancellation audit (on_cancel hook) | ⚠️ | PD-S24-VOUCHER-CANCEL-AUDIT; gap surfaced S23 |
-| `from frappe import _` import (TV) | ✅ S23 | fixed in PR #11 |
+### G3. Lead doctype permissions (FIXED S24+S25)
 
-### Layer 3 — Sales pipeline (Lead → Inquiry)
+S24 PR #15 added VECRM Admin row. **S25 PR #16 (Phase 5.5) added VECRM Submitter + VECRM Approver rows.**
 
-| Component | Status | Notes |
-|---|---|---|
-| VECRM Lead doctype | ✅ functional S23 | autoname='' (S23 fix); guard in validate (S23) |
-| VECRM Inquiry doctype | ✅ functional S23 | autoname='' (S23 fix); guard in validate (S23) |
-| VECRM Customer doctype | ⚠️ | minimal skeleton; may be deferred to ERPNext under Tally migration |
-| Lead.convert_to_inquiry API | ✅ | functional; sets Lead.status=Converted, populates converted_inquiry |
-| VECRM Inquiry Audit Log doctype | ✅ | separate from Voucher Audit Log; conversion-event audit |
-| Q9 transport (vemio.io HMAC POST) | ⚠️ | exists; non-fatal try/except wrapper; reliability untested (PART C C6) |
-| Lead reassignment ledger | ✅ | child doctype on Lead; populated by before_save owner-change detection |
+### G4. Customer doctype skeleton (UNCHANGED)
 
-### Layer 4 — Reporting
+Deferred pending Tally→ERPNext.
 
-| Component | Status | Notes |
-|---|---|---|
-| Weekly meeting report (B3) | ❌ | not started |
-| Real-time dashboards | ❌ | partial via portal `/` dashboard widget |
-| Voucher reimbursement export to accounting | ❌ | deferred to Tally → ERPNext migration |
+### G5. Voucher cancellation audit gap (CARRIED)
 
-### vecrm-portal frontend (Next.js 16.2.6, PWA-shaped)
+PD-S26-VOUCHER-CANCEL-AUDIT.
 
-| Component | Status | Notes |
-|---|---|---|
-| `app/layout.tsx` (root, async server, force-dynamic) | ✅ NEW S23 | resolves user via getFrappeUser |
-| `app/components/AppShell.tsx` | ✅ refactored S23 | layout-owned; user as prop; no FullPageLoading |
-| `app/components/TopBar.tsx` | ✅ | mobile-responsive |
-| `app/components/MobileNav.tsx` | ✅ | hamburger drawer; createPortal-mounted (S22) |
-| `app/LoginForm.tsx` | ✅ | unchanged S22→S23 |
-| `app/useAuth.ts` | ✅ thinned S23 | login/logout actions only; router.refresh after each |
-| `lib/auth-ssr.ts` | ✅ NEW S23 | getFrappeUser server-only helper |
-| `lib/frappe.ts` | ✅ | frappeFetch helper, FRAPPE_URL env-based |
-| `app/page.tsx` (`/`, dashboard) | ✅ | recent inquiries widget |
-| `app/leads/page.tsx` | ✅ | list with status filter |
-| `app/leads/[name]/page.tsx` | ✅ | detail + convert action |
-| `app/inquiries/page.tsx` | ✅ | list with status filter |
-| `app/inquiries/[name]/page.tsx` | ✅ | detail (read-only) |
-| `/api/auth/login` route | ✅ | proxies to Frappe login, forwards Set-Cookie |
-| `/api/auth/logout` route | ✅ | clears sid cookie |
-| `/api/auth/me` route | ✅ kept as debugging endpoint S23 | no longer used by AppShell |
-| **Travel Voucher create form** | ❌ | PD-S24-PORTAL-VOUCHER-SCREENS |
-| **Travel Voucher list view** | ❌ | PD-S24-PORTAL-VOUCHER-SCREENS |
-| **Travel Voucher detail view** | ❌ | PD-S24-PORTAL-VOUCHER-SCREENS |
-| **Expense Voucher create form** | ❌ | PD-S24-PORTAL-VOUCHER-SCREENS |
-| **Expense Voucher list view** | ❌ | PD-S24-PORTAL-VOUCHER-SCREENS |
-| **Expense Voucher detail view** | ❌ | PD-S24-PORTAL-VOUCHER-SCREENS |
-| **Approver queue view** | ❌ | B2 strategic |
-| Theme switcher | ✅ | light / dark / system; persists via THEME_INIT_SCRIPT |
-| Manifest (PWA install) | ⚠️ | exists; install prompt not surfaced |
-| Service worker | ❌ | deferred per TRAI DLT |
-| Offline draft storage | ❌ | deferred |
-| Push notifications | ❌ | TRAI DLT 2-4 weeks |
+### G6. VECRM Inquiry doctype permissions (FIXED S25)
 
----
+Pre-S25: only System Manager. Latent bug — Ajay had access only via Frappe Administrator superuser. **S25 PR #16 (Phase 5.5): added VECRM Admin + Submitter + Approver rows.** Latent bug → fixed.
 
-## PART F — Production data state (as of S23 close)
+### G7. VECRM Employee.password_hash __Auth orphans (NEW S25, CLEANED IN-SESSION)
 
-### Counter state (VECRM Voucher Counter doctype)
-
-| counter_key | last_value |
-|---|---|
-| TV-26-27 | 89 |
-| LEAD-26-27 | 11 |
-| INQ-26-27 | 11 |
-| EV-26-27 | 12 |
-
-Counter row for each appears when first allocation triggers `next_number(series, fy)`. Counter rows for FY 25-26 do NOT exist (no allocations attempted).
-
-### Row counts (production tables)
-
-| Table | Rows | All real data? |
-|---|---|---|
-| tabVECRM Employee | ~5-10 (varies) | mix of real employees + test (+91-9999900001 Sales Rep, +91-9999900002 HR) |
-| tabVECRM Rate Card | 1 (default) | Default card with Ahmedabad ₹2.50/km, Mumbai+Pune ₹3.50/km |
-| tabVECRM User Audit Log | unknown count | various from session work |
-| tabVECRM Voucher Counter | 4 | TV-26-27, LEAD-26-27, INQ-26-27, EV-26-27 |
-| tabVECRM Travel Voucher | ~91 | mix; includes 1 cancelled "Test Sales Rep" + 1 proper Desk VE/TV/00079 + 10 §6 VE/TV/00080-89 from S23 |
-| tabVECRM Visit Line | ~100+ | child rows of TV |
-| tabVECRM Voucher Audit Log | 27 | all from S23 |
-| tabVECRM Expense Voucher | 12 | all from S23 |
-| tabVECRM Expense Line | ~24 | child rows of EV |
-| tabVECRM Lead | 11 | all from S23 (first allocations ever) |
-| tabVECRM Inquiry | 11 | all from S23 (first allocations ever) |
-| tabVECRM Inquiry Audit Log | 1 | from S23 B.6.a Lead→Inquiry conversion |
-| tabVECRM Customer | minimal | placeholder; needs schema fleshing |
-
-### Version anchors
-
-| Component | Version | Sha / lock |
-|---|---|---|
-| Frappe Framework | 16.18.2 | VECRM-LOCK-FRAPPE-LIFECYCLE-ORDER (document.py L441/L442) |
-| MariaDB | 11.8.6 | |
-| Next.js (portal) | 16.2.6 | with Turbopack |
-| React (portal) | 19.2.4 | |
-| Allocator (`voucher_counter.py`) | sha `91556a7d07359d91f5d0fd61f27b849b5dc0d098012cc45357025575bcc572a9` | **VECRM-L8 anchor** |
-| Last main commit (vecrm) | `dc52c43` (PR #12) | |
-| Last main commit (vecrm-portal) | `d880eda` (PR #4) | |
-
----
-
-## PART G — Schema drift + cleanup items
-
-### G1 — Phantom Sales Visit table
-
-See PD-S24-PHANTOM-SALES-VISIT-TABLE. 0-row vestigial table from deferred design decision.
-
-### G2 — Test data in production tables
-
-See PART C C3. Not really drift; expected per audit append-only design. Flagged for awareness at first real customer rollout.
-
-### G3 — Counter rows for unused FYs
-
-`tabVECRM Voucher Counter` only contains rows for active FY 26-27. FY 25-26 counter rows do not exist (no allocations attempted). When FY rolls over to 27-28 in April 2027, new counter rows will be created on first allocation. Not drift; expected behavior.
-
-### G4 — CLOSED S23 — Lead/Inquiry counter mystery
-
-(Historical, closing record): Lead and Inquiry counter rows existed since S18 but at last_value=0 with zero rows in their tables. S23 diagnosed: autoname-prompt bug bypassed controllers, all Desk-driven creation silently failed. Fix shipped in PR #11. First real allocations made in S23. **Closed.**
-
-### G5 — Voucher cancellation audit gap
-
-See PD-S24-VOUCHER-CANCEL-AUDIT. on_cancel hook missing from both TV and EV controllers. Cancellation is currently un-audited.
-
-### G6 — Customer doctype skeleton
-
-VECRM Customer is currently a minimal skeleton. Decision pending: flesh out as VECRM source-of-truth, OR defer entirely to ERPNext under Tally migration. Banked decision: defer until Tally migration starts or until first real customer-data need surfaces.
+Phase 4.7 migration dropped any stranded `__Auth` rows pre-fieldtype-change. No active drift.
 
 ---
 
 ## PART H — Out of VECRM scope (clarifications)
 
-These items appeared in prior register iterations but are NOT VECRM's responsibility. Clarified explicitly to prevent OBS-S22-B drift recurring.
+Carried from prior registers to prevent OBS-S22-B drift.
 
 | Item | Owner | Why |
 |---|---|---|
-| Quote doctype | ERPNext | Beyond Inquiry is accounting/sales-quote territory |
-| Order doctype | ERPNext | Beyond Inquiry; sales-order management |
+| Quote doctype | ERPNext | Beyond Inquiry is sales-quote territory |
+| Order doctype | ERPNext | Sales-order management |
 | Invoice / Credit Note | ERPNext | Tax / GST / e-invoicing complexity |
-| Inventory | ERPNext / out of scope entirely | Vinay Enterprises doesn't sell inventory (services-based) |
+| Inventory | ERPNext / N/A | Vinay Enterprises is services-based |
 | Payment reconciliation | ERPNext | Bank statements, GST returns |
-| Tax templates / GST config | ERPNext + Indian Compliance app | Complex; deferred indefinitely |
+| Tax templates / GST config | ERPNext + Indian Compliance app | Complex; deferred |
 | TACACS+ / RADIUS / network device auth | VEMIO | Wrong product entirely |
 | Network monitoring / alerts / SLAs | VEMIO | Wrong product entirely |
-| GLPI ticketing | VEMIO (deprecated) → Frappe HD (VEMIO migration) | Not VECRM |
+| GLPI ticketing | VEMIO (decommissioned S64) | Not VECRM |
 
 ---
 
 **End of VECRM-PENDENCY-REGISTER.md**
 
-This register is regenerated comprehensively at every session close per VECRM-L2 (decisions written, not remembered). Surgical edits between session closes are acceptable for adding/closing individual PDs but the register is fully reviewed and regenerated at session boundaries.
+This register is regenerated comprehensively at every session close per VECRM-L2 (decisions written, not remembered). Surgical edits between session closes are acceptable; the register is fully reviewed and regenerated at session boundaries.
