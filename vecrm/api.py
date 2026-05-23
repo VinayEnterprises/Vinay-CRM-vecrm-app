@@ -608,9 +608,16 @@ def login_with_pin(phone: str = "", pin: str = "") -> dict[str, Any]:
 
 @frappe.whitelist(methods=["POST"])
 def vecrm_logout() -> dict[str, Any]:
-    """Invalidate current VECRM portal session."""
+    """Invalidate current VECRM portal session.
+
+    Emits an `auth.logout` audit row carrying the session's `vecrm_login_path`
+    (set by _issue_session at login) as the `path` discriminator, so logout
+    events pair with the originating login_with_password / login_with_pin
+    event in the audit trail. Closes PD-S26-AUTH-LOGOUT-PATH-RECORD.
+    """
     employee_phone = frappe.session.data.get("vecrm_employee_phone")
-    _audit_auth("auth.logout", employee=employee_phone)
+    login_path = frappe.session.data.get("vecrm_login_path")
+    _audit_auth("auth.logout", employee=employee_phone, path=login_path)
     frappe.local.login_manager.logout()
     return {"success": True}
 
