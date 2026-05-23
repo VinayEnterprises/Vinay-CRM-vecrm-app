@@ -13,7 +13,12 @@
   "role",
   "vecrm_base_city",
   "reporting_approver",
-  "vecrm_account_status"
+  "vecrm_account_status",
+  "auth_section",
+  "password_hash",
+  "failed_password_attempts",
+  "locked_until",
+  "last_login_at"
  ],
  "fields": [
   {
@@ -27,7 +32,7 @@
    "fieldname": "vecrm_phone",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Phone (OTP Identity)",
+   "label": "Phone (Login ID)",
    "reqd": 1,
    "set_only_once": 1,
    "unique": 1
@@ -35,8 +40,9 @@
   {
    "fieldname": "vecrm_email",
    "fieldtype": "Data",
-   "label": "Email (Magic-Link / Notifications)",
-   "options": "Email"
+   "label": "Email (Login ID)",
+   "options": "Email",
+   "unique": 1
   },
   {
    "fieldname": "role",
@@ -66,6 +72,40 @@
    "label": "Account Status",
    "options": "Active\nSuspended",
    "reqd": 1
+  },
+  {
+   "fieldname": "auth_section",
+   "fieldtype": "Section Break",
+   "label": "Authentication"
+  },
+  {
+   "fieldname": "password_hash",
+   "fieldtype": "Data",
+   "label": "Password Hash",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "failed_password_attempts",
+   "fieldtype": "Int",
+   "label": "Failed Password Attempts",
+   "read_only": 1,
+   "default": 0,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "locked_until",
+   "fieldtype": "Datetime",
+   "label": "Locked Until",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "last_login_at",
+   "fieldtype": "Datetime",
+   "label": "Last Login At",
+   "read_only": 1,
+   "no_copy": 1
   }
  ],
  "idx": 0,

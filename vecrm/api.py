@@ -285,3 +285,219 @@ def create_lead(
 		"status": doc.status,
 		"lead_owner": doc.lead_owner,
 	}
+
+
+# ============================================================
+# S25 v2 PD-S25-VECRM-AUTH — email-login portal authentication
+#
+# SECURITY NOTES (OBS-S25-H, -I, -J corrections + Phase 0.5 probes):
+# - Shared VECRM Portal User has ONLY VECRM Submitter + VECRM Approver
+#   roles. No VECRM Admin. This is the architectural floor.
+# - App-side privileged-operation gating MUST read
+#   frappe.session.data.vecrm_employee_role, NEVER frappe.get_roles().
+#   The latter returns shared-user roles, same for every session.
+# - admin_set_credential is INTENTIONALLY NOT a whitelisted endpoint
+#   in S25. Credential setting is bench-console-only until S26 ships
+#   a properly-gated session-data path.
+# - Phone+PIN login deferred to S26.
+# - @frappe.rate_limiter NOT used: Probe 4 confirmed hasattr(frappe,
+#   'rate_limiter') is False in v16.18.2. Lockout (5 attempts / 15 min
+#   per employee) is the sole defense.
+# ============================================================
+
+from datetime import timedelta
+from typing import Any
+
+from frappe import _
+from frappe.utils import now_datetime, get_datetime
+from frappe.utils.password import passlibctx
+
+
+# Constants
+_VECRM_PORTAL_USER: str = "vecrm-portal@vinayenterprises.co.in"
+_MAX_FAILED_ATTEMPTS: int = 5
+_LOCKOUT_MINUTES: int = 15
+
+
+def _audit_auth(
+    event: str,
+    *,
+    employee: str | None = None,
+    identifier: str | None = None,
+    path: str | None = None,
+    reason: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Append a row to VECRM Auth Audit Log. Never raises (best-effort)."""
+    try:
+        log = frappe.new_doc("VECRM Auth Audit Log")
+        log.event = event
+        log.employee = employee
+        log.identifier = identifier
+        log.path = path
+        log.reason = reason
+        log.ip_address = getattr(frappe.local, "request_ip", None)
+        log.user_agent = (
+            frappe.get_request_header("User-Agent")
+            if getattr(frappe.local, "request", None) else None
+        )
+        log.extra = json.dumps(extra) if extra else None
+        log.insert(ignore_permissions=True)
+        frappe.db.commit()
+    except Exception as e:
+        frappe.log_error(f"audit emission failed: {e}", "vecrm.api._audit_auth")
+
+
+def _is_locked(employee_doc: Any) -> bool:
+    """True if employee is currently within a lockout window."""
+    if not employee_doc.locked_until:
+        return False
+    return get_datetime(employee_doc.locked_until) > now_datetime()
+
+
+def _on_failure(employee_doc: Any) -> None:
+    """Increment failed attempts; set lockout if threshold reached."""
+    current = (employee_doc.failed_password_attempts or 0) + 1
+    employee_doc.failed_password_attempts = current
+    if current >= _MAX_FAILED_ATTEMPTS:
+        employee_doc.locked_until = now_datetime() + timedelta(minutes=_LOCKOUT_MINUTES)
+        _audit_auth(
+            "auth.account_locked",
+            employee=employee_doc.name,
+            path="password",
+            extra={"locked_until": str(employee_doc.locked_until)},
+        )
+    employee_doc.db_update()
+    frappe.db.commit()
+
+
+def _on_success(employee_doc: Any) -> None:
+    """Reset failed attempts + record last login."""
+    employee_doc.failed_password_attempts = 0
+    employee_doc.locked_until = None
+    employee_doc.last_login_at = now_datetime()
+    employee_doc.db_update()
+    frappe.db.commit()
+
+
+def _issue_session(employee_doc: Any) -> None:
+    """Issue a Frappe session as the shared VECRM Portal User; stash employee
+    identity in session data per D8.
+
+    The login_as call runs Session.start() → insert_session_record(), which
+    persists self.data["data"] BEFORE our custom keys exist. We then mutate
+    frappe.session.data (which IS self.data["data"]) to add the vecrm_*
+    keys, and call frappe.local.session_obj.update(force=True) to re-persist
+    BOTH the DB sessiondata row AND the cache slot with the correct outer
+    Session.data shape.
+
+    force=True is required: Session.update()'s default time-threshold gate
+    no-ops on a fresh session where last_updated was just set by start().
+    OBS-S25-AL.
+    """
+    frappe.local.login_manager.login_as(_VECRM_PORTAL_USER)
+    frappe.session.data.vecrm_employee_phone = employee_doc.vecrm_phone
+    frappe.session.data.vecrm_employee_name = employee_doc.employee_name
+    frappe.session.data.vecrm_employee_role = employee_doc.role
+    frappe.session.data.vecrm_login_path = "password"
+    frappe.local.session_obj.update(force=True)
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def login_with_password(email: str = "", password: str = "") -> dict[str, Any]:
+    """Authenticate VECRM Employee via email + password.
+
+    Returns:
+        {"success": True, "employee": "<phone>", "name": "<full_name>",
+         "role": "<role>"}
+
+    Raises:
+        frappe.AuthenticationError with generic "Invalid credentials" for
+        all failure modes (no enumeration: bad password, unknown email,
+        locked account, and inactive employee all return the same error).
+    """
+    if not email or not password:
+        _audit_auth("auth.login.failed", identifier=email, path="password", reason="missing_input")
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    employee_name = frappe.db.get_value("VECRM Employee", {"vecrm_email": email}, "name")
+    if not employee_name:
+        _audit_auth("auth.login.failed", identifier=email, path="password", reason="unknown_email")
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    employee_doc = frappe.get_doc("VECRM Employee", employee_name)
+
+    if employee_doc.vecrm_account_status != "Active":
+        _audit_auth(
+            "auth.login.failed",
+            employee=employee_doc.name, identifier=email, path="password",
+            reason="account_inactive",
+        )
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    if _is_locked(employee_doc):
+        _audit_auth(
+            "auth.login.failed",
+            employee=employee_doc.name, identifier=email, path="password",
+            reason="account_locked",
+        )
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    if not employee_doc.password_hash:
+        _audit_auth(
+            "auth.login.failed",
+            employee=employee_doc.name, identifier=email, path="password",
+            reason="no_password_configured",
+        )
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    if not passlibctx.verify(password, employee_doc.password_hash):
+        _on_failure(employee_doc)
+        _audit_auth(
+            "auth.login.failed",
+            employee=employee_doc.name, identifier=email, path="password",
+            reason="invalid_credentials",
+        )
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    _on_success(employee_doc)
+    _issue_session(employee_doc)
+    _audit_auth("auth.login.success", employee=employee_doc.name, path="password")
+
+    return {
+        "success": True,
+        "employee": employee_doc.name,
+        "name": employee_doc.employee_name,
+        "role": employee_doc.role,
+    }
+
+
+@frappe.whitelist(methods=["POST"])
+def vecrm_logout() -> dict[str, Any]:
+    """Invalidate current VECRM portal session."""
+    employee_phone = frappe.session.data.get("vecrm_employee_phone")
+    _audit_auth("auth.logout", employee=employee_phone)
+    frappe.local.login_manager.logout()
+    return {"success": True}
+
+
+@frappe.whitelist(methods=["GET"])
+def get_session_employee() -> dict[str, Any]:
+    """Return VECRM Employee identity for the current session.
+
+    Reads vecrm_employee_phone from session data. Raises PermissionError
+    if no VECRM employee is associated.
+    """
+    employee_phone = frappe.session.data.get("vecrm_employee_phone")
+    if not employee_phone:
+        frappe.throw(_("Not authenticated as VECRM Employee"), frappe.PermissionError)
+
+    employee_doc = frappe.get_doc("VECRM Employee", employee_phone)
+    return {
+        "employee": employee_doc.name,
+        "name": employee_doc.employee_name,
+        "vecrm_email": employee_doc.vecrm_email,
+        "role": employee_doc.role,
+        "base_city": employee_doc.vecrm_base_city,
+        "login_path": frappe.session.data.get("vecrm_login_path"),
+    }
