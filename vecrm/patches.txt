@@ -11,3 +11,4 @@ vecrm.patches.v1_1.fix_portal_user_type
 vecrm.patches.v1_1.convert_password_hash_to_data
 vecrm.patches.v1_1.extend_lead_inquiry_perms
 vecrm.patches.v1_1.add_pin_auth_fields
+vecrm.patches.v1_1.add_lead_creating_employee
