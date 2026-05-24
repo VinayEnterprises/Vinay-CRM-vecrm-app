@@ -701,8 +701,9 @@ def _make_reset_response(message: str) -> dict[str, Any]:
     Shape is identical regardless of whether the input matched a real
     employee, was rate-limited, or referenced an inactive account. The
     portal BFF MUST strip `_internal` before relaying to the client; only
-    the BFF needs the raw token (to construct the emailed link) and the
-    employee_name (to address the email).
+    the BFF needs the raw token (to construct the emailed link), the
+    employee_name (the *display name* used in the email greeting -- e.g.
+    "Hi Ajay,"), and the delivery_email (the address to send to).
     """
     return {
         "success": True,
@@ -777,6 +778,9 @@ def request_password_reset(email: str = "") -> dict[str, Any]:
 
     The portal MUST NOT relay `_internal` to the client. It exists so the
     BFF can construct the emailed link without a second API roundtrip.
+    `employee_name` is the VECRM Employee display name (e.g. "Ajay Salvi")
+    -- NOT the doctype autoname, which is the phone. Falls back to the
+    autoname (phone) only if the display name field is NULL on the row.
     `delivery_email` is the address `sendMailNoreply` should target -- for
     password reset it's the user-submitted email (echoed back); for PIN
     reset it's the employee's `vecrm_email` looked up from the phone.
@@ -837,7 +841,16 @@ def request_password_reset(email: str = "") -> dict[str, Any]:
     frappe.db.commit()
 
     response["_internal"]["raw_token"] = raw_token
-    response["_internal"]["employee_name"] = employee_name
+    # _internal["employee_name"] is the DISPLAY name (for "Hi Ajay," in
+    # the email greeting), NOT the local `employee_name` variable above
+    # -- which is the doctype autoname (phone, e.g. "+91-9999900001").
+    # Naming clash is in the VECRM Employee schema itself: `name` is the
+    # autoname; the display name is in the `employee_name` field. Fall
+    # back to the autoname if the display field is NULL (preserves the
+    # "always-some-value" invariant the BFF relies on).
+    response["_internal"]["employee_name"] = (
+        employee_doc.employee_name or employee_doc.name
+    )
     response["_internal"]["delivery_email"] = normalized_email
     return response
 
@@ -911,7 +924,12 @@ def request_pin_reset(phone: str = "") -> dict[str, Any]:
     frappe.db.commit()
 
     response["_internal"]["raw_token"] = raw_token
-    response["_internal"]["employee_name"] = employee_name
+    # Display name (with autoname/phone fallback) -- see the matching
+    # comment in request_password_reset for the autoname-vs-display-name
+    # naming clash rationale.
+    response["_internal"]["employee_name"] = (
+        employee_doc.employee_name or employee_doc.name
+    )
     # vecrm_email is varchar(140) UNIQUE NULL — `or None` normalises the
     # empty-string-on-NULL Frappe quirk so the BFF can do a clean
     # `if internal.delivery_email` check.
