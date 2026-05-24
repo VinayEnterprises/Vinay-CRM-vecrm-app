@@ -1,0 +1,81 @@
+{
+  "doctype": "DocType",
+  "name": "VECRM Auth Reset Token",
+  "module": "VECRM",
+  "engine": "InnoDB",
+  "autoname": "hash",
+  "creation": "2026-05-24 00:00:00.000000",
+  "modified": "2026-05-24 00:00:00.000000",
+  "owner": "Administrator",
+  "modified_by": "Administrator",
+  "is_submittable": 0,
+  "in_create": 0,
+  "track_changes": 0,
+  "fields": [
+    {
+      "fieldname": "token_hash",
+      "fieldtype": "Data",
+      "label": "Token Hash (sha256)",
+      "length": 64,
+      "reqd": 1,
+      "unique": 1,
+      "read_only": 1,
+      "no_copy": 1,
+      "description": "sha256 hex digest of the raw token. Raw token exists only in the emailed link, never stored."
+    },
+    {
+      "fieldname": "employee",
+      "fieldtype": "Link",
+      "label": "Employee",
+      "options": "VECRM Employee",
+      "reqd": 1,
+      "read_only": 1,
+      "no_copy": 1
+    },
+    {
+      "fieldname": "reset_for",
+      "fieldtype": "Select",
+      "label": "Reset For",
+      "options": "password\npin",
+      "reqd": 1,
+      "read_only": 1,
+      "no_copy": 1,
+      "description": "Discriminates between password reset and PIN reset. Token can complete only the credential type it was issued for."
+    },
+    {
+      "fieldname": "expires_at",
+      "fieldtype": "Datetime",
+      "label": "Expires At",
+      "reqd": 1,
+      "read_only": 1,
+      "no_copy": 1
+    },
+    {
+      "fieldname": "consumed_at",
+      "fieldtype": "Datetime",
+      "label": "Consumed At",
+      "read_only": 1,
+      "no_copy": 1,
+      "description": "Set on first successful use. Single-use enforced via this field."
+    },
+    {
+      "fieldname": "ip_address",
+      "fieldtype": "Data",
+      "label": "IP Address (Request)",
+      "length": 45,
+      "read_only": 1,
+      "no_copy": 1,
+      "description": "IP that requested the reset. For audit/forensics; not used for validation."
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "create": 1,
+      "delete": 1
+    }
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC"
+}
