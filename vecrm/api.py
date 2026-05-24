@@ -316,7 +316,7 @@ from typing import Any
 
 from frappe import _
 from frappe.utils import now_datetime, get_datetime
-from frappe.utils.password import passlibctx, update_password
+from frappe.utils.password import passlibctx
 
 from vecrm.vecrm.utils.auth_reset import (
     DEFAULT_TOKEN_TTL_MINUTES,
@@ -1033,13 +1033,20 @@ def complete_password_reset(token: str = "", new_password: str = "") -> dict[str
 
     employee_doc = frappe.get_doc("VECRM Employee", token_doc.employee)
 
-    # Set the new password. update_password handles passlib hashing and
-    # Frappe's Password-fieldtype encryption-at-rest in one call.
-    update_password(
+    # Set the new password via the S25 canonical pattern: passlibctx.hash
+    # + frappe.db.set_value to the Data-typed column on tabVECRM Employee.
+    # NOT update_password() — that writes to __Auth (Frappe Password-
+    # fieldtype encrypted storage) which S25 phase 4.7 deprecated for this
+    # doctype. update_modified=False keeps the row's `modified`/`modified_by`
+    # columns reflecting real operator-meaningful edits rather than
+    # credential-rotation noise. See PD-S29-AUTH-WRITE-PATTERN-FIX findings.
+    hashed = passlibctx.hash(new_password)
+    frappe.db.set_value(
+        "VECRM Employee",
         employee_doc.name,
-        new_password,
-        doctype="VECRM Employee",
-        fieldname="password_hash",
+        "password_hash",
+        hashed,
+        update_modified=False,
     )
 
     # Clear the password-side lockout state. A user who just successfully
@@ -1099,11 +1106,14 @@ def complete_pin_reset(token: str = "", new_pin: str = "") -> dict[str, Any]:
 
     employee_doc = frappe.get_doc("VECRM Employee", token_doc.employee)
 
-    update_password(
+    # See complete_password_reset for the S25-canonical write-pattern rationale.
+    hashed = passlibctx.hash(new_pin)
+    frappe.db.set_value(
+        "VECRM Employee",
         employee_doc.name,
-        new_pin,
-        doctype="VECRM Employee",
-        fieldname="pin_hash",
+        "pin_hash",
+        hashed,
+        update_modified=False,
     )
 
     employee_doc.failed_pin_attempts = 0
@@ -1227,12 +1237,15 @@ def change_password(current_password: str = "", new_password: str = "") -> dict[
         # docstring above).
         frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
 
-    # 5. Write new (mirrors complete_password_reset at api.py:1038)
-    update_password(
+    # 5. Write new (mirrors complete_password_reset; see canonical-pattern
+    #    comment there for the S25 rationale).
+    hashed = passlibctx.hash(new_password)
+    frappe.db.set_value(
+        "VECRM Employee",
         employee_doc.name,
-        new_password,
-        doctype="VECRM Employee",
-        fieldname="password_hash",
+        "password_hash",
+        hashed,
+        update_modified=False,
     )
 
     # 6. Clear lockout (mirrors complete_password_reset at api.py:1048-1049).
@@ -1322,11 +1335,14 @@ def change_pin(current_pin: str = "", new_pin: str = "") -> dict[str, Any]:
         )
         frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
 
-    update_password(
+    # See complete_password_reset for the S25-canonical write-pattern rationale.
+    hashed = passlibctx.hash(new_pin)
+    frappe.db.set_value(
+        "VECRM Employee",
         employee_doc.name,
-        new_pin,
-        doctype="VECRM Employee",
-        fieldname="pin_hash",
+        "pin_hash",
+        hashed,
+        update_modified=False,
     )
 
     employee_doc.failed_pin_attempts = 0
