@@ -316,7 +316,15 @@ from typing import Any
 
 from frappe import _
 from frappe.utils import now_datetime, get_datetime
-from frappe.utils.password import passlibctx
+from frappe.utils.password import passlibctx, update_password
+
+from vecrm.vecrm.utils.auth_reset import (
+    DEFAULT_TOKEN_TTL_MINUTES,
+    RATE_LIMIT_MAX_REQUESTS,
+    RATE_LIMIT_WINDOW_MINUTES,
+    generate_token,
+    hash_token,
+)
 
 
 # Constants
@@ -648,3 +656,435 @@ def get_session_employee() -> dict[str, Any]:
         "base_city": employee_doc.vecrm_base_city,
         "login_path": frappe.session.data.get("vecrm_login_path"),
     }
+
+
+# ============================================================
+# S28 PD-S28-AUTH-RESET-BACKEND-API — token mgmt + credential write
+#
+# Four whitelisted methods backing the password/PIN reset flow:
+#   request_password_reset(email)  — create token, return raw for portal email
+#   request_pin_reset(phone)       — create token, return raw for portal email
+#   complete_password_reset(token, new_password) — consume token, update password
+#   complete_pin_reset(token, new_pin)           — consume token, update PIN
+#
+# Schema substrate shipped in S27 PR #21 (VECRM Auth Reset Token doctype).
+# Portal-side email send + Forgot UI + accept pages ship in
+# PD-S28-AUTH-RESET-PORTAL-{BFF,UI,EMAIL-TEMPLATE}.
+#
+# Security invariants enforced here:
+#   1. Raw token NEVER persisted; only sha256 hash via hash_token()
+#   2. Token lookup is SQL equality on the HASH (timing-safe: candidate
+#      hash is fully known to the requester, no oracle leak)
+#   3. Single-use: consumed_at check precedes any credential write
+#   4. Time-bounded: expires_at check precedes any credential write
+#   5. reset_for discriminator enforced: password tokens can't update PIN
+#      and vice versa
+#   6. No-enumeration: request_*_reset always returns identical response
+#      shape regardless of email/phone match (only `_internal.raw_token`
+#      differs internally; portal BFF strips _internal before client relay)
+#   7. Rate-limited: RATE_LIMIT_MAX_REQUESTS=3 per employee per
+#      RATE_LIMIT_WINDOW_MINUTES=15
+#   8. Audit log emitted on every path (requested/consumed/expired/
+#      invalid_token/rate_limited) -- vocabulary extension per S27 addendum §3
+#   9. Lockout state cleared on successful reset (failed_*_attempts=0,
+#      *_locked_until=None) so a user who just reset can immediately log in
+#  10. All methods type-annotated per Frappe v16 require_type_annotated_api_methods
+# ============================================================
+
+
+_RESET_GENERIC_ERROR: str = "Invalid or expired reset token"
+
+
+def _make_reset_response(message: str) -> dict[str, Any]:
+    """Build the no-enumeration response envelope for request_*_reset.
+
+    Shape is identical regardless of whether the input matched a real
+    employee, was rate-limited, or referenced an inactive account. The
+    portal BFF MUST strip `_internal` before relaying to the client; only
+    the BFF needs the raw token (to construct the emailed link) and the
+    employee_name (to address the email).
+    """
+    return {
+        "success": True,
+        "message": message,
+        "_internal": {"raw_token": None, "employee_name": None},
+    }
+
+
+def _count_recent_reset_tokens(employee_name: str, reset_for: str) -> int:
+    """Count tokens issued for this employee+reset_for in the rate-limit window."""
+    cutoff = now_datetime() - timedelta(minutes=RATE_LIMIT_WINDOW_MINUTES)
+    return frappe.db.count(
+        "VECRM Auth Reset Token",
+        filters={
+            "employee": employee_name,
+            "reset_for": reset_for,
+            "creation": [">", cutoff],
+        },
+    )
+
+
+def _create_reset_token_row(employee_name: str, reset_for: str) -> str:
+    """Insert a VECRM Auth Reset Token row and return the raw token.
+
+    The raw token is returned to the caller (request_*_reset) for inclusion
+    in the emailed link. Only the sha256 hash is persisted.
+    """
+    raw_token, token_hash = generate_token()
+    token_doc = frappe.get_doc(
+        {
+            "doctype": "VECRM Auth Reset Token",
+            "token_hash": token_hash,
+            "employee": employee_name,
+            "reset_for": reset_for,
+            "expires_at": now_datetime()
+            + timedelta(minutes=DEFAULT_TOKEN_TTL_MINUTES),
+            "ip_address": getattr(frappe.local, "request_ip", None),
+        }
+    )
+    token_doc.insert(ignore_permissions=True)
+    return raw_token
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def request_password_reset(email: str = "") -> dict[str, Any]:
+    """Initiate a password reset flow.
+
+    Always returns the same success-shaped response regardless of whether
+    `email` matches a real employee (no-enumeration). If a real match
+    exists AND the rate limit hasn't been hit AND the account is Active,
+    a VECRM Auth Reset Token row is created and the raw token is returned
+    in `_internal.raw_token` so the portal BFF can construct the emailed
+    link.
+
+    Args:
+        email: User email to request reset for.
+
+    Returns:
+        {
+          "success": True,
+          "message": "If an account exists for this email, a reset link has been sent.",
+          "_internal": {"raw_token": <str or None>, "employee_name": <str or None>}
+        }
+
+    The portal MUST NOT relay `_internal` to the client. It exists so the
+    BFF can construct the emailed link without a second API roundtrip.
+    """
+    response = _make_reset_response(
+        "If an account exists for this email, a reset link has been sent."
+    )
+
+    normalized_email = (email or "").strip().lower()
+    if not normalized_email:
+        # Empty input: don't audit (no signal to log), no-enumeration.
+        return response
+
+    employee_name = frappe.db.get_value(
+        "VECRM Employee", {"vecrm_email": normalized_email}, "name"
+    )
+
+    if not employee_name:
+        # No match: audit with employee=None for forensics; return success.
+        _audit_auth(
+            "auth.reset.requested",
+            identifier=normalized_email,
+            path="password",
+        )
+        return response
+
+    # Rate limit BEFORE the inactive-status check so we don't burn audit
+    # rows / lookups on a rate-limited probe.
+    if _count_recent_reset_tokens(employee_name, "password") >= RATE_LIMIT_MAX_REQUESTS:
+        _audit_auth(
+            "auth.reset.rate_limited",
+            employee=employee_name,
+            identifier=normalized_email,
+            path="password",
+        )
+        return response
+
+    employee_doc = frappe.get_doc("VECRM Employee", employee_name)
+    if employee_doc.vecrm_account_status != "Active":
+        # Audit but don't issue a token -- no-enumeration: response identical.
+        _audit_auth(
+            "auth.reset.requested",
+            employee=employee_name,
+            identifier=normalized_email,
+            path="password",
+            reason="account_inactive",
+        )
+        return response
+
+    # All checks pass: create token, audit, return raw for portal email.
+    raw_token = _create_reset_token_row(employee_name, "password")
+    _audit_auth(
+        "auth.reset.requested",
+        employee=employee_name,
+        identifier=normalized_email,
+        path="password",
+    )
+    frappe.db.commit()
+
+    response["_internal"]["raw_token"] = raw_token
+    response["_internal"]["employee_name"] = employee_name
+    return response
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def request_pin_reset(phone: str = "") -> dict[str, Any]:
+    """Initiate a PIN reset flow.
+
+    Mirrors request_password_reset, but keyed by phone (E.164 +91-XXXXXXXXXX).
+    Lookup is by VECRM Employee name (autoname == vecrm_phone), so no
+    User-email indirection. reset_for="pin", audit path="pin". The emailed
+    reset link is still delivered to the employee's vecrm_email -- this is
+    a V1 trade-off (PIN reset via email channel) documented in the
+    addendum.
+
+    Args:
+        phone: User phone, accepts country-code / dash / leading-0 variants
+            (normalized via _normalize_phone).
+
+    Returns:
+        Same no-enumeration response shape as request_password_reset.
+    """
+    response = _make_reset_response(
+        "If an account exists for this phone, a reset link has been sent."
+    )
+
+    normalized_phone = _normalize_phone(phone or "")
+    if not normalized_phone:
+        return response
+
+    # Autoname invariant: VECRM Employee.name == vecrm_phone
+    employee_name = frappe.db.get_value(
+        "VECRM Employee", normalized_phone, "name"
+    )
+
+    if not employee_name:
+        _audit_auth(
+            "auth.reset.requested",
+            identifier=normalized_phone,
+            path="pin",
+        )
+        return response
+
+    if _count_recent_reset_tokens(employee_name, "pin") >= RATE_LIMIT_MAX_REQUESTS:
+        _audit_auth(
+            "auth.reset.rate_limited",
+            employee=employee_name,
+            identifier=normalized_phone,
+            path="pin",
+        )
+        return response
+
+    employee_doc = frappe.get_doc("VECRM Employee", employee_name)
+    if employee_doc.vecrm_account_status != "Active":
+        _audit_auth(
+            "auth.reset.requested",
+            employee=employee_name,
+            identifier=normalized_phone,
+            path="pin",
+            reason="account_inactive",
+        )
+        return response
+
+    raw_token = _create_reset_token_row(employee_name, "pin")
+    _audit_auth(
+        "auth.reset.requested",
+        employee=employee_name,
+        identifier=normalized_phone,
+        path="pin",
+    )
+    frappe.db.commit()
+
+    response["_internal"]["raw_token"] = raw_token
+    response["_internal"]["employee_name"] = employee_name
+    return response
+
+
+def _consume_reset_token(token: str, expected_reset_for: str) -> Any:
+    """Validate a raw reset token and return its loaded doc, OR throw generic.
+
+    All failure modes throw frappe.AuthenticationError with a single generic
+    message (no-enumeration of token state). The audit log carries the
+    discriminator for forensics. On success, returns the loaded token doc;
+    caller is responsible for setting consumed_at + db_update.
+
+    Failure paths emitted:
+      - auth.reset.invalid_token (token_hash not found)
+      - auth.reset.invalid_token reason=already_consumed
+      - auth.reset.invalid_token reason=wrong_reset_for (password token
+        used for PIN reset or vice versa)
+      - auth.reset.expired
+    """
+    token_hash = hash_token(token)
+
+    # Lookup by token_hash field (NOT by name -- name is the autoname hash,
+    # unrelated). SQL equality on a hash is timing-safe (the candidate hash
+    # is fully known to the requester).
+    token_doc_name = frappe.db.get_value(
+        "VECRM Auth Reset Token", {"token_hash": token_hash}, "name"
+    )
+
+    if not token_doc_name:
+        _audit_auth("auth.reset.invalid_token", path=expected_reset_for)
+        frappe.throw(_(_RESET_GENERIC_ERROR), frappe.AuthenticationError)
+
+    token_doc = frappe.get_doc("VECRM Auth Reset Token", token_doc_name)
+
+    if token_doc.consumed_at:
+        _audit_auth(
+            "auth.reset.invalid_token",
+            employee=token_doc.employee,
+            path=expected_reset_for,
+            reason="already_consumed",
+        )
+        frappe.throw(_(_RESET_GENERIC_ERROR), frappe.AuthenticationError)
+
+    if token_doc.reset_for != expected_reset_for:
+        _audit_auth(
+            "auth.reset.invalid_token",
+            employee=token_doc.employee,
+            path=expected_reset_for,
+            reason="wrong_reset_for",
+        )
+        frappe.throw(_(_RESET_GENERIC_ERROR), frappe.AuthenticationError)
+
+    if get_datetime(token_doc.expires_at) < now_datetime():
+        _audit_auth(
+            "auth.reset.expired",
+            employee=token_doc.employee,
+            path=expected_reset_for,
+        )
+        frappe.throw(_(_RESET_GENERIC_ERROR), frappe.AuthenticationError)
+
+    return token_doc
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def complete_password_reset(token: str = "", new_password: str = "") -> dict[str, Any]:
+    """Consume a password reset token and set the new password.
+
+    Atomic: token consume + password update + lockout clear all happen in
+    one transaction (one frappe.db.commit at the end). If any step throws,
+    the entire operation rolls back (no half-applied state).
+
+    Args:
+        token: Raw reset token from the emailed link.
+        new_password: New password to set. Minimum 8 characters.
+
+    Returns:
+        {"success": True, "message": "Password updated."}
+
+    Raises:
+        frappe.AuthenticationError with generic "Invalid or expired reset
+        token" for all failure modes (no-enumeration of token state);
+        specifics written to audit log.
+        frappe.ValidationError for password format violations.
+    """
+    if not token or not new_password:
+        frappe.throw(_(_RESET_GENERIC_ERROR), frappe.AuthenticationError)
+
+    # Minimum length: 8 chars. Mirrors industry-standard floor; tuneable
+    # via a future password-policy doctype if needed. Surfaced as
+    # ValidationError (not AuthenticationError) because the failure mode
+    # is genuinely the user's input shape, not credential validity.
+    if len(new_password) < 8:
+        frappe.throw(
+            _("Password must be at least 8 characters"), frappe.ValidationError
+        )
+
+    token_doc = _consume_reset_token(token, expected_reset_for="password")
+
+    employee_doc = frappe.get_doc("VECRM Employee", token_doc.employee)
+
+    # Set the new password. update_password handles passlib hashing and
+    # Frappe's Password-fieldtype encryption-at-rest in one call.
+    update_password(
+        employee_doc.name,
+        new_password,
+        doctype="VECRM Employee",
+        fieldname="password_hash",
+    )
+
+    # Clear the password-side lockout state. A user who just successfully
+    # reset their credential should be able to log in immediately. PIN
+    # lockout state is intentionally untouched (independent per S26 R6).
+    employee_doc.failed_password_attempts = 0
+    employee_doc.locked_until = None
+    employee_doc.db_update()
+
+    # Mark token consumed (single-use enforcement).
+    token_doc.consumed_at = now_datetime()
+    token_doc.db_update()
+
+    _audit_auth(
+        "auth.reset.consumed",
+        employee=employee_doc.name,
+        path="password",
+    )
+
+    frappe.db.commit()
+
+    return {"success": True, "message": "Password updated."}
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def complete_pin_reset(token: str = "", new_pin: str = "") -> dict[str, Any]:
+    """Consume a PIN reset token and set the new PIN.
+
+    Atomic: token consume + PIN update + PIN-lockout clear all happen in
+    one transaction. Password-side lockout state is intentionally untouched
+    (independent per S26 R6).
+
+    Args:
+        token: Raw reset token from the emailed link.
+        new_pin: New PIN to set. Must be 4-6 digits (matches login_with_pin
+            validation domain).
+
+    Returns:
+        {"success": True, "message": "PIN updated."}
+
+    Raises:
+        frappe.AuthenticationError generic for token-state failures.
+        frappe.ValidationError for PIN format violations.
+    """
+    if not token or not new_pin:
+        frappe.throw(_(_RESET_GENERIC_ERROR), frappe.AuthenticationError)
+
+    # PIN format: 4-6 numeric digits (mirrors login_with_pin's accepted
+    # domain). All-digit + length check is sufficient; no complexity rules
+    # for PINs (they're a secondary credential).
+    if not new_pin.isdigit() or not (4 <= len(new_pin) <= 6):
+        frappe.throw(
+            _("PIN must be 4 to 6 digits"), frappe.ValidationError
+        )
+
+    token_doc = _consume_reset_token(token, expected_reset_for="pin")
+
+    employee_doc = frappe.get_doc("VECRM Employee", token_doc.employee)
+
+    update_password(
+        employee_doc.name,
+        new_pin,
+        doctype="VECRM Employee",
+        fieldname="pin_hash",
+    )
+
+    employee_doc.failed_pin_attempts = 0
+    employee_doc.pin_locked_until = None
+    employee_doc.db_update()
+
+    token_doc.consumed_at = now_datetime()
+    token_doc.db_update()
+
+    _audit_auth(
+        "auth.reset.consumed",
+        employee=employee_doc.name,
+        path="pin",
+    )
+
+    frappe.db.commit()
+
+    return {"success": True, "message": "PIN updated."}
