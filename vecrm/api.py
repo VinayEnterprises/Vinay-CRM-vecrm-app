@@ -1122,3 +1122,222 @@ def complete_pin_reset(token: str = "", new_pin: str = "") -> dict[str, Any]:
     frappe.db.commit()
 
     return {"success": True, "message": "PIN updated."}
+
+
+# ============================================================
+# S29 PD-S29-ACCOUNT-SELF-SERVICE — authenticated change methods
+#
+# Two whitelist methods for authenticated portal users to change own
+# credentials without traversing the forgot-* flow. Both require
+# knowledge of the current credential.
+#
+# SEMANTICS (from B-phase dispatch §0 + findings §5):
+#   - Authenticated-only (@whitelist without allow_guest)
+#   - Verify current credential before accepting new
+#   - On success: clear lockout state (mirrors complete_*_reset; correct
+#     current-credential is sufficient proof of legitimacy — don't carry
+#     login-side typing-fatigue lockout forward)
+#   - On current-mismatch failure: audit, throw generic, do NOT increment
+#     failed_*_attempts (change-* decoupled from login lockout counter;
+#     prevents change-flow probing from rate-limiting login)
+#   - New audit event vocabulary: auth.change.{password,pin}.{success,failed}
+#   - New audit reason value: current_mismatch (joins existing 10-value
+#     reason taxonomy)
+#
+# PIN policy on change_pin: EXACTLY 6 digits (OBS-S29-E policy A,
+# OBS-S29-EE carry-forward). Intentionally tighter than complete_pin_reset
+# (4-6 range at line 1093). Workstream B will tighten complete_pin_reset
+# and add length check to login_with_pin for full policy A consistency.
+# ============================================================
+
+
+@frappe.whitelist(methods=["POST"])
+def change_password(current_password: str = "", new_password: str = "") -> dict[str, Any]:
+    """Authenticated portal user changes own password.
+
+    Requires knowledge of current_password. On success: writes new hash,
+    clears password-side lockout state (matches complete_password_reset
+    semantics -- successful current-credential proof is a recovery signal,
+    not just a routine change).
+
+    Does NOT increment failed_password_attempts on current-mismatch --
+    the change-* surface is independent of the login lockout counter.
+    A failed change is a single audit row, not a step toward account-lock.
+
+    PIN-side state untouched (independent per S26 R6, mirrored in S28
+    reset flow).
+
+    Args:
+        current_password: User's current password for verification.
+        new_password: New password to set. Minimum 8 characters
+            (matches complete_password_reset policy at api.py:1027).
+
+    Returns:
+        {"success": True, "message": "Password updated."}
+
+    Raises:
+        frappe.PermissionError if no authenticated VECRM Employee session.
+        frappe.AuthenticationError ("Invalid credentials") on current
+            password mismatch (generic, no-enumeration).
+        frappe.ValidationError on new password format violation.
+    """
+    # 1. Resolve session -> employee (mirrors get_session_employee at api.py:646)
+    employee_phone = frappe.session.data.get("vecrm_employee_phone")
+    if not employee_phone:
+        frappe.throw(
+            _("Not authenticated as VECRM Employee"), frappe.PermissionError
+        )
+
+    employee_doc = frappe.get_doc("VECRM Employee", employee_phone)
+
+    # 2. Missing-input check
+    if not current_password or not new_password:
+        _audit_auth(
+            "auth.change.password.failed",
+            employee=employee_doc.name,
+            path="password",
+            reason="missing_input",
+        )
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    # 3. New-password format check (same policy as complete_password_reset)
+    if len(new_password) < 8:
+        _audit_auth(
+            "auth.change.password.failed",
+            employee=employee_doc.name,
+            path="password",
+            reason="invalid_format",
+        )
+        frappe.throw(
+            _("Password must be at least 8 characters"), frappe.ValidationError
+        )
+
+    # 4. Verify current (passlibctx.verify returns bool; mirrors api.py:530)
+    if not employee_doc.password_hash or not passlibctx.verify(
+        current_password, employee_doc.password_hash
+    ):
+        _audit_auth(
+            "auth.change.password.failed",
+            employee=employee_doc.name,
+            path="password",
+            reason="current_mismatch",
+        )
+        # NOTE: do NOT increment failed_password_attempts here. The change-*
+        # surface is independent of the login lockout counter (rationale in
+        # docstring above).
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    # 5. Write new (mirrors complete_password_reset at api.py:1038)
+    update_password(
+        employee_doc.name,
+        new_password,
+        doctype="VECRM Employee",
+        fieldname="password_hash",
+    )
+
+    # 6. Clear lockout (mirrors complete_password_reset at api.py:1048-1049).
+    #    Knowing the current credential is sufficient proof of legitimacy;
+    #    don't carry login-side typing-fatigue lockout forward.
+    employee_doc.failed_password_attempts = 0
+    employee_doc.locked_until = None
+    employee_doc.db_update()
+
+    # 7. Audit success + commit
+    _audit_auth(
+        "auth.change.password.success",
+        employee=employee_doc.name,
+        path="password",
+    )
+    frappe.db.commit()
+
+    return {"success": True, "message": "Password updated."}
+
+
+@frappe.whitelist(methods=["POST"])
+def change_pin(current_pin: str = "", new_pin: str = "") -> dict[str, Any]:
+    """Authenticated portal user changes own PIN.
+
+    PIN policy: NEW PIN must be EXACTLY 6 digits (per OBS-S29-E policy A,
+    carried forward from Workstream B even though B hasn't shipped yet --
+    policy decisions apply to every new entry point added after the
+    decision, regardless of impl order). This is INTENTIONALLY tighter
+    than the existing complete_pin_reset policy (4-6 digits at line
+    1093); when Workstream B ships, complete_pin_reset will tighten to
+    match. login_with_pin will also gain a length check then.
+
+    See change_password docstring for rationale on lockout-clear-on-success
+    and independence from login attempt counters.
+
+    Args:
+        current_pin: User's current PIN for verification.
+        new_pin: New PIN. EXACTLY 6 numeric digits (no whitespace, no
+            mixed alphanumeric).
+
+    Returns:
+        {"success": True, "message": "PIN updated."}
+
+    Raises:
+        frappe.PermissionError if no authenticated VECRM Employee session.
+        frappe.AuthenticationError ("Invalid credentials") on current PIN
+            mismatch.
+        frappe.ValidationError on new PIN format violation.
+    """
+    employee_phone = frappe.session.data.get("vecrm_employee_phone")
+    if not employee_phone:
+        frappe.throw(
+            _("Not authenticated as VECRM Employee"), frappe.PermissionError
+        )
+
+    employee_doc = frappe.get_doc("VECRM Employee", employee_phone)
+
+    if not current_pin or not new_pin:
+        _audit_auth(
+            "auth.change.pin.failed",
+            employee=employee_doc.name,
+            path="pin",
+            reason="missing_input",
+        )
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    # PIN format: EXACTLY 6 digits (OBS-S29-E policy A).
+    if not new_pin.isdigit() or len(new_pin) != 6:
+        _audit_auth(
+            "auth.change.pin.failed",
+            employee=employee_doc.name,
+            path="pin",
+            reason="invalid_format",
+        )
+        frappe.throw(
+            _("PIN must be exactly 6 digits"), frappe.ValidationError
+        )
+
+    if not employee_doc.pin_hash or not passlibctx.verify(
+        current_pin, employee_doc.pin_hash
+    ):
+        _audit_auth(
+            "auth.change.pin.failed",
+            employee=employee_doc.name,
+            path="pin",
+            reason="current_mismatch",
+        )
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    update_password(
+        employee_doc.name,
+        new_pin,
+        doctype="VECRM Employee",
+        fieldname="pin_hash",
+    )
+
+    employee_doc.failed_pin_attempts = 0
+    employee_doc.pin_locked_until = None
+    employee_doc.db_update()
+
+    _audit_auth(
+        "auth.change.pin.success",
+        employee=employee_doc.name,
+        path="pin",
+    )
+    frappe.db.commit()
+
+    return {"success": True, "message": "PIN updated."}
