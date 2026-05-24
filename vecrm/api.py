@@ -707,7 +707,11 @@ def _make_reset_response(message: str) -> dict[str, Any]:
     return {
         "success": True,
         "message": message,
-        "_internal": {"raw_token": None, "employee_name": None},
+        "_internal": {
+            "raw_token": None,
+            "employee_name": None,
+            "delivery_email": None,
+        },
     }
 
 
@@ -764,11 +768,18 @@ def request_password_reset(email: str = "") -> dict[str, Any]:
         {
           "success": True,
           "message": "If an account exists for this email, a reset link has been sent.",
-          "_internal": {"raw_token": <str or None>, "employee_name": <str or None>}
+          "_internal": {
+              "raw_token": <str or None>,
+              "employee_name": <str or None>,
+              "delivery_email": <str or None>,
+          },
         }
 
     The portal MUST NOT relay `_internal` to the client. It exists so the
     BFF can construct the emailed link without a second API roundtrip.
+    `delivery_email` is the address `sendMailNoreply` should target -- for
+    password reset it's the user-submitted email (echoed back); for PIN
+    reset it's the employee's `vecrm_email` looked up from the phone.
     """
     response = _make_reset_response(
         "If an account exists for this email, a reset link has been sent."
@@ -827,6 +838,7 @@ def request_password_reset(email: str = "") -> dict[str, Any]:
 
     response["_internal"]["raw_token"] = raw_token
     response["_internal"]["employee_name"] = employee_name
+    response["_internal"]["delivery_email"] = normalized_email
     return response
 
 
@@ -900,6 +912,10 @@ def request_pin_reset(phone: str = "") -> dict[str, Any]:
 
     response["_internal"]["raw_token"] = raw_token
     response["_internal"]["employee_name"] = employee_name
+    # vecrm_email is varchar(140) UNIQUE NULL — `or None` normalises the
+    # empty-string-on-NULL Frappe quirk so the BFF can do a clean
+    # `if internal.delivery_email` check.
+    response["_internal"]["delivery_email"] = employee_doc.vecrm_email or None
     return response
 
 
