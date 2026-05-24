@@ -208,3 +208,81 @@ Reset token rows: 0 (new doctype, no production tokens emitted yet).
 - Recon findings: `docs/dispatches/PD-S28-AUTH-RESET-INFRA-recon-findings.md` + `...-ADDENDUM.md`
 
 **End of pendency register.**
+
+---
+
+## §10 — S28 mid-session updates (appended in-flight)
+
+**Appended:** 2026-05-24, S28 opening.
+**Status of this section:** Living notes during S28. Promoted/closed items will be reflected in `VECRM-PENDENCY-S28-CLOSE.md` at S28 close, which supersedes this entire file.
+
+### §10.1 — Pendency additions / status changes
+
+#### PD-S20-KRUNAL-UAT — promoted to explicit deferred entry
+
+- **Status:** OPEN, async, external-trigger
+- **Effort:** Krunal's time, not operator's
+- **Origin:** S19 carried through S20, S21, S26, S27 implicitly
+- **Trigger:** First production Lead-to-Inquiry conversion firing Q9 management email to Krunal
+- **Description:** Async colleague review of Q9 email content (subject pipe-separator, 10 body fields). Scripted-caller verified since S19; awaiting human-eyes UAT.
+- **Action when feedback arrives:** Small content/template PR if revisions needed. No Claude scheduling until then.
+- **Why surfacing now:** Implicit-carry across 6 sessions; deserves explicit register slot per S28 past-conversation sweep.
+
+#### OBS-S27-AA — closed, confirmed benign
+
+- **Was:** Banked, "revisit at PD-S28-AUTH-RESET-BACKEND-API author time"
+- **Now:** CLOSED. Confirmed at S28 Gate 7. `ip_address` declared `length: 45` in `vecrm_auth_reset_token.json`; actual table column is `varchar(64)` per Frappe v16's Data field min-length floor. Functionally benign: IPv6 textual representation max is 45 chars; 64 is more than sufficient. No action needed. Pattern documented in PD-S27-DEPLOY-RUNBOOK section 8.1.
+
+### §10.2 — Session-0 strategic backlog, reference pointer
+
+The Session-0 strategic scope items remain unscheduled and tracked outside the active pendency register. Last comprehensively surfaced in S22 mid-session and acknowledged through S26 close. Items:
+
+1. Voucher / approval workflow — the keystone unbuilt piece
+2. Approval-chain business decision — engineer to reporting manager vs direct-to-operator; same question for sales reps
+3. Two distinct user roles — Sales Rep vs Field Engineer surface differentiation
+4. Sales Visit doctype portal UI
+5. Weekly meeting report
+6. PWA-on-phone validation — never installed on actual phone
+7. OTP auth replacing password placeholder — MSG91 SMS+WhatsApp pluggable, Phase 4 originally
+8. Priority 1-5 bar-gradient UI — BNI visual language
+
+**Decision:** Defer surfacing for active scheduling until S28 reset-flow ships and S29 scope is being chosen. Items 2 (approval-chain) and 3 (role split) are blocking-decision items that must be answered before item 1 can be designed. Recommend S29 opener includes a "Session-0 strategic backlog review" gate.
+
+### §10.3 — S28 in-flight items: parent plus 6 sub-PDs
+
+Mirrored from PD-S27-CLOSE-HANDOVER section 9 plus close-commit dispatch files. Status will advance as each sub-PD merges and deploys.
+
+#### PD-S28-AUTH-RESET-FLOW parent
+
+- **Status:** IN PROGRESS — S28 active scope, Option α
+- **Schema substrate:** Shipped S27 PR #21 (`6d46b0d`). `tabVECRM Auth Reset Token` doctype live, 0 rows.
+- **Backend + portal:** In-flight via 6 sub-PDs below.
+
+| Sub-PD | Effort | Status | Notes |
+|---|---|---|---|
+| PD-S28-AUTH-RESET-BACKEND-API | 2.5-3 hrs | IN PROGRESS | 4 whitelist methods + `vecrm/utils/auth_reset.py` |
+| PD-S28-AUTH-RESET-EMAIL-MECHANISM | 1.5 hrs | IN PROGRESS | vecrm-portal `lib/email.js` mirroring Vemio's pattern |
+| PD-S28-AUTH-RESET-EMAIL-TEMPLATE | 45 min - 1 hr | NOT STARTED | HTML template modules; depends on EMAIL-MECHANISM |
+| PD-S28-AUTH-RESET-PORTAL-BFF | 2 hrs | NOT STARTED | 3 routes; depends on BACKEND-API + EMAIL-MECHANISM |
+| PD-S28-AUTH-RESET-PORTAL-UI | 2-2.5 hrs | NOT STARTED | Forgot forms + set-password/set-pin pages; depends on PORTAL-BFF |
+| PD-S28-AUTH-RESET-SECURITY-REVIEW-SMOKE | 3.5-4 hrs | NOT STARTED | Final gate; depends on ALL prior sub-PDs |
+
+**Operator prep status, S28-opening, 2026-05-24:**
+
+- ✅ Vercel env vars set on vecrm-portal Production: `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, `GRAPH_CLIENT_SECRET`, `GRAPH_SENDER_NOREPLY_VECRM`. Sourced from vemio-dashboard env, reuses vemio-email-sender Azure AD app reg.
+- ✅ Branch housekeeping clean on both repos: Mac vecrm and vecrm-portal each have only `main` plus standard remote refs.
+- ⏳ **PD-S27-TEST-PIN-ROTATION** — outstanding. Latest safe moment: before SECURITY-REVIEW-SMOKE section 2.1, which exercises the test rep account E2E. 15 min operator work.
+
+### §10.4 — Cold-check gates at S28 open: all PASS
+
+All 8 gates from `docs/operating-patterns/cold-check-template.md` cleared at S28 open. Production state matches S27-CLOSE baseline exactly:
+
+- Mac vecrm HEAD `083cd37`, vecrm-portal HEAD `8540794`, both clean
+- VPS `vecrm-backend-1` Up, image `a05637cd2be5`, HTTP/2 200
+- `vecrm-custom:s27-pre-pr21-rollback` tag present — rollback anchor
+- voucher_counter.py sha matches VECRM-L8 canonical `91556a7d07...`
+- Vendor parity confirmed — `vecrm_auth_reset_token` doctype dir plus patch registered
+- `tabVECRM Auth Reset Token` schema verified — 5 functional plus 4 Frappe v16 metadata cols, 0 rows, `token_hash` UNI
+- Frappe v16 `require_type_annotated_api_methods` site-wide setting confirmed active — `[True]`
+
+---
