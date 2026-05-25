@@ -41,17 +41,13 @@ ssh vemio "docker ps --format 'table {{.Names}}\t{{.Status}}' | grep vemio- | gr
 # EXPECT: empty (all workers healthy)
 ```
 
-**Step 2: Run F-1.4 probe (P0 BLOCKER for B-phase authoring)**
+**Step 2: F-1.4 probe — ALREADY RESOLVED AT S30 CLOSE**
 
-```bash
-ssh vemio 'docker exec vecrm-backend-1 bench --site crm.vinayenterprises.co.in mariadb -e "SELECT name, enabled, user_type FROM \`tabUser\` WHERE name = \"ajay@vinayenterprises.co.in\""'
-```
+F-1.4 was executed at S30 close. Result: `ajay@vinayenterprises.co.in` exists, `enabled=1`, `user_type=System User`.
 
-Result interpretation:
-- **Empty result → Case B**: Migration patch creates User row first (Website User type recommended; operator confirms type choice)
-- **Non-empty result → Case A**: Straight UPDATE works
+**Case A applies** — migration is straight UPDATE, no User-row creation needed. No re-run needed; skip to Step 3 (remaining probes).
 
-This single probe gates the entire B-phase. Run before any other work.
+Note: Ajay is `user_type=System User`. When future VECRM Employees are created via PD-S29-ADMIN-USER-MGMT-PAGE, dispatcher needs to decide System User vs Website User per employee (OBS-S30-JJ).
 
 **Step 3: Run remaining LEAD-OWNER probes (F-1.1 through F-1.6, G-1.1 through G-1.3)**
 
@@ -140,8 +136,7 @@ Code's instinct to investigate-instead-of-comply with dispatch checklists is exc
 
 ## §3 — S31-specific risks to watch
 
-**Risk 1: ATT-13 F-1.4 result.**
-If `ajay@vinayenterprises.co.in` does NOT exist as Frappe User, the migration becomes a 2-step (create User + UPDATE). The User type decision (Website User vs System User) matters for Desk-access semantics — operator confirms.
+**Risk 1: ~~ATT-13 F-1.4 result~~ — RESOLVED at S30 close.** Case A confirmed. Migration is straight UPDATE, single doctype per row, no FK constraints to navigate. ATT-13 is closed.
 
 **Risk 2: Migration touches production data.**
 15 Leads + 13 Inquiries get their `lead_owner` / `inquiry_owner` rewritten. Forward-only via L22 atomic schema migration pattern. Rollback patch restores `vecrm-portal@vinayenterprises.co.in`.
