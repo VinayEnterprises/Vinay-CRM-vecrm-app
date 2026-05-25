@@ -10,6 +10,9 @@
   "company_name",
   "territory",
   "contact_date",
+  "contact_number",
+  "contact_email",
+  "meeting_brief",
   "priority",
   "status",
   "lead_owner",
@@ -38,6 +41,24 @@
    "in_list_view": 1,
    "label": "Contact Date",
    "reqd": 1
+  },
+  {
+   "fieldname": "contact_number",
+   "fieldtype": "Data",
+   "label": "Contact Number",
+   "description": "10-digit Indian phone, canonical form +91-XXXXXXXXXX. Mandatory at create-time (API-level enforcement); column is nullable so the existing 15 pre-S30 rows remain readable as NULL. PD-S29-LEAD-FORM-FIELDS."
+  },
+  {
+   "fieldname": "contact_email",
+   "fieldtype": "Data",
+   "label": "Contact Email",
+   "description": "Validated at API boundary via frappe.utils.validate_email_address. Mandatory at create-time; column nullable for pre-S30 backward compat."
+  },
+  {
+   "fieldname": "meeting_brief",
+   "fieldtype": "Small Text",
+   "label": "Meeting Brief",
+   "description": "Short text summary of the initial contact. Mandatory at create-time; column nullable for pre-S30 backward compat."
   },
   {
    "fieldname": "priority",

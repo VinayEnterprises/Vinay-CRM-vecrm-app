@@ -234,13 +234,21 @@ def create_lead(
 	territory: str,
 	contact_date: str,
 	priority: int,
+	contact_number: str,
+	contact_email: str,
+	meeting_brief: str,
 ) -> dict:
 	"""Create a VECRM Lead from the portal.
 
-	PD-S24-PORTAL-LEAD-CREATE. lead_owner and status are set server-side
-	(session user / "Open") — the client cannot supply or spoof either.
-	priority is validated to the documented 1-5 range here, at the API
-	boundary, in addition to the controller's own validate() check.
+	PD-S24-PORTAL-LEAD-CREATE original; PD-S29-LEAD-FORM-FIELDS (S30)
+	added contact_number / contact_email / meeting_brief as
+	API-boundary-mandatory. Column-level reqd stays 0 (nullable) so
+	the existing pre-S30 rows remain readable as NULL.
+
+	lead_owner and status are set server-side (session user / "Open")
+	— the client cannot supply or spoof either. priority is validated
+	to the documented 1-5 range here, at the API boundary, in addition
+	to the controller's own validate() check.
 
 	Lead is not submittable; the row lands usable (docstatus 0, status
 	"Open") and is immediately convertible to an Inquiry.
@@ -250,14 +258,24 @@ def create_lead(
 	  territory: Free-text territory, e.g. "Ahmedabad" (reqd).
 	  contact_date: Date of contact (YYYY-MM-DD). Drives FY allocation.
 	  priority: Integer 1-5 (1=Cold .. 5=Very Hot).
+	  contact_number: 10-digit Indian phone; any reasonable input form
+	    accepted (with/without +91-, spaces, parens). Canonicalised
+	    to '+91-XXXXXXXXXX' via _normalize_phone; rejected loud on
+	    malformed (NOT the silent-pass behaviour of the login paths
+	    that need no-enumeration). PD-S29-LEAD-FORM-FIELDS.
+	  contact_email: Email; validated via frappe.utils.validate_email_address.
+	    PD-S29-LEAD-FORM-FIELDS.
+	  meeting_brief: Short text summary of the contact. Non-empty.
+	    PD-S29-LEAD-FORM-FIELDS.
 
 	Returns:
 	  Dict with name, company_name, territory, contact_date, priority,
-	  status, lead_owner.
+	  status, lead_owner, contact_number, contact_email, meeting_brief.
 
 	Raises:
-	  frappe.ValidationError: priority outside 1-5, or any controller
-	    validation failure.
+	  frappe.ValidationError: priority outside 1-5, missing/malformed
+	    contact_number, missing/malformed contact_email, missing
+	    meeting_brief, or any controller validation failure.
 	"""
 	try:
 		priority_int = int(priority)
@@ -267,11 +285,51 @@ def create_lead(
 	if not (1 <= priority_int <= 5):
 		frappe.throw("Priority must be 1-5.", frappe.ValidationError)
 
+	# PD-S29-LEAD-FORM-FIELDS — 3 new mandatory fields validated at API
+	# boundary. Column-level reqd stays 0 (nullable) so the pre-S30 rows
+	# stay readable as NULL; mandatory-ness is enforced ONLY at create-time
+	# via this block. Forward-only; no backfill.
+	contact_number = (contact_number or "").strip()
+	if not contact_number:
+		frappe.throw("Contact number is required.", frappe.ValidationError)
+	# _normalize_phone returns input unchanged on failure (no-throw,
+	# caller-decides contract — see helper docstring). For the create-lead
+	# path we want loud rejection, so post-check the canonical shape
+	# (+91- + 10 digits = 14 chars).
+	contact_number_norm = _normalize_phone(contact_number)
+	if not (contact_number_norm.startswith("+91-") and len(contact_number_norm) == 14):
+		frappe.throw(
+			f"Contact number must be a 10-digit Indian phone (got: {contact_number!r}).",
+			frappe.ValidationError,
+		)
+	contact_number = contact_number_norm
+
+	contact_email = (contact_email or "").strip()
+	if not contact_email:
+		frappe.throw("Contact email is required.", frappe.ValidationError)
+	# validate_email_address raises frappe.InvalidEmailAddressError on
+	# malformed input; we wrap to surface a ValidationError consistent
+	# with the other fields here.
+	try:
+		validate_email_address(contact_email, throw=True)
+	except Exception:
+		frappe.throw(
+			f"Contact email is not a valid email address (got: {contact_email!r}).",
+			frappe.ValidationError,
+		)
+
+	meeting_brief = (meeting_brief or "").strip()
+	if not meeting_brief:
+		frappe.throw("Meeting brief is required.", frappe.ValidationError)
+
 	doc = frappe.new_doc("VECRM Lead")
 	doc.company_name = company_name
 	doc.territory = territory
 	doc.contact_date = contact_date
 	doc.priority = priority_int
+	doc.contact_number = contact_number
+	doc.contact_email = contact_email
+	doc.meeting_brief = meeting_brief
 	doc.status = "Open"
 	doc.lead_owner = frappe.session.user
 	# Per-rep attribution for PD-S28 scoping (S27 PR #20). Reads the
@@ -290,6 +348,9 @@ def create_lead(
 		"priority": doc.priority,
 		"status": doc.status,
 		"lead_owner": doc.lead_owner,
+		"contact_number": doc.contact_number,
+		"contact_email": doc.contact_email,
+		"meeting_brief": doc.meeting_brief,
 	}
 
 
@@ -315,7 +376,7 @@ from datetime import timedelta
 from typing import Any
 
 from frappe import _
-from frappe.utils import now_datetime, get_datetime
+from frappe.utils import now_datetime, get_datetime, validate_email_address
 from frappe.utils.password import passlibctx
 
 from vecrm.vecrm.utils.auth_reset import (
