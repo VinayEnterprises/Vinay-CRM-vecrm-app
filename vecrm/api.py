@@ -234,9 +234,9 @@ def create_lead(
 	territory: str,
 	contact_date: str,
 	priority: int,
-	contact_number: str,
-	contact_email: str,
-	meeting_brief: str,
+	contact_number: str = None,
+	contact_email: str = None,
+	meeting_brief: str = None,
 ) -> dict:
 	"""Create a VECRM Lead from the portal.
 
