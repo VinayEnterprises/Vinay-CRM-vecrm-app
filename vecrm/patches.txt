@@ -13,3 +13,4 @@ vecrm.patches.v1_1.extend_lead_inquiry_perms
 vecrm.patches.v1_1.add_pin_auth_fields
 vecrm.patches.v1_1.add_lead_creating_employee
 vecrm.patches.v1_2.add_auth_reset_token_doctype
+vecrm.patches.v1_3.add_lead_required_fields
