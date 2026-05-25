@@ -77,13 +77,15 @@ class VECRMLead(Document):
 		before = self.get_doc_before_save()
 		if before is None:
 			return
-		if before.lead_owner == self.lead_owner:
-			return
 
 		ts = now()
-		# LEAD-OWNER-ATTRIBUTION fix (S31): record the actual human who reassigned, not the BFF service account.
+		# Actor identity for any audit row written below. PD-S30-LEAD-OWNER-ATTRIBUTION (S31):
+		# read the human's vecrm_email from session data, fall back to session.user only if
+		# the session lacks the stash (defensive — covers Desk admin paths that don't go through
+		# _issue_session).
 		actor = frappe.session.data.get("vecrm_email") or frappe.session.user
 
+		# === Owner-change detection (PD-S30-LEAD-OWNER-ATTRIBUTION) ===
 		# Two intentional writes per owner change in the same save
 		# transaction:
 		#   (1) Append-row to the parent's child-table
@@ -96,24 +98,49 @@ class VECRMLead(Document):
 		#       parent. Both rows carry identical from/to/by/timestamp/
 		#       ref tuples by design — child is the parent's
 		#       breadcrumb; ledger is the system record.
-		self.append("reassignment_history", {
-			"from_owner": before.lead_owner,
-			"to_owner": self.lead_owner,
-			"changed_by": actor,
-			"change_reason": "lead_owner change",
-			"ref_document": self.name,
-			"event_timestamp": ts,
-		})
+		if before.lead_owner != self.lead_owner:
+			self.append("reassignment_history", {
+				"from_owner": before.lead_owner,
+				"to_owner": self.lead_owner,
+				"changed_by": actor,
+				"change_reason": "lead_owner change",
+				"ref_document": self.name,
+				"event_timestamp": ts,
+			})
 
-		frappe.get_doc({
-			"doctype": "VECRM Assignment Ledger Entry",
-			"from_owner": before.lead_owner,
-			"to_owner": self.lead_owner,
-			"changed_by": actor,
-			"change_reason": "lead_owner change",
-			"ref_document": self.name,
-			"event_timestamp": ts,
-		}).insert(ignore_permissions=True)
+			frappe.get_doc({
+				"doctype": "VECRM Assignment Ledger Entry",
+				"from_owner": before.lead_owner,
+				"to_owner": self.lead_owner,
+				"changed_by": actor,
+				"change_reason": "lead_owner change",
+				"ref_document": self.name,
+				"event_timestamp": ts,
+			}).insert(ignore_permissions=True)
+
+		# === Status-change detection (PD-S29-LEAD-INQUIRY-CLOSURE-UI) ===
+		# Parallel to owner-change above. Same reassignment_history child table is
+		# reused as a generic transition log; change_reason disambiguates event type.
+		# Same dual-write pattern: append to parent's child table + insert ledger entry.
+		if before.status != self.status:
+			self.append("reassignment_history", {
+				"from_owner": before.status,
+				"to_owner": self.status,
+				"changed_by": actor,
+				"change_reason": f"status: {before.status} → {self.status}",
+				"ref_document": self.name,
+				"event_timestamp": ts,
+			})
+
+			frappe.get_doc({
+				"doctype": "VECRM Assignment Ledger Entry",
+				"from_owner": before.status,
+				"to_owner": self.status,
+				"changed_by": actor,
+				"change_reason": f"status: {before.status} → {self.status}",
+				"ref_document": self.name,
+				"event_timestamp": ts,
+			}).insert(ignore_permissions=True)
 
 	def convert_to_inquiry(
 		self,

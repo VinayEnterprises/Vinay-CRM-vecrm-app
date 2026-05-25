@@ -237,6 +237,8 @@ def create_lead(
 	contact_number: str = None,
 	contact_email: str = None,
 	meeting_brief: str = None,
+	contact_person_name: str = None,
+	contact_person_designation: str = None,
 ) -> dict:
 	"""Create a VECRM Lead from the portal.
 
@@ -330,6 +332,11 @@ def create_lead(
 	doc.contact_number = contact_number
 	doc.contact_email = contact_email
 	doc.meeting_brief = meeting_brief
+	# PD-S30-LEAD-CONTACT-FIELDS: optional contact-person fields
+	if contact_person_name:
+		doc.contact_person_name = contact_person_name.strip()
+	if contact_person_designation:
+		doc.contact_person_designation = contact_person_designation.strip()
 	doc.status = "Open"
 	# LEAD-OWNER-ATTRIBUTION fix (S31): use human's vecrm_email from session data,
 	# NOT frappe.session.user (which is the BFF service account in portal context).
@@ -365,7 +372,257 @@ def create_lead(
 		"contact_number": doc.contact_number,
 		"contact_email": doc.contact_email,
 		"meeting_brief": doc.meeting_brief,
+		"contact_person_name": doc.contact_person_name or "",
+		"contact_person_designation": doc.contact_person_designation or "",
 	}
+
+
+@frappe.whitelist()
+def close_lead(name: str, outcome: str, notes: str = "") -> dict:
+    """Close a VECRM Lead with a final outcome.
+
+    PD-S29-LEAD-INQUIRY-CLOSURE-UI: operator-driven manual closure.
+    Outcomes: 'Closed-Won' (sale made) or 'Closed-Lost' (sale lost).
+    Status is immutable once Closed-*; closure_notes optional but recommended.
+
+    Args:
+        name: VECRM Lead PK (e.g. 'VE/LEAD/00020/26-27')
+        outcome: 'Closed-Won' or 'Closed-Lost'
+        notes: free-form text captured at closure (stored in closure_notes)
+
+    Returns:
+        {"success": True, "name": name, "status": outcome}
+
+    Raises:
+        ValidationError on: invalid outcome, lead already in terminal state,
+        invalid lead name, or session lacking vecrm_email.
+    """
+    if outcome not in ("Closed-Won", "Closed-Lost"):
+        frappe.throw(
+            frappe._("Invalid outcome '{0}'. Must be Closed-Won or Closed-Lost.").format(outcome),
+            frappe.ValidationError,
+        )
+
+    # Session identity (same pattern as create_lead)
+    vecrm_email = frappe.session.data.get("vecrm_email")
+    if not vecrm_email:
+        frappe.throw(
+            frappe._("VECRM session missing vecrm_email. Re-login required."),
+            frappe.SessionStopped,
+        )
+
+    doc = frappe.get_doc("VECRM Lead", name)
+
+    # Reject if already in terminal state
+    if doc.status in ("Closed-Won", "Closed-Lost"):
+        frappe.throw(
+            frappe._("Lead {0} is already in terminal state '{1}'.").format(name, doc.status),
+            frappe.ValidationError,
+        )
+
+    # Capture transition for audit (mirrors lead_owner change pattern)
+    doc.status = outcome
+    if notes:
+        doc.closure_notes = notes.strip()
+    doc.save()
+
+    return {
+        "success": True,
+        "name": doc.name,
+        "status": doc.status,
+        "closure_notes": doc.closure_notes or "",
+    }
+
+
+@frappe.whitelist()
+def close_inquiry(name: str, outcome: str, notes: str = "") -> dict:
+    """Close a VECRM Inquiry with a final outcome.
+
+    PD-S29-LEAD-INQUIRY-CLOSURE-UI: operator-driven manual closure.
+    Outcomes: 'Closed-Won' (sale made) or 'Closed-Lost' (sale lost).
+    Status is immutable once Closed-*; closure_notes optional.
+
+    Args:
+        name: VECRM Inquiry PK (e.g. 'VE/INQ/00015/26-27')
+        outcome: 'Closed-Won' or 'Closed-Lost'
+        notes: free-form text captured at closure
+
+    Returns:
+        {"success": True, "name": name, "status": outcome}
+
+    Raises:
+        ValidationError on: invalid outcome, inquiry already in terminal state,
+        or session lacking vecrm_email.
+    """
+    if outcome not in ("Closed-Won", "Closed-Lost"):
+        frappe.throw(
+            frappe._("Invalid outcome '{0}'. Must be Closed-Won or Closed-Lost.").format(outcome),
+            frappe.ValidationError,
+        )
+
+    vecrm_email = frappe.session.data.get("vecrm_email")
+    if not vecrm_email:
+        frappe.throw(
+            frappe._("VECRM session missing vecrm_email. Re-login required."),
+            frappe.SessionStopped,
+        )
+
+    doc = frappe.get_doc("VECRM Inquiry", name)
+
+    if doc.status in ("Closed-Won", "Closed-Lost"):
+        frappe.throw(
+            frappe._("Inquiry {0} is already in terminal state '{1}'.").format(name, doc.status),
+            frappe.ValidationError,
+        )
+
+    doc.status = outcome
+    if notes:
+        doc.closure_notes = notes.strip()
+    doc.save()
+
+    return {
+        "success": True,
+        "name": doc.name,
+        "status": doc.status,
+        "closure_notes": doc.closure_notes or "",
+    }
+
+
+@frappe.whitelist()
+def upload_lead_attachment(lead_name: str, slot: int) -> dict:
+    """Upload a file to a specific attachment slot on a Lead.
+
+    PD-S30-LEAD-ATTACHMENTS: supports up to 3 attachments per Lead.
+    File arrives via Frappe's standard /api/method/upload_file mechanism;
+    this endpoint wires the resulting file URL into the requested slot.
+
+    Args:
+        lead_name: VECRM Lead PK
+        slot: 1, 2, or 3 (which attachment_N field to set)
+
+    Returns:
+        {"success": True, "slot": slot, "file_url": <url>}
+
+    Raises:
+        ValidationError on: invalid slot, slot already filled, lead in terminal
+        state, missing session identity, or no file in request.
+    """
+    if slot not in (1, 2, 3):
+        frappe.throw(
+            frappe._("Invalid slot {0}. Must be 1, 2, or 3.").format(slot),
+            frappe.ValidationError,
+        )
+
+    vecrm_email = frappe.session.data.get("vecrm_email")
+    if not vecrm_email:
+        frappe.throw(
+            frappe._("VECRM session missing vecrm_email. Re-login required."),
+            frappe.SessionStopped,
+        )
+
+    # File must be in request as multipart (Frappe's standard upload_file pattern)
+    files = frappe.request.files
+    if "file" not in files:
+        frappe.throw(
+            frappe._("No file in upload request."),
+            frappe.ValidationError,
+        )
+
+    doc = frappe.get_doc("VECRM Lead", lead_name)
+
+    # Block uploads on closed leads
+    if doc.status in ("Closed-Won", "Closed-Lost"):
+        frappe.throw(
+            frappe._("Cannot modify attachments on closed Lead {0}.").format(lead_name),
+            frappe.ValidationError,
+        )
+
+    # Block overwriting an existing attachment without explicit delete first
+    slot_field = f"attachment_{slot}"
+    current = getattr(doc, slot_field, None)
+    if current:
+        frappe.throw(
+            frappe._("Slot {0} already filled. Delete first or use a different slot.").format(slot),
+            frappe.ValidationError,
+        )
+
+    # Upload via Frappe's standard mechanism (writes to private/files/)
+    file_doc = frappe.get_doc({
+        "doctype": "File",
+        "file_name": files["file"].filename,
+        "attached_to_doctype": "VECRM Lead",
+        "attached_to_name": lead_name,
+        "attached_to_field": slot_field,
+        "is_private": 1,
+        "content": files["file"].read(),
+    }).insert(ignore_permissions=True)
+
+    # Wire URL into the slot
+    setattr(doc, slot_field, file_doc.file_url)
+    doc.save()
+
+    return {
+        "success": True,
+        "slot": slot,
+        "file_url": file_doc.file_url,
+    }
+
+
+@frappe.whitelist()
+def delete_lead_attachment(lead_name: str, slot: int) -> dict:
+    """Delete an attachment from a specific slot on a Lead.
+
+    PD-S30-LEAD-ATTACHMENTS: clears the slot's file URL and removes the
+    underlying File doctype row.
+
+    Args:
+        lead_name: VECRM Lead PK
+        slot: 1, 2, or 3
+
+    Returns:
+        {"success": True, "slot": slot}
+    """
+    if slot not in (1, 2, 3):
+        frappe.throw(
+            frappe._("Invalid slot {0}. Must be 1, 2, or 3.").format(slot),
+            frappe.ValidationError,
+        )
+
+    vecrm_email = frappe.session.data.get("vecrm_email")
+    if not vecrm_email:
+        frappe.throw(
+            frappe._("VECRM session missing vecrm_email. Re-login required."),
+            frappe.SessionStopped,
+        )
+
+    doc = frappe.get_doc("VECRM Lead", lead_name)
+
+    if doc.status in ("Closed-Won", "Closed-Lost"):
+        frappe.throw(
+            frappe._("Cannot modify attachments on closed Lead {0}.").format(lead_name),
+            frappe.ValidationError,
+        )
+
+    slot_field = f"attachment_{slot}"
+    current_url = getattr(doc, slot_field, None)
+    if not current_url:
+        # Idempotent: deleting an empty slot is a no-op success
+        return {"success": True, "slot": slot, "noop": True}
+
+    # Delete the underlying File doctype row
+    file_doc = frappe.db.get_value(
+        "File",
+        {"file_url": current_url, "attached_to_doctype": "VECRM Lead", "attached_to_name": lead_name},
+        "name",
+    )
+    if file_doc:
+        frappe.delete_doc("File", file_doc, ignore_permissions=True)
+
+    # Clear the slot
+    setattr(doc, slot_field, None)
+    doc.save()
+
+    return {"success": True, "slot": slot}
 
 
 # ============================================================

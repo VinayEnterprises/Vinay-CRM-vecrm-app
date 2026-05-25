@@ -12,9 +12,15 @@
   "contact_date",
   "contact_number",
   "contact_email",
+  "contact_person_name",
+  "contact_person_designation",
   "meeting_brief",
   "priority",
   "status",
+  "closure_notes",
+  "attachment_1",
+  "attachment_2",
+  "attachment_3",
   "lead_owner",
   "creating_employee",
   "converted_inquiry",
@@ -55,6 +61,18 @@
    "description": "Validated at API boundary via frappe.utils.validate_email_address. Mandatory at create-time; column nullable for pre-S30 backward compat."
   },
   {
+   "fieldname": "contact_person_name",
+   "fieldtype": "Data",
+   "label": "Contact Person Name",
+   "description": "Name of the primary contact at the prospect organization. Optional at create-time; pre-fills the Convert-to-Inquiry modal's contact_person field. PD-S30-LEAD-CONTACT-FIELDS."
+  },
+  {
+   "fieldname": "contact_person_designation",
+   "fieldtype": "Data",
+   "label": "Contact Person Designation",
+   "description": "Job title / role of the primary contact (e.g. 'Procurement Manager'). Optional. PD-S30-LEAD-CONTACT-FIELDS."
+  },
+  {
    "fieldname": "meeting_brief",
    "fieldtype": "Small Text",
    "label": "Meeting Brief",
@@ -73,8 +91,33 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Open\nConverted\nClosed-Lost",
+   "options": "Open\nConverted\nClosed-Won\nClosed-Lost",
    "reqd": 1
+  },
+  {
+   "fieldname": "closure_notes",
+   "fieldtype": "Small Text",
+   "label": "Closure Notes",
+   "description": "Operator notes captured at lead closure (Closed-Won/Closed-Lost). Set via close_lead API; read-only via portal once set. PD-S29-LEAD-INQUIRY-CLOSURE-UI.",
+   "read_only": 1
+  },
+  {
+   "fieldname": "attachment_1",
+   "fieldtype": "Attach",
+   "label": "Attachment 1",
+   "description": "First file attachment (PDF/PNG/JPG/JPEG/DOCX/XLSX, max 10MB). Optional. Storage: private/files/. PD-S30-LEAD-ATTACHMENTS."
+  },
+  {
+   "fieldname": "attachment_2",
+   "fieldtype": "Attach",
+   "label": "Attachment 2",
+   "description": "Second file attachment (PDF/PNG/JPG/JPEG/DOCX/XLSX, max 10MB). Optional. Storage: private/files/."
+  },
+  {
+   "fieldname": "attachment_3",
+   "fieldtype": "Attach",
+   "label": "Attachment 3",
+   "description": "Third file attachment (PDF/PNG/JPG/JPEG/DOCX/XLSX, max 10MB). Optional. Storage: private/files/."
   },
   {
    "fieldname": "lead_owner",
@@ -109,7 +152,7 @@
  ],
  "idx": 0,
  "links": [],
- "modified": "2026-05-18 00:00:00.000000",
+ "modified": "2026-05-25 21:00:00.000000",
  "modified_by": "Administrator",
  "module": "VECRM",
  "name": "VECRM Lead",
