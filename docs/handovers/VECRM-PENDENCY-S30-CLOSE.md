@@ -180,6 +180,18 @@ Tally → ERPNext migration. API-driven only. Engage Ahmedabad ERPNext partner a
 
 6 PIN segment boxes not horizontally centered within the wrapper card. Single CSS line fix (likely missing `justify-content: center` on `.pin-input-6box-wrapper`). Batch with any portal PR.
 
+### PD-S31-PRE-S30-SMOKE-CLEANUP (P3) — closed at S30 close
+
+S30-close audit surfaced 2 pre-S30 smoke leftovers: VE/LEAD/00013/26-27 ("Smoke Co") and VE/LEAD/00015/26-27 ("Smoke Session 29"). Both DELETED at S30 close. Resolution noted here for audit trail. S31 cold-check should run a broader pattern probe (e.g., SELECT name, company_name FROM tabVECRM Lead — full enumeration, not just WHERE company_name LIKE 'Smoke%') to catch anything missed.
+
+### PD-S30-LEAD-CONTACT-PERSON-AUDIT (P3)
+
+The Convert-to-Inquiry modal collects contact_person (a name field — e.g., "Test Smoke" per S30 PR #19 smoke). This is NOT the same field as the proposed PD-S30-LEAD-CONTACT-FIELDS contact_person_name. Recon question for S32: should the new Lead field auto-populate the convert modal, are they intentionally separate (Lead-stage contact vs Inquiry-stage contact), or is this a legacy naming collision that should be reconciled? Audit during LEAD-CONTACT-FIELDS recon authoring.
+
+### PD-S30-OBS-A-TO-E-RECOVERY (P4)
+
+OBS-S30-A through E were referenced in the close handover §5 as "D recon-time observations" but their actual content was never captured in chat. They may exist in Code's S30 D recon findings doc at docs/dispatches/PD-S30-WORKSTREAM-D-findings.md if authored, or in Code's S30 ephemeral context. Recovery action: at S31 open, check whether the D findings doc was committed; if yes, extract A-E content and append to S30 close-handover §5 OBS table. If not recoverable, accept the loss — OBS bankings are reference material, not blocking.
+
 ### PD-S29-AUDIT-DOCTYPE-ENUM (P3)
 
 Audit-reason taxonomy at 11 values (OBS-S30-I). Move to doctype-level closed-enum at 12+ values.

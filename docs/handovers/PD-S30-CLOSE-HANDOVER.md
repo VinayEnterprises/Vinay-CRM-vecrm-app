@@ -156,7 +156,7 @@ Code must verify dispatch baseline assumptions against actual `git log` before b
 - VE/LEAD/00019/26-27 (S30 PR #19 portal smoke "Smoke Test S31") — DELETED at close
 - VE/INQ/00014/26-27 (S30 PR #19 portal smoke conversion "Smoke Test S31") — DELETED at close
 
-**Final counts:** 15 Leads, 13 Inquiries (matches pre-S30 baseline).
+**Final counts:** 14 Leads (post pre-S30 smoke cleanup: VE/LEAD/00013 + 00015 deleted at S30 close), 13 Inquiries.
 
 **Append-only audit log entries:** 6 rows from S30 smokes stay forever. Per OBS-S29-II, audit logs are append-only.
 - 3 rows at 2026-05-25 15:39 IST, event=auth.login.failed, reason=invalid_pin_format — PR-B1 smokes B1.1/B1.2/B1.3

@@ -30,7 +30,7 @@ ssh vemio "docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' | grep
 
 # Baseline counts
 ssh vemio 'docker exec vecrm-backend-1 bench --site crm.vinayenterprises.co.in mariadb -e "SELECT COUNT(*) AS leads FROM \`tabVECRM Lead\`; SELECT COUNT(*) AS inquiries FROM \`tabVECRM Inquiry\`"'
-# EXPECT: 15 leads, 13 inquiries (S30-close baseline)
+# EXPECT: 14 leads, 13 inquiries (S30-close baseline post-cleanup)
 
 # Audit log post-S30 entries — confirms append-only is intact
 ssh vemio 'docker exec vecrm-backend-1 bench --site crm.vinayenterprises.co.in mariadb -e "SELECT COUNT(*) FROM \`tabVECRM Auth Audit Log\` WHERE creation > \"2026-05-25 15:00:00\""'
@@ -119,7 +119,7 @@ Code's instinct to investigate-instead-of-comply with dispatch checklists is exc
 
 ### Production state at S30 close (S31 entry baseline)
 
-- 15 Leads, 13 Inquiries (matches pre-S30 baseline post-cleanup)
+- 14 Leads, 13 Inquiries (S30-close baseline post pre-S30 smoke cleanup)
 - 5 VECRM Employees, 1 active (Ajay)
 - `vecrm-custom:latest` running post-PR #34 image
 - `vecrm-portal` on `b922863` (post-PR #21)
