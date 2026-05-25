@@ -628,6 +628,17 @@ def login_with_pin(phone: str = "", pin: str = "") -> dict[str, Any]:
         _audit_auth("auth.login.failed", identifier=phone, path="pin", reason="missing_input")
         frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
 
+    # PD-S29-PIN-INPUT-SEGMENTED-6BOX (S30): exact-6-digit length check.
+    # Pre-DB-lookup gate; rejects malformed PINs (non-digit, wrong length)
+    # before they can compete with hash verification. Matches change_pin
+    # (api.py:1377) and post-tightening complete_pin_reset. Generic
+    # "Invalid credentials" + audit-only-with-specific-reason maintains
+    # no-enumeration: a malformed PIN looks identical to a wrong PIN
+    # externally; only the audit row carries the discriminator.
+    if not pin.isdigit() or len(pin) != 6:
+        _audit_auth("auth.login.failed", identifier=phone, path="pin", reason="invalid_pin_format")
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
     normalized = _normalize_phone(phone)
     employee_name = frappe.db.get_value("VECRM Employee", normalized, "name")
     if not employee_name:
@@ -1155,12 +1166,16 @@ def complete_pin_reset(token: str = "", new_pin: str = "") -> dict[str, Any]:
     if not token or not new_pin:
         frappe.throw(_(_RESET_GENERIC_ERROR), frappe.AuthenticationError)
 
-    # PIN format: 4-6 numeric digits (mirrors login_with_pin's accepted
-    # domain). All-digit + length check is sufficient; no complexity rules
-    # for PINs (they're a secondary credential).
-    if not new_pin.isdigit() or not (4 <= len(new_pin) <= 6):
+    # PIN format: EXACTLY 6 numeric digits (tightened S30 per
+    # PD-S29-PIN-INPUT-SEGMENTED-6BOX; matches change_pin at api.py:1377
+    # and login_with_pin's new pre-DB-lookup gate). The portal's
+    # segmented PinInput6Box enforces 6-digit structurally on the client
+    # side; this server-side check is the load-bearing defense per
+    # OBS-S29-E (UI structural enforcement shifts server-side validation
+    # from belt-and-braces to load-bearing).
+    if not new_pin.isdigit() or len(new_pin) != 6:
         frappe.throw(
-            _("PIN must be 4 to 6 digits"), frappe.ValidationError
+            _("PIN must be exactly 6 digits."), frappe.ValidationError
         )
 
     token_doc = _consume_reset_token(token, expected_reset_for="pin")
