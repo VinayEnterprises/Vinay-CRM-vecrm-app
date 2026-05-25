@@ -203,7 +203,8 @@ class VECRMTravelVoucher(Document):
         merged_payload = {
             "voucher_name": self.name,
             "voucher_doctype": self.doctype,
-            "actor_user": frappe.session.user,
+            # LEAD-OWNER-ATTRIBUTION fix (S31): record human identity in audit, not BFF service account.
+            "actor_user": frappe.session.data.get("vecrm_email") or frappe.session.user,
         }
         if payload:
             merged_payload.update(payload)

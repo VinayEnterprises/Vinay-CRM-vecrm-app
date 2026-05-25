@@ -81,7 +81,8 @@ class VECRMLead(Document):
 			return
 
 		ts = now()
-		actor = frappe.session.user
+		# LEAD-OWNER-ATTRIBUTION fix (S31): record the actual human who reassigned, not the BFF service account.
+		actor = frappe.session.data.get("vecrm_email") or frappe.session.user
 
 		# Two intentional writes per owner change in the same save
 		# transaction:

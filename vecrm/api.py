@@ -331,7 +331,21 @@ def create_lead(
 	doc.contact_email = contact_email
 	doc.meeting_brief = meeting_brief
 	doc.status = "Open"
-	doc.lead_owner = frappe.session.user
+	# LEAD-OWNER-ATTRIBUTION fix (S31): use human's vecrm_email from session data,
+	# NOT frappe.session.user (which is the BFF service account in portal context).
+	vecrm_email = frappe.session.data.get("vecrm_email")
+	if not vecrm_email:
+		frappe.throw(
+			frappe._("VECRM session missing vecrm_email. Re-login required."),
+			frappe.SessionStopped,
+		)
+	if vecrm_email == "vecrm-portal@vinayenterprises.co.in":
+		# ATT-5 assertion: belt-and-braces against future regression
+		frappe.throw(
+			frappe._("Service account cannot be lead_owner. Session-data corruption."),
+			frappe.ValidationError,
+		)
+	doc.lead_owner = vecrm_email
 	# Per-rep attribution for PD-S28 scoping (S27 PR #20). Reads the
 	# session-data key set by _issue_session at portal login. None for
 	# Desk-side admin creation — the column stays NULL there, which is
@@ -537,6 +551,19 @@ def _issue_session(employee_doc: Any, login_path: str) -> None:
     frappe.session.data.vecrm_employee_name = employee_doc.employee_name
     frappe.session.data.vecrm_employee_role = employee_doc.role
     frappe.session.data.vecrm_login_path = login_path
+    # LEAD-OWNER-ATTRIBUTION fix (S31): stash vecrm_email for downstream
+    # attribution writes (api.py:334 create_lead, vecrm_lead.py:84
+    # reassignment ledger, voucher audit logs). Per ATT-4: reject loud if
+    # the Employee record lacks vecrm_email — that's a data-integrity bug
+    # we want surfaced immediately, not silently degraded.
+    if not employee_doc.vecrm_email:
+        frappe.throw(
+            frappe._(
+                "VECRM Employee {0} missing vecrm_email; cannot issue session."
+            ).format(employee_doc.name),
+            frappe.ValidationError,
+        )
+    frappe.session.data.vecrm_email = employee_doc.vecrm_email
     frappe.local.session_obj.update(force=True)
 
 
