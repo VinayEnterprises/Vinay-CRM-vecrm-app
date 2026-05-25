@@ -17,7 +17,8 @@
   "priority",
   "priority_override_log",
   "inquiry_owner",
-  "status"
+  "status",
+  "closure_notes"
  ],
  "fields": [
   {
@@ -90,13 +91,20 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Open\nQuoting\nClosed-by-Ops",
+   "options": "Open\nQuoting\nClosed-Won\nClosed-Lost",
    "reqd": 1
+  },
+  {
+   "fieldname": "closure_notes",
+   "fieldtype": "Small Text",
+   "label": "Closure Notes",
+   "description": "Operator notes captured at inquiry closure (Closed-Won/Closed-Lost). Set via close_inquiry API; read-only via portal once set. PD-S29-LEAD-INQUIRY-CLOSURE-UI.",
+   "read_only": 1
   }
  ],
  "idx": 0,
  "links": [],
- "modified": "2026-05-18 00:00:00.000000",
+ "modified": "2026-05-25 21:00:00.000000",
  "modified_by": "Administrator",
  "module": "VECRM",
  "name": "VECRM Inquiry",
