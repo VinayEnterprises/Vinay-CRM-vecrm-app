@@ -23,10 +23,32 @@ from frappe.model.naming import make_autoname
 
 from vecrm.vecrm.voucher_counter import fy_label, next_number
 
-# Approver-role-set mapping (S22 strategic decision, FINAL).
+# Approver-role-set mapping.
+#
+# PD-S32-TV-APPROVER-SETS-EXPAND: expanded from 2 to 5 submitter roles per
+# VECRM-LOCK-ROLE-CAPABILITY-MATRIX (S32) and Q-EV-6 self-service scope.
+# The original S22 dict only covered Sales Rep + Field Engineer because
+# Sub-A (S24) was Admin-only and Admin filed every voucher manually with
+# submitter=<rep>. After S32 self-service shipped (PR portal #29 + vecrm
+# #43), Sales Head / Head of Engineers / Admin can also submit on their
+# own behalf; before_insert's `if emp.role not in APPROVER_SETS` gate
+# rejected them with 417, blocking ALL voucher submits in production.
+#
+# Approver policy (operator-locked S32):
+#   Sales Rep         -> escalates to Sales Head, then HR / Admin
+#   Field Engineer    -> escalates to Head of Engineers, then HR / Admin
+#   Sales Head        -> HR or Admin (no peer-approval)
+#   Head of Engineers -> HR or Admin (no peer-approval)
+#   Admin             -> HR or Admin (self-approval permitted; single-
+#                        person-company edge case acknowledged)
+#
+# HR is NOT a submitter (approver-only role) per Q-EV-6 scope.
 APPROVER_SETS: dict[str, list[str]] = {
-    "Sales Rep": ["Sales Head", "HR", "Admin"],
-    "Field Engineer": ["Head of Engineers", "HR", "Admin"],
+    "Sales Rep":         ["Sales Head", "HR", "Admin"],
+    "Field Engineer":    ["Head of Engineers", "HR", "Admin"],
+    "Sales Head":        ["HR", "Admin"],
+    "Head of Engineers": ["HR", "Admin"],
+    "Admin":             ["HR", "Admin"],
 }
 
 # Voucher series prefix for Travel Vouchers (Layer 2 - VECRM-L8 anchor).
