@@ -128,6 +128,12 @@ def create_travel_voucher_draft(
 			frappe.ValidationError,
 		)
 
+	# PD-S32-VOUCHER-SUBMITTER-PERMISSION: non-admin callers may only file
+	# vouchers for themselves. Admin can file on behalf of anyone. Backend
+	# is authoritative — portal UX hides the dropdown for non-admin, but
+	# this gate catches any attempt to bypass via direct API call.
+	_require_voucher_submitter_self_or_admin(submitter)
+
 	try:
 		lines = json.loads(visit_lines)
 	except json.JSONDecodeError as exc:
@@ -1756,6 +1762,50 @@ def _require_admin_session() -> None:
     if role != "Admin":
         frappe.throw(
             frappe._("This action requires Admin role."),
+            frappe.PermissionError,
+        )
+
+
+def _require_voucher_submitter_self_or_admin(submitter: str) -> None:
+    """Throw frappe.PermissionError if non-admin caller targets someone else.
+
+    Used by voucher-creation endpoints to prevent privilege escalation
+    where a non-admin user files a voucher claiming a different employee
+    as submitter. Admin can file on behalf of anyone (Sub-A behavior
+    preserved).
+
+    Reads role + self-phone from frappe.session.data per
+    VECRM-LOCK-PORTAL-USER-ROLES, mirroring _require_admin_session.
+
+    Args:
+      submitter: VECRM Employee phone-id from the API caller.
+
+    Raises:
+      frappe.PermissionError:
+        - Session has no employee linkage (defensive deny).
+        - Caller is not Admin AND submitter != session's own phone.
+    """
+    session_data = frappe.session.data or {}
+    role = session_data.get("vecrm_employee_role")
+
+    if role == "Admin":
+        return  # admin can file on behalf of anyone
+
+    self_phone = session_data.get("vecrm_employee_phone")
+    if not self_phone:
+        frappe.throw(
+            frappe._(
+                "Session does not include employee linkage. Please log in again."
+            ),
+            frappe.PermissionError,
+        )
+
+    if submitter != self_phone:
+        frappe.throw(
+            frappe._(
+                "You can only file vouchers for yourself ({self}), not for "
+                "{other}. Ask an admin to file on behalf if needed."
+            ).format(self=self_phone, other=submitter),
             frappe.PermissionError,
         )
 
