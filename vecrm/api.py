@@ -17,6 +17,8 @@ Conventions:
 """
 
 import json
+import re
+import secrets
 
 import frappe
 
@@ -1717,3 +1719,330 @@ def change_pin(current_pin: str = "", new_pin: str = "") -> dict[str, Any]:
     frappe.db.commit()
 
     return {"success": True, "message": "PIN updated."}
+
+
+# ============================================================
+# ADMIN — USER MANAGEMENT (PD-S29-ADMIN-USER-MGMT, S32)
+# ============================================================
+#
+# Endpoints for the portal Admin user-management page. Admin-only —
+# enforced by `_require_admin_session` which throws PermissionError if
+# the session's `vecrm_employee_role` is not "Admin".
+#
+# These endpoints are the first practical application of
+# VECRM-LOCK-ROLE-CAPABILITY-MATRIX §3.1 (single admin role) at the
+# whitelist layer. The matrix lock §4.6 enumerates admin capabilities.
+#
+# All three endpoints accept the shared portal user's session and
+# differentiate authorization on `vecrm_employee_role` per
+# VECRM-LOCK-PORTAL-USER-ROLES.
+#
+# ============================================================
+
+
+def _require_admin_session() -> None:
+    """Throw frappe.PermissionError if the current session is not Admin.
+
+    Reads role from `frappe.session.data.vecrm_employee_role`, NOT from
+    `frappe.get_roles()` — per VECRM-LOCK-PORTAL-USER-ROLES, the shared
+    Frappe user always has the same Frappe roles, so role-differentiated
+    authorization MUST consult session.data.
+
+    No-session is treated as not-admin (throws). Missing role field is
+    treated as not-admin (throws). Anything other than the literal string
+    "Admin" is not-admin (throws).
+    """
+    role = (frappe.session.data or {}).get("vecrm_employee_role")
+    if role != "Admin":
+        frappe.throw(
+            frappe._("This action requires Admin role."),
+            frappe.PermissionError,
+        )
+
+
+def _generate_temp_password() -> str:
+    """Generate a cryptographically secure temp password.
+
+    Returns ~11 chars of url-safe base64 (letters + digits + `-`/`_`).
+    Example: 'Xj9-2bk3Fw1'.
+
+    The byte count (8) yields ~11 base64 chars (ceil(8 * 4/3) = 11).
+    Strength: 64 bits — adequate for a single-use temp credential the
+    new employee will change after first login. (Permanent passwords
+    have an 8-char minimum policy elsewhere; this 11-char output
+    exceeds that.)
+    """
+    return secrets.token_urlsafe(8)
+
+
+@frappe.whitelist()
+def admin_list_employees(
+    status: str = "",
+    role: str = "",
+    search: str = "",
+) -> dict[str, Any]:
+    """Admin-only: list all VECRM Employees with optional filters.
+
+    Filters (all optional, combinable):
+      status: "Active" | "Suspended" | "" (no filter)
+      role: any of the 6 VecrmRole strings | "" (no filter)
+      search: substring match against employee_name (case-insensitive)
+
+    Returns:
+      {"data": [
+        {"name": <phone>, "employee_name": ..., "vecrm_phone": ...,
+         "vecrm_email": ..., "role": ..., "vecrm_base_city": ...,
+         "vecrm_account_status": ..., "reporting_approver": ...,
+         "last_login_at": ..., "creation": ...},
+        ...
+      ]}
+
+    The doc returned has the same shape as the VECRM Employee row but
+    EXCLUDES auth credential fields (password_hash, pin_hash, etc.) —
+    these are never sent to the portal.
+    """
+    _require_admin_session()
+
+    filters: dict[str, Any] = {}
+    if status:
+        if status not in ("Active", "Suspended"):
+            frappe.throw(
+                frappe._("Invalid status filter '{0}'.").format(status),
+                frappe.ValidationError,
+            )
+        filters["vecrm_account_status"] = status
+    if role:
+        valid_roles = (
+            "Admin", "Sales Head", "HR",
+            "Sales Rep", "Field Engineer", "Head of Engineers",
+        )
+        if role not in valid_roles:
+            frappe.throw(
+                frappe._("Invalid role filter '{0}'.").format(role),
+                frappe.ValidationError,
+            )
+        filters["role"] = role
+    if search:
+        filters["employee_name"] = ["like", f"%{search}%"]
+
+    rows = frappe.get_all(
+        "VECRM Employee",
+        filters=filters,
+        fields=[
+            "name",
+            "employee_name",
+            "vecrm_phone",
+            "vecrm_email",
+            "role",
+            "vecrm_base_city",
+            "vecrm_account_status",
+            "reporting_approver",
+            "last_login_at",
+            "creation",
+        ],
+        order_by="employee_name asc",
+        limit_page_length=200,
+    )
+
+    return {"data": rows}
+
+
+@frappe.whitelist()
+def admin_create_employee(
+    employee_name: str = "",
+    vecrm_phone: str = "",
+    role: str = "",
+    vecrm_base_city: str = "",
+    vecrm_email: str = "",
+    reporting_approver: str = "",
+) -> dict[str, Any]:
+    """Admin-only: create a new VECRM Employee with a generated temp password.
+
+    The temp password is generated server-side (Option 3 per
+    PD-S29-ADMIN-USER-MGMT recon) and returned ONCE in the response.
+    Admin communicates it to the new employee via existing channels
+    (WhatsApp / in-person). Cleartext is never persisted.
+
+    Required: employee_name, vecrm_phone, role, vecrm_base_city.
+    Optional: vecrm_email, reporting_approver.
+
+    Returns:
+      {"success": True,
+       "name": <phone>,
+       "employee_name": ...,
+       "temp_password": "<one-time cleartext>"}
+
+    Raises:
+      PermissionError if session not Admin.
+      ValidationError for: missing required fields, invalid role,
+        invalid phone format, invalid base_city (not in Rate Card —
+        controller throws), duplicate phone (unique constraint),
+        duplicate email.
+    """
+    _require_admin_session()
+
+    # Required-field shape narrowing (BFF should pre-validate, but
+    # whitelist endpoints defend in depth).
+    employee_name = (employee_name or "").strip()
+    vecrm_phone = (vecrm_phone or "").strip()
+    role = (role or "").strip()
+    vecrm_base_city = (vecrm_base_city or "").strip()
+    vecrm_email = (vecrm_email or "").strip()
+    reporting_approver = (reporting_approver or "").strip()
+
+    if not employee_name:
+        frappe.throw(
+            frappe._("Employee name is required."),
+            frappe.ValidationError,
+        )
+    if not vecrm_phone:
+        frappe.throw(
+            frappe._("Phone is required."),
+            frappe.ValidationError,
+        )
+    valid_roles = (
+        "Admin", "Sales Head", "HR",
+        "Sales Rep", "Field Engineer", "Head of Engineers",
+    )
+    if role not in valid_roles:
+        frappe.throw(
+            frappe._("Invalid role '{0}'.").format(role),
+            frappe.ValidationError,
+        )
+    # Phone format defense-in-depth: enforce +91-XXXXXXXXXX shape.
+    # Controller has set_only_once=1 + unique=1 but no format check;
+    # without this, an admin could create an employee with malformed
+    # phone (e.g. "9999999999" missing +91 prefix) which then breaks
+    # the autoname PK + downstream voucher/session lookups.
+    if not re.match(r"^\+91-\d{10}$", vecrm_phone):
+        frappe.throw(
+            frappe._("Phone must be in format +91-XXXXXXXXXX (10 digits after +91-)."),
+            frappe.ValidationError,
+        )
+    if not vecrm_base_city:
+        frappe.throw(
+            frappe._("Base city is required."),
+            frappe.ValidationError,
+        )
+
+    # Build the new doc. The controller's validate() runs on insert and
+    # will throw on: base_city not in Rate Card, phone immutability
+    # violation (n/a here — new doc). Uniqueness on phone + email is
+    # enforced by the schema (unique=1).
+    doc = frappe.get_doc({
+        "doctype": "VECRM Employee",
+        "employee_name": employee_name,
+        "vecrm_phone": vecrm_phone,
+        "role": role,
+        "vecrm_base_city": vecrm_base_city,
+        "vecrm_account_status": "Active",
+    })
+    if vecrm_email:
+        doc.vecrm_email = vecrm_email
+    if reporting_approver:
+        doc.reporting_approver = reporting_approver
+
+    doc.insert(ignore_permissions=True)
+
+    # Generate + hash + store temp password using the S25-canonical
+    # pattern (mirrors complete_password_reset).
+    temp_password = _generate_temp_password()
+    hashed = passlibctx.hash(temp_password)
+    frappe.db.set_value(
+        "VECRM Employee",
+        doc.name,
+        "password_hash",
+        hashed,
+        update_modified=False,
+    )
+
+    # Audit trail — record which admin created which employee.
+    _audit_auth(
+        "auth.admin.create_employee",
+        employee=doc.name,
+        path="admin",
+        reason=None,
+    )
+
+    frappe.db.commit()
+
+    return {
+        "success": True,
+        "name": doc.name,
+        "employee_name": doc.employee_name,
+        "temp_password": temp_password,
+    }
+
+
+@frappe.whitelist()
+def admin_update_employee(
+    employee: str = "",
+    employee_name: str = "",
+    role: str = "",
+    vecrm_base_city: str = "",
+    vecrm_email: str = "",
+    reporting_approver: str = "",
+    vecrm_account_status: str = "",
+) -> dict[str, Any]:
+    """Admin-only: update editable fields on an existing VECRM Employee.
+
+    Phone (PK) is NOT editable per controller's _validate_phone_immutable.
+
+    All non-employee args are optional; empty string means "do not change
+    this field". Empty employee arg means error.
+
+    Returns:
+      {"success": True, "name": <phone>}
+
+    Raises:
+      PermissionError if session not Admin.
+      ValidationError for: missing employee, invalid role, invalid status,
+        invalid base_city (controller throws), invalid email format.
+      DoesNotExistError if employee doesn't exist.
+    """
+    _require_admin_session()
+
+    employee = (employee or "").strip()
+    if not employee:
+        frappe.throw(
+            frappe._("Employee identifier (phone) is required."),
+            frappe.ValidationError,
+        )
+
+    doc = frappe.get_doc("VECRM Employee", employee)
+
+    # Apply only the fields the admin actually supplied.
+    if employee_name:
+        doc.employee_name = employee_name.strip()
+    if role:
+        valid_roles = (
+            "Admin", "Sales Head", "HR",
+            "Sales Rep", "Field Engineer", "Head of Engineers",
+        )
+        if role not in valid_roles:
+            frappe.throw(
+                frappe._("Invalid role '{0}'.").format(role),
+                frappe.ValidationError,
+            )
+        doc.role = role
+    if vecrm_base_city:
+        doc.vecrm_base_city = vecrm_base_city.strip()
+    if vecrm_email:
+        doc.vecrm_email = vecrm_email.strip()
+    if reporting_approver:
+        doc.reporting_approver = reporting_approver.strip()
+    if vecrm_account_status:
+        if vecrm_account_status not in ("Active", "Suspended"):
+            frappe.throw(
+                frappe._("Invalid account status '{0}'.").format(vecrm_account_status),
+                frappe.ValidationError,
+            )
+        doc.vecrm_account_status = vecrm_account_status
+
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
+
+    return {
+        "success": True,
+        "name": doc.name,
+    }
