@@ -236,6 +236,187 @@ def submit_travel_voucher_draft(voucher_name: str) -> dict:
 	}
 
 
+# ============================================================================
+# Expense Voucher endpoints (PD-S25-PORTAL-SUB-B-EXPENSE-VOUCHER, S32 Phase 2)
+# ============================================================================
+#
+# Mirror structure of TV endpoints:
+#   create_expense_voucher_draft  <->  create_travel_voucher_draft
+#   submit_expense_voucher_draft  <->  submit_travel_voucher_draft
+#
+# Differences from TV (verified via S32 Phase 2 recon):
+#   - business_date -> expense_date
+#   - visit_lines -> expense_lines
+#   - line fields: category / amount / description / attachment
+#   - No per-line rate computation (amount is user-supplied)
+#   - No APPROVER_SETS gate in EV controller before_insert (portal
+#     authorization handled by _require_voucher_submitter_self_or_admin)
+#   - Attachment is REQUIRED at API endpoint level (Q-EV-CONFIRM-ATTACH=b)
+#   - Attachment URL existence is verified via File doctype lookup
+#     (Q-EV-RECEIPT-VERIFY=on, defense-in-depth)
+
+
+@frappe.whitelist()
+def create_expense_voucher_draft(
+	submitter: str,
+	expense_date: str,
+	expense_lines: str,
+) -> dict:
+	"""Create a VECRM Expense Voucher in DRAFT state (docstatus=0).
+
+	Args:
+	  submitter: VECRM Employee name (phone-id, e.g. "+91-9998583596").
+	  expense_date: Date of expenses (YYYY-MM-DD). Drives FY allocation.
+	  expense_lines: JSON-encoded array of line objects with fields:
+	    category   (str, one of: Hotel/Food/Supplies/Communication/Misc)
+	    amount     (number, > 0)
+	    description (str, non-empty)
+	    attachment (str, Frappe file URL, REQUIRED per Q-EV-CONFIRM-ATTACH=b)
+
+	Returns:
+	  Dict with name, submitter, expense_date, fy_label, total_amount,
+	  submitter_role, docstatus, expense_lines (computed children).
+
+	Raises:
+	  frappe.ValidationError: invalid JSON, empty lines, missing
+	    attachment, attachment URL not in File doctype, employee not
+	    found/inactive, etc.
+	  frappe.PermissionError (via _require_voucher_submitter_self_or_admin):
+	    non-admin caller attempting to file for someone else.
+	"""
+	if not submitter:
+		frappe.throw(
+			"submitter is required (VECRM Employee phone-id).",
+			frappe.ValidationError,
+		)
+
+	if not frappe.db.exists("VECRM Employee", submitter):
+		frappe.throw(
+			f"VECRM Employee {submitter!r} does not exist.",
+			frappe.ValidationError,
+		)
+
+	# Reuse the PR #43 / PD-S32-VOUCHER-SUBMITTER-PERMISSION helper.
+	# Non-admin callers may only file vouchers for themselves; admin
+	# can file on behalf of anyone.
+	_require_voucher_submitter_self_or_admin(submitter)
+
+	try:
+		lines = json.loads(expense_lines)
+	except json.JSONDecodeError as exc:
+		frappe.throw(
+			f"expense_lines is not valid JSON: {exc}",
+			frappe.ValidationError,
+		)
+
+	if not isinstance(lines, list) or not lines:
+		frappe.throw(
+			"expense_lines must be a non-empty JSON array.",
+			frappe.ValidationError,
+		)
+
+	# Per-line validation (Q-EV-CONFIRM-ATTACH=b + Q-EV-RECEIPT-VERIFY=on).
+	# Doctype's attachment field is reqd=0 to preserve Desk admin flexibility
+	# for corrective EVs; portal-originated submissions MUST include a
+	# receipt and the receipt URL MUST exist in the File doctype.
+	for idx, line in enumerate(lines, start=1):
+		attachment = line.get("attachment")
+		if not attachment or not str(attachment).strip():
+			frappe.throw(
+				f"Expense line {idx}: receipt attachment is required. "
+				f"Upload a receipt (jpg/png/pdf, max 5MB) before submitting.",
+				frappe.ValidationError,
+			)
+		# Defense-in-depth: confirm the URL refers to a real File row.
+		# Prevents spoofed/fabricated URLs from being attached to a voucher.
+		if not frappe.db.exists("File", {"file_url": attachment}):
+			frappe.throw(
+				f"Expense line {idx}: receipt URL {attachment!r} is not a "
+				f"recognized upload. Re-upload the receipt and try again.",
+				frappe.ValidationError,
+			)
+
+	doc = frappe.new_doc("VECRM Expense Voucher")
+	doc.submitter = submitter
+	doc.expense_date = expense_date
+
+	for line in lines:
+		doc.append("expense_lines", {
+			"category": line.get("category"),
+			"amount": line.get("amount"),
+			"description": line.get("description"),
+			"attachment": line.get("attachment"),
+		})
+
+	# insert() runs autoname (VE/EV/####/FY via voucher_counter),
+	# before_insert (snapshot submitter_role), validate (per-line
+	# amount > 0, total_amount recomputed), and DB insert atomically.
+	doc.insert()
+
+	return {
+		"name": doc.name,
+		"submitter": doc.submitter,
+		"submitter_role": doc.submitter_role,
+		"expense_date": str(doc.expense_date),
+		"fy_label": doc.fy_label,
+		"total_amount": doc.total_amount,
+		"docstatus": doc.docstatus,
+		"expense_lines": [
+			{
+				"category": line.category,
+				"amount": line.amount,
+				"description": line.description,
+				"attachment": line.attachment,
+			}
+			for line in doc.expense_lines
+		],
+	}
+
+
+@frappe.whitelist()
+def submit_expense_voucher_draft(voucher_name: str) -> dict:
+	"""Submit a previously-created draft Expense Voucher (docstatus 0 -> 1).
+
+	Args:
+	  voucher_name: Name (e.g. 'VE/EV/00001/26-27') of the draft to submit.
+
+	Returns:
+	  Dict with name, docstatus (1), total_amount, submitted_at.
+
+	Raises:
+	  frappe.ValidationError: voucher doesn't exist or not in draft state.
+	  frappe.PermissionError: non-admin caller attempting to submit
+	    someone else's voucher.
+	"""
+	if not frappe.db.exists("VECRM Expense Voucher", voucher_name):
+		frappe.throw(
+			f"Expense Voucher {voucher_name!r} does not exist.",
+			frappe.ValidationError,
+		)
+
+	doc = frappe.get_doc("VECRM Expense Voucher", voucher_name)
+
+	if doc.docstatus != 0:
+		frappe.throw(
+			f"Expense Voucher {voucher_name} is not in draft state "
+			f"(docstatus={doc.docstatus}).",
+			frappe.ValidationError,
+		)
+
+	# Reuse PR #43 helper: only the submitter (or admin) may submit.
+	_require_voucher_submitter_self_or_admin(doc.submitter)
+
+	# doc.submit() triggers on_submit -> _audit("voucher.expense.submitted")
+	doc.submit()
+
+	return {
+		"name": doc.name,
+		"docstatus": doc.docstatus,
+		"total_amount": doc.total_amount,
+		"submitted_at": str(frappe.utils.now_datetime()),
+	}
+
+
 @frappe.whitelist()
 def create_lead(
 	company_name: str,
