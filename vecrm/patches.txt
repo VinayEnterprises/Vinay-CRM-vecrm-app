@@ -16,3 +16,4 @@ vecrm.patches.v1_2.add_auth_reset_token_doctype
 vecrm.patches.v1_3.add_lead_required_fields
 vecrm.patches.v1_4.migrate_lead_owner_attribution
 vecrm.patches.v1_5.add_lead_expansion_and_closure_fields
+vecrm.patches.v1_6.add_lead_next_followup_date

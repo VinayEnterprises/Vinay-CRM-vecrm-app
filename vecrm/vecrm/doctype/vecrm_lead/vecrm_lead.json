@@ -18,6 +18,7 @@
   "priority",
   "status",
   "closure_notes",
+  "next_followup_date",
   "attachment_1",
   "attachment_2",
   "attachment_3",
@@ -100,6 +101,13 @@
    "label": "Closure Notes",
    "description": "Operator notes captured at lead closure (Closed-Won/Closed-Lost). Set via close_lead API; read-only via portal once set. PD-S29-LEAD-INQUIRY-CLOSURE-UI.",
    "read_only": 1
+  },
+  {
+   "fieldname": "next_followup_date",
+   "fieldtype": "Date",
+   "label": "Next Follow-Up Date",
+   "in_list_view": 0,
+   "description": "Date of the next scheduled follow-up touchpoint for this lead. Optional. Set/updated via portal via update_lead_followup API. Drives the 'Due today / this week / overdue' filter chips on /leads list. PD-S30-LEAD-FOLLOWUP Phase 1."
   },
   {
    "fieldname": "attachment_1",

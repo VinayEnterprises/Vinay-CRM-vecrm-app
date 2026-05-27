@@ -853,7 +853,95 @@ _VECRM_PORTAL_USER: str = "vecrm-portal@vinayenterprises.co.in"
 _MAX_FAILED_ATTEMPTS: int = 5
 _LOCKOUT_MINUTES: int = 15
 
+@frappe.whitelist()
+def update_lead_followup(
+    lead_name: str,
+    next_followup_date: str,
+    notes: str = "",
+) -> dict:
+    """Update the next_followup_date on a VECRM Lead.
 
+    PD-S30-LEAD-FOLLOWUP Phase 1. Sets next_followup_date on the lead
+    document. Logs the transition via the existing reassignment_history
+    child table + VECRM Assignment Ledger Entry dual-write pattern
+    (handled by the controller's before_save hook — we only set the field
+    here; the controller picks up the change).
+
+    Args:
+      lead_name: VECRM Lead PK (e.g. 'VE/LEAD/00020/26-27')
+      next_followup_date: ISO date string (YYYY-MM-DD). Required.
+      notes: free-form text captured at follow-up logging. Optional;
+        appended to closure_notes is NOT done here — notes is reserved for
+        Phase 2 touchpoint doctype. Phase 1 logs notes into the
+        reassignment_history row's change_reason field via the controller.
+
+    Returns:
+      Dict with name, next_followup_date (as ISO string), status,
+      lead_owner. Matches the close_lead return shape.
+
+    Raises:
+      ValidationError on: invalid date format, lead in terminal state,
+      missing session vecrm_email.
+      SessionStopped on: missing vecrm_email in session data.
+
+    Permission model (Q-LEAD-FOLLOWUP-11 = (a) revised):
+      Authorization is enforced at the BFF layer via canReadLead
+      (creating_employee match + Admin). This whitelisted method does
+      NOT re-check at the backend — consistent with close_lead and
+      convert_lead_to_inquiry. See PD-S33-NEXT-LEAD-WRITE-AUTH-AUDIT (P3)
+      for the future cross-cutting backend-side defense-in-depth refactor.
+    """
+    from frappe.utils import getdate
+
+    # Validate date format
+    try:
+        parsed_date = getdate(next_followup_date)
+    except Exception:
+        frappe.throw(
+            frappe._("Invalid date format for next_followup_date. Expected YYYY-MM-DD, got: {0}").format(next_followup_date),
+            frappe.ValidationError,
+        )
+
+    # Session identity (same pattern as close_lead)
+    vecrm_email = frappe.session.data.get("vecrm_email")
+    if not vecrm_email:
+        frappe.throw(
+            frappe._("VECRM session missing vecrm_email. Re-login required."),
+            frappe.SessionStopped,
+        )
+
+    doc = frappe.get_doc("VECRM Lead", lead_name)
+
+    # Terminal-state guard (Q-LEAD-FOLLOWUP-12 = (a))
+    if doc.status in ("Converted", "Closed-Won", "Closed-Lost"):
+        frappe.throw(
+            frappe._("Lead {0} is in terminal state '{1}'. Follow-up actions are not permitted on terminal leads.").format(lead_name, doc.status),
+            frappe.ValidationError,
+        )
+
+    # Set the field. The controller's before_save hook will detect the
+    # change and log it via reassignment_history + Assignment Ledger Entry.
+    # NOTE: the existing before_save change-detection only handles
+    # lead_owner and status changes (per vecrm_lead.py). It does NOT
+    # currently detect next_followup_date changes. The Phase 1 controller
+    # update below extends before_save to also log next_followup_date
+    # transitions, using the same reassignment_history dual-write.
+    doc.next_followup_date = parsed_date
+    if notes:
+        # Notes are stored transiently in flags for the controller to read
+        # during before_save. Not persisted to the lead row itself; the
+        # change_reason on the reassignment_history row carries the notes.
+        doc.flags.followup_notes = notes.strip()
+    doc.save()
+
+    return {
+        "success": True,
+        "name": doc.name,
+        "next_followup_date": str(doc.next_followup_date) if doc.next_followup_date else None,
+        "status": doc.status,
+        "lead_owner": doc.lead_owner,
+    }
+    
 def _audit_auth(
     event: str,
     *,

@@ -141,7 +141,36 @@ class VECRMLead(Document):
 				"ref_document": self.name,
 				"event_timestamp": ts,
 			}).insert(ignore_permissions=True)
+# === Follow-up date change detection (PD-S30-LEAD-FOLLOWUP Phase 1) ===
+		# Same dual-write pattern as owner + status. The flags-borne notes
+		# (set by vecrm.api.update_lead_followup) become the change_reason
+		# suffix so the audit row carries the rep's note context.
+		if before.next_followup_date != self.next_followup_date:
+			notes = (self.flags.get("followup_notes") or "").strip()
+			before_d = str(before.next_followup_date) if before.next_followup_date else "null"
+			after_d = str(self.next_followup_date) if self.next_followup_date else "null"
+			change_reason = f"followup: {before_d} → {after_d}"
+			if notes:
+				change_reason = f"{change_reason} | note: {notes}"
 
+			self.append("reassignment_history", {
+				"from_owner": before_d,
+				"to_owner": after_d,
+				"changed_by": actor,
+				"change_reason": change_reason,
+				"ref_document": self.name,
+				"event_timestamp": ts,
+			})
+
+			frappe.get_doc({
+				"doctype": "VECRM Assignment Ledger Entry",
+				"from_owner": before_d,
+				"to_owner": after_d,
+				"changed_by": actor,
+				"change_reason": change_reason,
+				"ref_document": self.name,
+				"event_timestamp": ts,
+			}).insert(ignore_permissions=True)
 	def convert_to_inquiry(
 		self,
 		contact_person,
