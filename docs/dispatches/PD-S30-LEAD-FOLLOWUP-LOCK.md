@@ -31,7 +31,7 @@ Implications:
 | Q-LEAD-FOLLOWUP-8 | (a) Activate `scheduler_events` — **Phase 3 only** | No cron in Phase 1/2 |
 | Q-LEAD-FOLLOWUP-9 | (b) Dedicated "log a follow-up" modal on Lead detail | Verb-matched UX |
 | Q-LEAD-FOLLOWUP-10 | (a) Filter chips on existing `/leads` list page | Due today / Due this week / Overdue / No follow-up scheduled |
-| Q-LEAD-FOLLOWUP-11 | (c) lead_owner + Sales Head + Admin can write | Matches voucher on-behalf pattern |
+| Q-LEAD-FOLLOWUP-11 | **(a) Lead creator (creating_employee) + Admin can write. REVISED S33 mid-session.** | Original Q-11=c (lead_owner + Sales Head + Admin) revised after `canReadLead` audit revealed: (i) every existing lead-write BFF (close, convert, attach, single-read) uses `canReadLead` which only allows creating_employee + Admin; (ii) Sales Head is not yet a distinct write-permission category in `lib/scoping.ts`; (iii) backend lead methods (close_lead, convert_lead_to_inquiry) have NO permission gates beyond doctype perms — portal BFF is the sole enforcement. Q-11=c was a rapid-fire analogy to the voucher on-behalf pattern; vouchers and leads are not symmetric. If Sales Head cross-rep write access becomes a real operational need, see PD-S33-NEXT-LEAD-WRITE-AUTH-AUDIT (P3). |
 | Q-LEAD-FOLLOWUP-12 | (a) No follow-up actions on terminal leads | Converted / Closed-Won / Closed-Lost are read-only for follow-up purposes |
 | Q-LEAD-FOLLOWUP-13 | (a) Existing leads NULL — moot, demo data wipes pre-production | See PD-S33-NEXT-LEAD-DATA-WIPE |
 | Q-LEAD-FOLLOWUP-14 | (a) Phase 1 (field+filter+modal) → Phase 2 (touchpoints+badge) → Phase 3 (reminders+enum+email) | Smallest operational win first |
@@ -113,3 +113,13 @@ Implications:
 - Mobile push notifications
 - SMS reminders
 - Aggregate analytics dashboards beyond simple "due today" filter (a separate reporting initiative if needed)
+
+---
+
+## Mid-session revisions
+
+### S33 (2026-05-27) — Q-11 relaxed from (c) to (a)
+
+After Phase 1 pre-author recon audited all lead-write BFFs (`/api/leads/[name]/{close,convert,attachments,/}/route.ts`) and confirmed all use `canReadLead(creating_employee)` — i.e. (a) creator + Admin — with no Sales Head precedent in `lib/scoping.ts`, Q-11 revised from (c) to (a) to match codebase precedent. Sales Head write access is not removed conceptually; it is parked as a future cross-cutting refactor (PD-S33-NEXT-LEAD-WRITE-AUTH-AUDIT) to be applied consistently across ALL lead-write surfaces, not as a Phase 1 carve-out.
+
+Phase 1 reuses `canReadLead` for followup authorization. No new helper introduced. No new code paths for Sales Head detection.
