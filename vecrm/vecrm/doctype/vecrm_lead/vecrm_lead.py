@@ -239,7 +239,7 @@ class VECRMLead(Document):
 		return frappe.db.get_value(
 			"VECRM Lead Touchpoint",
 			filters={"lead": self.name},
-			fieldname="MAX(touchpoint_date)",
+			fieldname={"MAX": "touchpoint_date"},
 		)
 
 	def get_touchpoint_count(self):

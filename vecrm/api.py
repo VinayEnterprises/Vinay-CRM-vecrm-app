@@ -2575,7 +2575,7 @@ def _compute_lead_touchpoint_stats(lead_name: str) -> tuple:
     last = frappe.db.get_value(
         "VECRM Lead Touchpoint",
         filters={"lead": lead_name},
-        fieldname="MAX(touchpoint_date)",
+        fieldname={"MAX": "touchpoint_date"},
     )
 
     count = frappe.db.count("VECRM Lead Touchpoint", filters={"lead": lead_name})
