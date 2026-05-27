@@ -93,6 +93,14 @@ Mirror TV detail and EV detail pages, add Approve / Reject buttons and approval-
 **Banked:** S33.
 **Scope:** Trivial cleanup. S33 morning fumble created branch `fix/s33/voucher-permission-error-ux` on vemio-dashboard (wrong repo — should have been vecrm-portal). Empty branch, no semantic content. Delete local + remote.
 **Commands:** See S33-CLOSE.md when authored.
+
+### PD-S33-NEXT-LEAD-WRITE-AUTH-AUDIT (P3) — NEW
+**Banked:** S33 (Q-11 revision).
+**Scope:** If Sales Head cross-rep write access on leads becomes a real operational need, audit all lead-write surfaces (close, convert, attachments, followup, single-read) and refactor `canReadLead` → `canWriteLead` with explicit role-based extension applied CONSISTENTLY across all routes. Also retrofit backend permission gates on lead-write whitelisted methods (currently rely solely on portal BFF enforcement — see PD-S32+ BACKEND-SCOPING-DEFENSE for the broader defense-in-depth pendency).
+**Rationale:** Phase 1 of PD-S30-LEAD-FOLLOWUP-WORKFLOW relaxed Q-11 from (c) lead_owner+Sales Head+Admin to (a) creator+Admin to match existing codebase precedent. Sales Head as a portal-auth category does not yet exist in `lib/scoping.ts`. If/when it's needed, do it once across all lead writes, not as one-off per feature.
+**Trigger:** Operational complaint that Sales Heads can't log followups / close / convert on team-rep leads while rep is unavailable.
+**Effort:** ~2-3h. Single multi-file PR touching `lib/scoping.ts`, 4 BFF routes, 4 backend whitelisted methods.
+**Dependency:** None blocking. Possibly couples with PD-S32+ BACKEND-SCOPING-DEFENSE.
 ---
 
 ## Banked (deferred but not yet scheduled)
