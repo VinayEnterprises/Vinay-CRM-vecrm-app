@@ -2572,11 +2572,13 @@ def _compute_lead_touchpoint_stats(lead_name: str) -> tuple:
 
     Returns a (date | None, int) tuple. Date is None if no touchpoints exist.
     """
-    last = frappe.db.get_value(
-        "VECRM Lead Touchpoint",
-        filters={"lead": lead_name},
-        fieldname={"MAX": "touchpoint_date"},
+    result = frappe.db.sql(
+        """SELECT MAX(touchpoint_date)
+           FROM `tabVECRM Lead Touchpoint`
+           WHERE lead = %s""",
+        (lead_name,),
     )
+    last = result[0][0] if result and result[0] else None
 
     count = frappe.db.count("VECRM Lead Touchpoint", filters={"lead": lead_name})
 
