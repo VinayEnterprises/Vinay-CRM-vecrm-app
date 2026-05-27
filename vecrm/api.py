@@ -2365,3 +2365,219 @@ def admin_update_employee(
         "success": True,
         "name": doc.name,
     }
+# ============================================================================
+# PD-S30-LEAD-FOLLOWUP Phase 2 — Touchpoint API
+# ============================================================================
+
+@frappe.whitelist()
+def create_touchpoint(
+    lead_name: str,
+    touchpoint_type: str,
+    touchpoint_date: str,
+    summary: str = "",
+) -> dict:
+    """Create a VECRM Lead Touchpoint append-only audit record.
+
+    PD-S30-LEAD-FOLLOWUP Phase 2. Per Q-LEAD-FOLLOWUP-PHASE-2-ADDENDUM:
+      - Q-LFL-P2-2: BFF-layer auth via canReadLead (creator + Admin)
+      - Q-LFL-P2-6: independent of next_followup_date (touchpoint logging
+        does NOT clear or modify follow-up scheduling)
+      - Q-LFL-P2-8: append-only, no delete endpoint
+      - Q-LFL-P2-10: actor_employee Link to VECRM Employee, on_delete=Restrict
+      - Terminal-state behavior (S34 dispatch decision): ALLOWED on leads in
+        any status including Converted/Closed-Won/Closed-Lost. Post-close
+        contact is valid audit history.
+
+    Args:
+      lead_name: VECRM Lead PK (e.g. 'VE/LEAD/00020/26-27')
+      touchpoint_type: One of Call / Email / Meeting / Other
+      touchpoint_date: ISO date string (YYYY-MM-DD)
+      summary: Optional free-text summary (Small Text, ~140 chars)
+
+    Returns:
+      Dict with success flag + the new touchpoint's name (hash) + the
+      lead's updated last_contact_date and touchpoint_count (virtual fields
+      computed at read time).
+
+    Raises:
+      ValidationError on: invalid date, unknown touchpoint_type, lead not
+        found, missing session vecrm_email, missing VECRM Employee for actor.
+      SessionStopped on: missing vecrm_email in session data.
+
+    Permission model: BFF-layer enforcement only, consistent with
+    update_lead_followup (PD-S33-NEXT-LEAD-WRITE-AUTH-AUDIT P3 covers future
+    backend-side defense-in-depth across all lead-write surfaces).
+    """
+    from frappe.utils import getdate
+
+    # Validate touchpoint_type against enum (defense-in-depth beyond doctype Select)
+    valid_types = ("Call", "Email", "Meeting", "Other")
+    if touchpoint_type not in valid_types:
+        frappe.throw(
+            frappe._("Invalid touchpoint_type. Must be one of: {0}. Got: {1}").format(
+                ", ".join(valid_types), touchpoint_type
+            ),
+            frappe.ValidationError,
+        )
+
+    # Validate date format
+    try:
+        parsed_date = getdate(touchpoint_date)
+    except Exception:
+        frappe.throw(
+            frappe._("Invalid date format for touchpoint_date. Expected YYYY-MM-DD, got: {0}").format(touchpoint_date),
+            frappe.ValidationError,
+        )
+
+    # Session identity (same pattern as update_lead_followup)
+    vecrm_email = frappe.session.data.get("vecrm_email")
+    if not vecrm_email:
+        frappe.throw(
+            frappe._("VECRM session missing vecrm_email. Re-login required."),
+            frappe.SessionStopped,
+        )
+
+    # Resolve VECRM Employee for actor_employee. Session stash holds the
+    # canonical mapping; we look up the Employee by vecrm_email.
+    employee_name = frappe.db.get_value(
+        "VECRM Employee",
+        {"vecrm_email": vecrm_email},
+        "name",
+    )
+    if not employee_name:
+        frappe.throw(
+            frappe._("No VECRM Employee found for session email {0}.").format(vecrm_email),
+            frappe.ValidationError,
+        )
+
+    # Confirm lead exists (will raise DoesNotExistError if not — surfaces as 404)
+    if not frappe.db.exists("VECRM Lead", lead_name):
+        frappe.throw(
+            frappe._("VECRM Lead {0} not found.").format(lead_name),
+            frappe.DoesNotExistError,
+        )
+
+    # Create the touchpoint. Append-only by doctype permission (write=0 across
+    # all roles), so this insert is the ONLY write operation on this doc.
+    tp = frappe.get_doc({
+        "doctype": "VECRM Lead Touchpoint",
+        "lead": lead_name,
+        "touchpoint_date": parsed_date,
+        "touchpoint_type": touchpoint_type,
+        "summary": (summary or "").strip(),
+        "actor_employee": employee_name,
+    })
+    tp.insert(ignore_permissions=True)
+
+    # Read-time virtual-field computation for the response (Q-LFL-P2-3 = (b)
+    # virtual fields, read-time computed)
+    last_contact_date, touchpoint_count = _compute_lead_touchpoint_stats(lead_name)
+
+    return {
+        "success": True,
+        "name": tp.name,
+        "lead": lead_name,
+        "touchpoint_date": str(tp.touchpoint_date),
+        "touchpoint_type": tp.touchpoint_type,
+        "summary": tp.summary,
+        "actor_employee": tp.actor_employee,
+        "last_contact_date": str(last_contact_date) if last_contact_date else None,
+        "touchpoint_count": touchpoint_count,
+    }
+
+
+@frappe.whitelist()
+def list_touchpoints_for_lead(lead_name: str) -> dict:
+    """List all touchpoints for a given VECRM Lead, newest first.
+
+    PD-S30-LEAD-FOLLOWUP Phase 2. Read-only query — no pagination in Phase 2
+    (defer until any single lead accumulates >50 touchpoints, see
+    Q-LEAD-FOLLOWUP-PHASE-2-ADDENDUM "Open items for Phase 2 dispatch recon").
+
+    Args:
+      lead_name: VECRM Lead PK
+
+    Returns:
+      Dict with success flag + touchpoints array (each item: name, date, type,
+      summary, actor_employee) + derived stats (last_contact_date, count).
+
+    Raises:
+      DoesNotExistError on: lead not found.
+      SessionStopped on: missing vecrm_email.
+
+    Permission model: BFF-layer enforcement (same as create_touchpoint).
+    """
+    # Session check
+    vecrm_email = frappe.session.data.get("vecrm_email")
+    if not vecrm_email:
+        frappe.throw(
+            frappe._("VECRM session missing vecrm_email. Re-login required."),
+            frappe.SessionStopped,
+        )
+
+    if not frappe.db.exists("VECRM Lead", lead_name):
+        frappe.throw(
+            frappe._("VECRM Lead {0} not found.").format(lead_name),
+            frappe.DoesNotExistError,
+        )
+
+    # Pull touchpoints for this lead, newest first.
+    # Note: order_by is on touchpoint_date DESC, then creation DESC as a
+    # secondary tiebreaker (multiple touchpoints same date sorted by insertion order).
+    rows = frappe.get_all(
+        "VECRM Lead Touchpoint",
+        filters={"lead": lead_name},
+        fields=[
+            "name",
+            "touchpoint_date",
+            "touchpoint_type",
+            "summary",
+            "actor_employee",
+            "creation",
+        ],
+        order_by="touchpoint_date DESC, creation DESC",
+        limit_page_length=0,  # no pagination in Phase 2
+    )
+
+    # Normalize date to ISO string for JSON serialization
+    touchpoints = [
+        {
+            "name": r["name"],
+            "touchpoint_date": str(r["touchpoint_date"]) if r["touchpoint_date"] else None,
+            "touchpoint_type": r["touchpoint_type"],
+            "summary": r["summary"],
+            "actor_employee": r["actor_employee"],
+            "creation": str(r["creation"]) if r["creation"] else None,
+        }
+        for r in rows
+    ]
+
+    last_contact_date, touchpoint_count = _compute_lead_touchpoint_stats(lead_name)
+
+    return {
+        "success": True,
+        "lead": lead_name,
+        "touchpoints": touchpoints,
+        "last_contact_date": str(last_contact_date) if last_contact_date else None,
+        "touchpoint_count": touchpoint_count,
+    }
+
+
+def _compute_lead_touchpoint_stats(lead_name: str) -> tuple:
+    """Internal helper: derive (last_contact_date, touchpoint_count) for a lead.
+
+    Q-LFL-P2-3 = (b): virtual fields, computed at read time. This helper is
+    the single source of truth for derived stats; both create_touchpoint and
+    list_touchpoints_for_lead call it so the response shape is consistent.
+
+    Returns a (date | None, int) tuple. Date is None if no touchpoints exist.
+    """
+    last = frappe.db.get_value(
+        "VECRM Lead Touchpoint",
+        filters={"lead": lead_name},
+        fieldname="MAX(touchpoint_date)",
+    )
+
+    count = frappe.db.count("VECRM Lead Touchpoint", filters={"lead": lead_name})
+
+    return (last, count)
