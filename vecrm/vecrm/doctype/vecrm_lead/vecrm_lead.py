@@ -228,3 +228,23 @@ class VECRMLead(Document):
 		self.converted_inquiry = inquiry.name
 		self.save(ignore_permissions=True)
 		return inquiry.name
+	def get_last_contact_date(self):
+		"""Virtual field: latest touchpoint_date for this lead, or None.
+
+		Q-LEAD-FOLLOWUP-PHASE-2-ADDENDUM Q-LFL-P2-3 = (b) virtual fields,
+		read-time computed. NOT a doctype JSON field — accessed via this
+		method by callers that need the value (typically the portal BFF
+		when rendering Lead detail).
+		"""
+		return frappe.db.get_value(
+			"VECRM Lead Touchpoint",
+			filters={"lead": self.name},
+			fieldname="MAX(touchpoint_date)",
+		)
+
+	def get_touchpoint_count(self):
+		"""Virtual field: count of touchpoints for this lead.
+
+		Companion to get_last_contact_date. See Q-LFL-P2-3 rationale.
+		"""
+		return frappe.db.count("VECRM Lead Touchpoint", filters={"lead": self.name})

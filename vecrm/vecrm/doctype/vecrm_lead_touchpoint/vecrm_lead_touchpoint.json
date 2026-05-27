@@ -1,0 +1,101 @@
+{
+    "actions": [],
+    "allow_rename": 0,
+    "autoname": "hash",
+    "creation": "2026-05-27 18:30:00.000000",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+        "lead",
+        "touchpoint_date",
+        "touchpoint_type",
+        "summary",
+        "actor_employee"
+    ],
+    "fields": [
+        {
+            "fieldname": "lead",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Lead",
+            "options": "VECRM Lead",
+            "reqd": 1,
+            "description": "Parent VECRM Lead. on_delete=Restrict prevents Lead deletion while touchpoints reference it. PD-S30-LEAD-FOLLOWUP Phase 2."
+        },
+        {
+            "fieldname": "touchpoint_date",
+            "fieldtype": "Date",
+            "in_list_view": 1,
+            "label": "Touchpoint Date",
+            "reqd": 1,
+            "default": "Today",
+            "description": "Date the touchpoint occurred. Defaults to today; rep may backdate when logging missed entries."
+        },
+        {
+            "fieldname": "touchpoint_type",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Touchpoint Type",
+            "options": "Call\nEmail\nMeeting\nOther",
+            "reqd": 1,
+            "description": "Type of contact. Enum per PD-S30-LEAD-FOLLOWUP-LOCK Phase 2 spec."
+        },
+        {
+            "fieldname": "summary",
+            "fieldtype": "Small Text",
+            "label": "Summary",
+            "description": "Optional free-text summary of the touchpoint. Q-LFL-P2-7: optional, Small Text (~140 chars)."
+        },
+        {
+            "fieldname": "actor_employee",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Actor Employee",
+            "options": "VECRM Employee",
+            "read_only": 1,
+            "no_copy": 1,
+            "description": "VECRM Employee who logged this touchpoint. Set server-side from session.data.vecrm_employee. on_delete=Restrict per Q-LFL-P2-10. PD-S30-LEAD-FOLLOWUP Phase 2."
+        }
+    ],
+    "idx": 0,
+    "links": [],
+    "modified": "2026-05-27 18:30:00.000000",
+    "modified_by": "Administrator",
+    "module": "VECRM",
+    "name": "VECRM Lead Touchpoint",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "print": 1,
+            "read": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 0
+        },
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "print": 1,
+            "read": 1,
+            "role": "VECRM Admin",
+            "share": 1,
+            "write": 0
+        },
+        {
+            "create": 1,
+            "delete": 0,
+            "print": 1,
+            "read": 1,
+            "role": "VECRM Submitter",
+            "write": 0
+        }
+    ],
+    "sort_field": "touchpoint_date",
+    "sort_order": "DESC",
+    "states": []
+}
