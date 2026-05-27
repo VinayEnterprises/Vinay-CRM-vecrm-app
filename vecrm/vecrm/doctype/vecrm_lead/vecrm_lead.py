@@ -236,11 +236,13 @@ class VECRMLead(Document):
 		method by callers that need the value (typically the portal BFF
 		when rendering Lead detail).
 		"""
-		return frappe.db.get_value(
-			"VECRM Lead Touchpoint",
-			filters={"lead": self.name},
-			fieldname={"MAX": "touchpoint_date"},
+		result = frappe.db.sql(
+			"""SELECT MAX(touchpoint_date)
+			   FROM `tabVECRM Lead Touchpoint`
+			   WHERE lead = %s""",
+			(self.name,),
 		)
+		return result[0][0] if result and result[0] else None
 
 	def get_touchpoint_count(self):
 		"""Virtual field: count of touchpoints for this lead.
