@@ -144,6 +144,52 @@ class VECRMExpenseVoucher(Document):
             "to_state": "submitted",
         })
 
+    def on_update_after_submit(self) -> None:
+        """Guarded in-place edit of a REJECTED submitted voucher (S35 Model A).
+
+        Fires on doc.save() of a docstatus=1 doc. Approve/reject use db_set
+        (no controller cycle) so they do NOT reach here — only a genuine
+        content edit (expense lines / total) does.
+
+        Permit ONLY if approval_status == 'Rejected' AND editor is submitter
+        (or Admin). On a valid edit, transition back to Pending: clear reject
+        markers, flip status, emit resubmitted audit. Else throw.
+
+        validate() already re-ran on this save (recomputed total + line
+        integrity); this is guard + transition only.
+        """
+        prior_status = frappe.db.get_value(self.doctype, self.name, "approval_status")
+
+        if prior_status != "Rejected":
+            frappe.throw(
+                _("This voucher is submitted and cannot be edited. Only a "
+                  "rejected voucher can be corrected and resubmitted."),
+                frappe.PermissionError,
+            )
+
+        role = (frappe.session.data or {}).get("vecrm_employee_role")
+        self_phone = (frappe.session.data or {}).get("vecrm_employee_phone")
+        if role != "Admin" and self.submitter != self_phone:
+            frappe.throw(
+                _("You can only correct your own rejected vouchers."),
+                frappe.PermissionError,
+            )
+
+        self.db_set("approval_status", "Pending", update_modified=False)
+        self.db_set("rejected_by_employee", None, update_modified=False)
+        self.db_set("rejected_by_role", None, update_modified=False)
+        self.db_set("rejected_at", None, update_modified=False)
+        self.db_set("rejection_reason", None, update_modified=False)
+
+        self._audit("voucher.expense.resubmitted", {
+            "actor_employee": self.submitter,
+            "actor_role": self.submitter_role,
+            "total_amount": float(self.total_amount or 0),
+            "line_count": len(self.expense_lines),
+            "from_state": "rejected",
+            "to_state": "pending",
+        })
+
     def _audit(self, event: str, payload: dict | None = None) -> None:
         """Append-only audit row in VECRM Voucher Audit Log.
 

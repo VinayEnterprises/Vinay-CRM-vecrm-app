@@ -62,7 +62,8 @@
    "fieldtype": "Currency",
    "label": "Rate \u20b9/km (snapshot)",
    "precision": "2",
-   "read_only": 1
+   "read_only": 1,
+   "allow_on_submit": 1
   },
   {
    "description": "Business date \u2014 drives FY allocation.",
@@ -84,7 +85,8 @@
    "fieldtype": "Table",
    "label": "Visits",
    "options": "VECRM Visit Line",
-   "reqd": 1
+   "reqd": 1,
+   "allow_on_submit": 1
   },
   {
    "fieldname": "total_km",
@@ -92,7 +94,8 @@
    "in_list_view": 1,
    "label": "Total KM",
    "precision": "1",
-   "read_only": 1
+   "read_only": 1,
+   "allow_on_submit": 1
   },
   {
    "fieldname": "total_amount",
@@ -100,14 +103,16 @@
    "in_list_view": 1,
    "label": "Total Amount",
    "precision": "2",
-   "read_only": 1
+   "read_only": 1,
+   "allow_on_submit": 1
   },
   {
    "description": "JSON array of VECRM Employee.role values eligible to approve. Snapshotted at submit.",
    "fieldname": "approver_role_set",
    "fieldtype": "Small Text",
    "label": "Eligible Approvers (JSON)",
-   "read_only": 1
+   "read_only": 1,
+   "allow_on_submit": 1
   },
   {
    "fieldname": "approved_by_employee",
@@ -140,7 +145,8 @@
    "options": "Pending\nApproved\nRejected",
    "default": "Pending",
    "in_list_view": 1,
-   "in_standard_filter": 1
+   "in_standard_filter": 1,
+   "allow_on_submit": 1
   },
   {
    "fieldname": "rejected_by_employee",
