@@ -22,7 +22,12 @@
   "approved_by_employee",
   "approved_by_role",
   "approved_at",
-  "approval_notes"
+  "approval_notes",
+  "approval_status",
+  "rejected_by_employee",
+  "rejected_by_role",
+  "rejected_at",
+  "rejection_reason"
  ],
  "fields": [
   {
@@ -44,7 +49,7 @@
    "read_only": 1
   },
   {
-   "description": "Frozen at create from VECRM Employee.vecrm_base_city. Re-validated on submit (S1 §2C).",
+   "description": "Frozen at create from VECRM Employee.vecrm_base_city. Re-validated on submit (S1 \u00a72C).",
    "fieldname": "employee_base_city",
    "fieldtype": "Data",
    "in_list_view": 1,
@@ -55,12 +60,12 @@
    "description": "Frozen at create from Rate Card by employee_base_city.",
    "fieldname": "rate_per_km_applied",
    "fieldtype": "Currency",
-   "label": "Rate ₹/km (snapshot)",
+   "label": "Rate \u20b9/km (snapshot)",
    "precision": "2",
    "read_only": 1
   },
   {
-   "description": "Business date — drives FY allocation.",
+   "description": "Business date \u2014 drives FY allocation.",
    "fieldname": "business_date",
    "fieldtype": "Date",
    "in_list_view": 1,
@@ -127,6 +132,39 @@
    "fieldname": "approval_notes",
    "fieldtype": "Small Text",
    "label": "Approval Notes"
+  },
+  {
+   "fieldname": "approval_status",
+   "fieldtype": "Select",
+   "label": "Approval Status",
+   "options": "Pending\nApproved\nRejected",
+   "default": "Pending",
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "rejected_by_employee",
+   "fieldtype": "Data",
+   "label": "Rejected By (Employee)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rejected_by_role",
+   "fieldtype": "Data",
+   "label": "Rejected By (Role)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rejected_at",
+   "fieldtype": "Datetime",
+   "label": "Rejected At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rejection_reason",
+   "fieldtype": "Small Text",
+   "label": "Rejection Reason",
+   "read_only": 1
   }
  ],
  "idx": 0,
