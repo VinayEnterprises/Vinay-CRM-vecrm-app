@@ -205,6 +205,53 @@ class VECRMTravelVoucher(Document):
             "to_state": "submitted",
         })
 
+    def on_update_after_submit(self) -> None:
+        """Guarded in-place edit of a REJECTED submitted voucher (S35 Model A).
+
+        Fires on doc.save() of a docstatus=1 doc. The approve/reject flows
+        use db_set (no controller cycle) so they do NOT reach here — only a
+        genuine content edit (visit lines / totals) does.
+
+        Permit the edit ONLY if approval_status == 'Rejected' AND the editor
+        is the submitter (or Admin). On a valid edit, transition the voucher
+        back to Pending for re-review: clear reject markers, flip status,
+        emit a resubmitted audit event. Any other after-submit edit throws.
+
+        validate() has already re-run on this save (recomputing totals + line
+        integrity), so no recompute is needed here — this is guard + transition.
+        """
+        prior_status = frappe.db.get_value(self.doctype, self.name, "approval_status")
+
+        if prior_status != "Rejected":
+            frappe.throw(
+                _("This voucher is submitted and cannot be edited. Only a "
+                  "rejected voucher can be corrected and resubmitted."),
+                frappe.PermissionError,
+            )
+
+        role = (frappe.session.data or {}).get("vecrm_employee_role")
+        self_phone = (frappe.session.data or {}).get("vecrm_employee_phone")
+        if role != "Admin" and self.submitter != self_phone:
+            frappe.throw(
+                _("You can only correct your own rejected vouchers."),
+                frappe.PermissionError,
+            )
+
+        self.db_set("approval_status", "Pending", update_modified=False)
+        self.db_set("rejected_by_employee", None, update_modified=False)
+        self.db_set("rejected_by_role", None, update_modified=False)
+        self.db_set("rejected_at", None, update_modified=False)
+        self.db_set("rejection_reason", None, update_modified=False)
+
+        self._audit("voucher.travel.resubmitted", {
+            "actor_employee": self.submitter,
+            "actor_role": self.submitter_role,
+            "total_amount": float(self.total_amount or 0),
+            "total_km": float(self.total_km or 0),
+            "from_state": "rejected",
+            "to_state": "pending",
+        })
+
     def _audit(self, event: str, payload: dict | None = None) -> None:
         """Append-only audit row in VECRM Voucher Audit Log.
 
@@ -274,6 +321,7 @@ def approve_travel_voucher(
     voucher.db_set("approved_by_employee", approver_employee, update_modified=False)
     voucher.db_set("approved_by_role", approver.role, update_modified=False)
     voucher.db_set("approved_at", frappe.utils.now(), update_modified=False)
+    voucher.db_set("approval_status", "Approved", update_modified=False)
     if notes:
         voucher.db_set("approval_notes", notes, update_modified=False)
 
@@ -284,6 +332,65 @@ def approve_travel_voucher(
         "notes": notes or "",
         "from_state": "submitted",
         "to_state": "approved",
+    })
+
+    return voucher.name
+
+
+def reject_travel_voucher(
+    voucher_name: str, approver_employee: str, reason: str
+) -> str:
+    """Reject a submitted Travel Voucher (S35 Model A).
+
+    Approver action: only an employee whose role is in the voucher's
+    approver_role_set may reject. Cannot reject an already-approved voucher.
+    Sets approval_status='Rejected' + reject markers via db_set (no controller
+    cycle). reason is MANDATORY. The rep can then correct + resubmit in place
+    (on_update_after_submit flips Rejected->Pending).
+    """
+    if not reason or not reason.strip():
+        frappe.throw("A rejection reason is required.", frappe.ValidationError)
+
+    voucher = frappe.get_doc("VECRM Travel Voucher", voucher_name)
+
+    if voucher.docstatus != 1:
+        frappe.throw(
+            f"Voucher {voucher_name} is not in submitted state "
+            f"(docstatus={voucher.docstatus}).",
+            frappe.ValidationError,
+        )
+
+    if voucher.approval_status == "Approved":
+        frappe.throw(
+            f"Voucher {voucher_name} is already approved and cannot be rejected.",
+            frappe.ValidationError,
+        )
+
+    approver = frappe.get_doc("VECRM Employee", approver_employee)
+    if approver.vecrm_account_status != "Active":
+        frappe.throw(f"Approver {approver_employee} is not active.", frappe.PermissionError)
+
+    approver_set = json.loads(voucher.approver_role_set or "[]")
+    if approver.role not in approver_set:
+        frappe.throw(
+            f"Approver role '{approver.role}' not in voucher's approver "
+            f"set {approver_set}.",
+            frappe.PermissionError,
+        )
+
+    voucher.db_set("approval_status", "Rejected", update_modified=False)
+    voucher.db_set("rejected_by_employee", approver_employee, update_modified=False)
+    voucher.db_set("rejected_by_role", approver.role, update_modified=False)
+    voucher.db_set("rejected_at", frappe.utils.now(), update_modified=False)
+    voucher.db_set("rejection_reason", reason, update_modified=False)
+
+    voucher._audit("voucher.travel.rejected", {
+        "actor_employee": approver_employee,
+        "actor_role": approver.role,
+        "approver_set": approver_set,
+        "reason": reason,
+        "from_state": "submitted",
+        "to_state": "rejected",
     })
 
     return voucher.name

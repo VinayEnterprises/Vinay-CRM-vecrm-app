@@ -19,3 +19,4 @@ vecrm.patches.v1_5.add_lead_expansion_and_closure_fields
 vecrm.patches.v1_6.add_lead_next_followup_date
 vecrm.patches.v1_7.create_vecrm_lead_touchpoint
 vecrm.patches.v1_8.add_voucher_approval_status
+vecrm.patches.v1_9.set_voucher_allow_on_submit

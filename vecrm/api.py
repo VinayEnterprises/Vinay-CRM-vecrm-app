@@ -76,11 +76,55 @@ def approve_travel_voucher(
 	Returns:
 	  The voucher's name on success.
 	"""
+	_require_voucher_approver_self_or_admin(approver_employee)
+
 	from vecrm.vecrm.doctype.vecrm_travel_voucher.vecrm_travel_voucher import (
 		approve_travel_voucher as _approve,
 	)
 
 	return _approve(voucher_name, approver_employee, notes or None)
+
+
+@frappe.whitelist()
+def approve_expense_voucher(
+	voucher_name: str, approver_employee: str, notes: str = ""
+) -> str:
+	"""Approve a submitted VECRM Expense Voucher. Self-or-admin guard, then delegate."""
+	_require_voucher_approver_self_or_admin(approver_employee)
+
+	from vecrm.vecrm.doctype.vecrm_expense_voucher.vecrm_expense_voucher import (
+		approve_expense_voucher as _approve,
+	)
+
+	return _approve(voucher_name, approver_employee, notes)
+
+
+@frappe.whitelist()
+def reject_travel_voucher(
+	voucher_name: str, approver_employee: str, reason: str
+) -> str:
+	"""Reject a submitted VECRM Travel Voucher. reason mandatory; self-or-admin guard."""
+	_require_voucher_approver_self_or_admin(approver_employee)
+
+	from vecrm.vecrm.doctype.vecrm_travel_voucher.vecrm_travel_voucher import (
+		reject_travel_voucher as _reject,
+	)
+
+	return _reject(voucher_name, approver_employee, reason)
+
+
+@frappe.whitelist()
+def reject_expense_voucher(
+	voucher_name: str, approver_employee: str, reason: str
+) -> str:
+	"""Reject a submitted VECRM Expense Voucher. reason mandatory; self-or-admin guard."""
+	_require_voucher_approver_self_or_admin(approver_employee)
+
+	from vecrm.vecrm.doctype.vecrm_expense_voucher.vecrm_expense_voucher import (
+		reject_expense_voucher as _reject,
+	)
+
+	return _reject(voucher_name, approver_employee, reason)
 
 
 @frappe.whitelist()
@@ -2075,6 +2119,34 @@ def _require_voucher_submitter_self_or_admin(submitter: str) -> None:
                 "You can only file vouchers for yourself ({self}), not for "
                 "{other}. Ask an admin to file on behalf if needed."
             ).format(self=self_phone, other=submitter),
+            frappe.PermissionError,
+        )
+
+
+def _require_voucher_approver_self_or_admin(approver_employee: str) -> None:
+    """Throw frappe.PermissionError if non-admin caller approves/rejects as someone else.
+
+    Sibling of _require_voucher_submitter_self_or_admin. Identity from
+    session.data (the human), NOT frappe.session.user (the BFF service
+    account in portal context - S31 LEAD-OWNER-ATTRIBUTION). Admin may act
+    on behalf of any eligible approver; non-admin may only act AS themselves.
+    """
+    session_data = frappe.session.data or {}
+    role = session_data.get("vecrm_employee_role")
+    if role == "Admin":
+        return
+    self_phone = session_data.get("vecrm_employee_phone")
+    if not self_phone:
+        frappe.throw(
+            frappe._("Session does not include employee linkage. Please log in again."),
+            frappe.PermissionError,
+        )
+    if approver_employee != self_phone:
+        frappe.throw(
+            frappe._(
+                "You can only approve or reject vouchers as yourself ({self}), "
+                "not as {other}."
+            ).format(self=self_phone, other=approver_employee),
             frappe.PermissionError,
         )
 
