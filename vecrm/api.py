@@ -1710,21 +1710,18 @@ def complete_password_reset(token: str = "", new_password: str = "") -> dict[str
 
     employee_doc = frappe.get_doc("VECRM Employee", token_doc.employee)
 
-    # Set the new password via the S25 canonical pattern: passlibctx.hash
-    # + frappe.db.set_value to the Data-typed column on tabVECRM Employee.
+    # Set the new password on the in-memory doc so that db_update() below
+    # persists it alongside the lockout-clear fields in a single write.
     # NOT update_password() — that writes to __Auth (Frappe Password-
     # fieldtype encrypted storage) which S25 phase 4.7 deprecated for this
-    # doctype. update_modified=False keeps the row's `modified`/`modified_by`
-    # columns reflecting real operator-meaningful edits rather than
-    # credential-rotation noise. See PD-S29-AUTH-WRITE-PATTERN-FIX findings.
-    hashed = passlibctx.hash(new_password)
-    frappe.db.set_value(
-        "VECRM Employee",
-        employee_doc.name,
-        "password_hash",
-        hashed,
-        update_modified=False,
-    )
+    # doctype. db_update() does not touch `modified`/`modified_by`, keeping
+    # the row reflecting real operator-meaningful edits rather than
+    # credential-rotation noise.
+    #
+    # BUG-FIX: previously used frappe.db.set_value (direct SQL) followed by
+    # employee_doc.db_update() — but db_update() serializes ALL in-memory
+    # fields, overwriting the new hash with the stale in-memory value.
+    employee_doc.password_hash = passlibctx.hash(new_password)
 
     # Clear the password-side lockout state. A user who just successfully
     # reset their credential should be able to log in immediately. PIN
@@ -1787,16 +1784,9 @@ def complete_pin_reset(token: str = "", new_pin: str = "") -> dict[str, Any]:
 
     employee_doc = frappe.get_doc("VECRM Employee", token_doc.employee)
 
-    # See complete_password_reset for the S25-canonical write-pattern rationale.
-    hashed = passlibctx.hash(new_pin)
-    frappe.db.set_value(
-        "VECRM Employee",
-        employee_doc.name,
-        "pin_hash",
-        hashed,
-        update_modified=False,
-    )
-
+    # See complete_password_reset for the write-pattern rationale + BUG-FIX
+    # comment (db.set_value + db_update overwrite race).
+    employee_doc.pin_hash = passlibctx.hash(new_pin)
     employee_doc.failed_pin_attempts = 0
     employee_doc.pin_locked_until = None
     employee_doc.db_update()
@@ -1918,20 +1908,11 @@ def change_password(current_password: str = "", new_password: str = "") -> dict[
         # docstring above).
         frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
 
-    # 5. Write new (mirrors complete_password_reset; see canonical-pattern
-    #    comment there for the S25 rationale).
-    hashed = passlibctx.hash(new_password)
-    frappe.db.set_value(
-        "VECRM Employee",
-        employee_doc.name,
-        "password_hash",
-        hashed,
-        update_modified=False,
-    )
-
-    # 6. Clear lockout (mirrors complete_password_reset at api.py:1048-1049).
-    #    Knowing the current credential is sufficient proof of legitimacy;
-    #    don't carry login-side typing-fatigue lockout forward.
+    # 5. Write new + 6. Clear lockout — single db_update() to avoid the
+    #    db.set_value + db_update overwrite race (see complete_password_reset
+    #    BUG-FIX comment). Knowing the current credential is sufficient
+    #    proof of legitimacy; don't carry login-side lockout forward.
+    employee_doc.password_hash = passlibctx.hash(new_password)
     employee_doc.failed_password_attempts = 0
     employee_doc.locked_until = None
     employee_doc.db_update()
@@ -2016,16 +1997,9 @@ def change_pin(current_pin: str = "", new_pin: str = "") -> dict[str, Any]:
         )
         frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
 
-    # See complete_password_reset for the S25-canonical write-pattern rationale.
-    hashed = passlibctx.hash(new_pin)
-    frappe.db.set_value(
-        "VECRM Employee",
-        employee_doc.name,
-        "pin_hash",
-        hashed,
-        update_modified=False,
-    )
-
+    # See complete_password_reset BUG-FIX comment (db.set_value + db_update
+    # overwrite race).
+    employee_doc.pin_hash = passlibctx.hash(new_pin)
     employee_doc.failed_pin_attempts = 0
     employee_doc.pin_locked_until = None
     employee_doc.db_update()
