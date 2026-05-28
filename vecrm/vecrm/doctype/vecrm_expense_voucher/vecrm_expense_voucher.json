@@ -19,7 +19,12 @@
     "approved_by_employee",
     "approved_by_role",
     "approved_at",
-    "approval_notes"
+    "approval_notes",
+    "approval_status",
+    "rejected_by_employee",
+    "rejected_by_role",
+    "rejected_at",
+    "rejection_reason"
   ],
   "fields": [
     {
@@ -44,7 +49,7 @@
       "in_list_view": 1,
       "label": "Expense Date",
       "reqd": 1,
-      "description": "Business date — drives FY allocation."
+      "description": "Business date \u2014 drives FY allocation."
     },
     {
       "fieldname": "fy_label",
@@ -65,7 +70,7 @@
       "fieldname": "total_amount",
       "fieldtype": "Currency",
       "in_list_view": 1,
-      "label": "Total Amount (₹)",
+      "label": "Total Amount (\u20b9)",
       "read_only": 1,
       "description": "Sum of expense_lines.amount. Computed in validate()."
     },
@@ -89,7 +94,7 @@
       "fieldtype": "Data",
       "label": "Approved By (Role)",
       "read_only": 1,
-      "description": "Set by approve_expense_voucher() — approver's role at time of approval."
+      "description": "Set by approve_expense_voucher() \u2014 approver's role at time of approval."
     },
     {
       "fieldname": "approved_at",
@@ -104,6 +109,39 @@
       "label": "Approval Notes",
       "read_only": 1,
       "description": "Notes from approver, captured at approval time."
+    },
+    {
+      "fieldname": "approval_status",
+      "fieldtype": "Select",
+      "label": "Approval Status",
+      "options": "Pending\nApproved\nRejected",
+      "default": "Pending",
+      "in_list_view": 1,
+      "in_standard_filter": 1
+    },
+    {
+      "fieldname": "rejected_by_employee",
+      "fieldtype": "Data",
+      "label": "Rejected By (Employee)",
+      "read_only": 1
+    },
+    {
+      "fieldname": "rejected_by_role",
+      "fieldtype": "Data",
+      "label": "Rejected By (Role)",
+      "read_only": 1
+    },
+    {
+      "fieldname": "rejected_at",
+      "fieldtype": "Datetime",
+      "label": "Rejected At",
+      "read_only": 1
+    },
+    {
+      "fieldname": "rejection_reason",
+      "fieldtype": "Small Text",
+      "label": "Rejection Reason",
+      "read_only": 1
     }
   ],
   "idx": 0,
