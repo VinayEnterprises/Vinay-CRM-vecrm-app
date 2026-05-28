@@ -53,3 +53,9 @@ jspm_packages/
 
 # Aider AI Chat
 .aider*
+
+# VECRM throwaway smoke harnesses (one-off HTTP smoke, see PD-S33-NEXT-TEST-INFRA for real tests)
+scripts/*smoke*.py
+
+# VECRM throwaway smoke harnesses (one-off HTTP smoke, see PD-S33-NEXT-TEST-INFRA for real tests)
+scripts/*smoke*.py
