@@ -219,7 +219,6 @@ class VECRMExpenseVoucher(Document):
         }).insert(ignore_permissions=True)
 
 
-@frappe.whitelist()
 def approve_expense_voucher(
     voucher_name: str,
     approver_employee: str,
@@ -249,7 +248,16 @@ def approve_expense_voucher(
             frappe.ValidationError,
         )
 
+    if voucher.approved_by_employee:
+        frappe.throw(
+            f"Voucher {voucher_name} already approved by "
+            f"{voucher.approved_by_employee} ({voucher.approved_by_role}).",
+            frappe.ValidationError,
+        )
+
     approver = frappe.get_doc("VECRM Employee", approver_employee)
+    if approver.vecrm_account_status != "Active":
+        frappe.throw(f"Approver {approver_employee} is not active.", frappe.PermissionError)
     approver_set = json.loads(voucher.approver_set or "[]")
 
     if approver.role not in approver_set:
@@ -262,6 +270,7 @@ def approve_expense_voucher(
     voucher.db_set("approved_by_employee", approver_employee, update_modified=False)
     voucher.db_set("approved_by_role", approver.role, update_modified=False)
     voucher.db_set("approved_at", frappe.utils.now_datetime(), update_modified=False)
+    voucher.db_set("approval_status", "Approved", update_modified=False)
     if notes:
         voucher.db_set("approval_notes", notes, update_modified=False)
 
@@ -272,6 +281,63 @@ def approve_expense_voucher(
         "notes": notes or "",
         "from_state": "submitted",
         "to_state": "approved",
+    })
+
+    return voucher.name
+
+
+def reject_expense_voucher(
+    voucher_name: str, approver_employee: str, reason: str
+) -> str:
+    """Reject a submitted Expense Voucher (S35 Model A).
+
+    Mirrors reject_travel_voucher. Approver action; reason mandatory;
+    cannot reject an approved voucher. Sets approval_status='Rejected' +
+    reject markers via db_set.
+    """
+    if not reason or not reason.strip():
+        frappe.throw("A rejection reason is required.", frappe.ValidationError)
+
+    voucher = frappe.get_doc("VECRM Expense Voucher", voucher_name)
+
+    if voucher.docstatus != 1:
+        frappe.throw(
+            f"Voucher {voucher_name} is not in submitted state "
+            f"(docstatus={voucher.docstatus}).",
+            frappe.ValidationError,
+        )
+
+    if voucher.approval_status == "Approved":
+        frappe.throw(
+            f"Voucher {voucher_name} is already approved and cannot be rejected.",
+            frappe.ValidationError,
+        )
+
+    approver = frappe.get_doc("VECRM Employee", approver_employee)
+    if approver.vecrm_account_status != "Active":
+        frappe.throw(f"Approver {approver_employee} is not active.", frappe.PermissionError)
+
+    approver_set = json.loads(voucher.approver_set or "[]")
+    if approver.role not in approver_set:
+        frappe.throw(
+            f"Employee {approver_employee} (role={approver.role}) is not in "
+            f"the approver_set for voucher {voucher_name}. Eligible roles: {approver_set}.",
+            frappe.PermissionError,
+        )
+
+    voucher.db_set("approval_status", "Rejected", update_modified=False)
+    voucher.db_set("rejected_by_employee", approver_employee, update_modified=False)
+    voucher.db_set("rejected_by_role", approver.role, update_modified=False)
+    voucher.db_set("rejected_at", frappe.utils.now_datetime(), update_modified=False)
+    voucher.db_set("rejection_reason", reason, update_modified=False)
+
+    voucher._audit("voucher.expense.rejected", {
+        "actor_employee": approver_employee,
+        "actor_role": approver.role,
+        "approver_set": approver_set,
+        "reason": reason,
+        "from_state": "submitted",
+        "to_state": "rejected",
     })
 
     return voucher.name
