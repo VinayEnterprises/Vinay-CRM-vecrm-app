@@ -81,9 +81,8 @@
   },
   {
    "fieldname": "inquiry_owner",
-   "fieldtype": "Link",
-   "label": "Inquiry Owner",
-   "options": "User"
+   "fieldtype": "Data",
+   "label": "Inquiry Owner"
   },
   {
    "default": "Open",
