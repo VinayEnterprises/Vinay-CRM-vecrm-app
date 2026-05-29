@@ -394,3 +394,96 @@ def reject_travel_voucher(
     })
 
     return voucher.name
+
+
+def voucher_resubmit_travel(
+    voucher,
+    visit_lines: str,
+    business_date: str | None = None,
+) -> str:
+    """Apply edits to a Rejected Travel Voucher and resubmit via doc.save().
+
+    PD-S35 Dispatch 5.8. The api.py wrapper has already loaded the doc
+    and gated via _require_voucher_submitter_self_or_admin. This function:
+
+    1. Verifies approval_status == 'Rejected' (defense in depth; the
+       on_update_after_submit hook also enforces).
+    2. Parses visit_lines JSON; refuses if not a non-empty array.
+    3. Captures existing child-row names by index — the portal form does
+       NOT round-trip the name field (form's internal VisitLine type has
+       only key/open/visit_date/customer_name/odometers/notes). Re-applying
+       names here means Frappe matches existing rows on save instead of
+       delete-all + insert-all, preserving child-row PKs across resubmit.
+    4. Rebuilds voucher.visit_lines with merged dicts (incoming fields +
+       preserved names by index where available).
+    5. Optionally overlays business_date.
+    6. Calls doc.save() — fires validate() (recompute totals + line
+       integrity) + on_update_after_submit (status flip Rejected→Pending
+       + clear reject markers + emit voucher.travel.resubmitted audit).
+
+    Args:
+      voucher: already-loaded VECRM Travel Voucher document (loaded by
+        the api.py wrapper before gating).
+      visit_lines: JSON-encoded array of visit-line dicts.
+      business_date: optional ISO YYYY-MM-DD overlay.
+
+    Returns:
+      voucher.name on success.
+
+    Raises:
+      frappe.ValidationError: voucher not in Rejected state, invalid
+        JSON, empty array, or any validate() failure.
+      frappe.PermissionError: only if on_update_after_submit's gate
+        re-rejects (shouldn't happen since the api.py wrapper already
+        gated, but defense in depth).
+    """
+    if voucher.approval_status != "Rejected":
+        frappe.throw(
+            f"Voucher {voucher.name} is not in Rejected state "
+            f"(approval_status={voucher.approval_status!r}); only Rejected "
+            f"vouchers can be resubmitted via edit.",
+            frappe.ValidationError,
+        )
+
+    try:
+        incoming = json.loads(visit_lines)
+    except json.JSONDecodeError as exc:
+        frappe.throw(
+            f"visit_lines is not valid JSON: {exc}",
+            frappe.ValidationError,
+        )
+
+    if not isinstance(incoming, list) or not incoming:
+        frappe.throw(
+            "visit_lines must be a non-empty JSON array.",
+            frappe.ValidationError,
+        )
+
+    # Capture existing child-row names BEFORE rebuild, indexed for re-apply.
+    existing_names = [
+        getattr(child, "name", None) for child in (voucher.visit_lines or [])
+    ]
+
+    # Rebuild children with name preservation by index. Incoming rows
+    # beyond existing count get no name → Frappe inserts as new. Trailing
+    # existing rows beyond incoming count are dropped on save_children.
+    new_children = []
+    for idx, line in enumerate(incoming):
+        if not isinstance(line, dict):
+            frappe.throw(
+                "Each visit_lines entry must be a JSON object.",
+                frappe.ValidationError,
+            )
+        merged = dict(line)
+        if idx < len(existing_names) and existing_names[idx]:
+            merged["name"] = existing_names[idx]
+        new_children.append(merged)
+    voucher.set("visit_lines", new_children)
+
+    if business_date:
+        voucher.business_date = business_date
+
+    # validate() recomputes total_km / total_amount + per-line totals.
+    # on_update_after_submit (same save cycle) does the transition + audit.
+    voucher.save()
+    return voucher.name

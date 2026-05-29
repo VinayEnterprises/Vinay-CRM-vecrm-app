@@ -341,3 +341,63 @@ def reject_expense_voucher(
     })
 
     return voucher.name
+
+
+def voucher_resubmit_expense(
+    voucher,
+    expense_lines: str,
+    expense_date: str | None = None,
+) -> str:
+    """Apply edits to a Rejected Expense Voucher and resubmit via doc.save().
+
+    PD-S35 Dispatch 5.8. Sibling of voucher_resubmit_travel; see that
+    function for the architectural notes. EV diverges only in:
+      - Children field name: expense_lines (vs visit_lines)
+      - Top-level date: expense_date (vs business_date)
+      - Audit event: voucher.expense.resubmitted (vs travel)
+    All hook + validate semantics are otherwise identical.
+    """
+    if voucher.approval_status != "Rejected":
+        frappe.throw(
+            f"Voucher {voucher.name} is not in Rejected state "
+            f"(approval_status={voucher.approval_status!r}); only Rejected "
+            f"vouchers can be resubmitted via edit.",
+            frappe.ValidationError,
+        )
+
+    try:
+        incoming = json.loads(expense_lines)
+    except json.JSONDecodeError as exc:
+        frappe.throw(
+            f"expense_lines is not valid JSON: {exc}",
+            frappe.ValidationError,
+        )
+
+    if not isinstance(incoming, list) or not incoming:
+        frappe.throw(
+            "expense_lines must be a non-empty JSON array.",
+            frappe.ValidationError,
+        )
+
+    existing_names = [
+        getattr(child, "name", None) for child in (voucher.expense_lines or [])
+    ]
+
+    new_children = []
+    for idx, line in enumerate(incoming):
+        if not isinstance(line, dict):
+            frappe.throw(
+                "Each expense_lines entry must be a JSON object.",
+                frappe.ValidationError,
+            )
+        merged = dict(line)
+        if idx < len(existing_names) and existing_names[idx]:
+            merged["name"] = existing_names[idx]
+        new_children.append(merged)
+    voucher.set("expense_lines", new_children)
+
+    if expense_date:
+        voucher.expense_date = expense_date
+
+    voucher.save()
+    return voucher.name

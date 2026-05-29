@@ -128,6 +128,62 @@ def reject_expense_voucher(
 
 
 @frappe.whitelist()
+def voucher_resubmit_travel(
+	voucher_name: str, visit_lines: str, business_date: str = ""
+) -> str:
+	"""Submitter or admin edits a Rejected Travel Voucher in place and resubmits.
+
+	PD-S35 Dispatch 5.8 (S82). The HTTP-layer DocPerm system requires
+	`amend` permission to update docstatus=1 docs via /api/method/
+	frappe.client.save or /api/resource PUT. The portal's service-account
+	role (VECRM Submitter) intentionally has amend=0 (amend in Frappe =
+	cancel + create new versioned copy, NOT in-place edit, which would be
+	wrong here). This wrapper bypasses HTTP DocPerm by running as a
+	whitelisted backend method; auth is enforced via the same
+	submitter-or-admin gate as the on_update_after_submit hook.
+
+	Args:
+	  voucher_name: VECRM Travel Voucher PK.
+	  visit_lines: JSON-encoded array of visit-line objects (visit_date,
+	    customer_name, start_odometer, end_odometer, notes). Existing
+	    child-row names are re-applied by index inside the doctype-module
+	    impl so Frappe matches existing rows instead of insert/delete.
+	  business_date: Optional ISO YYYY-MM-DD; if non-empty, overwrites.
+
+	Returns: voucher name on success. validate() recomputes totals;
+	on_update_after_submit flips Rejected→Pending + clears reject
+	markers + emits voucher.travel.resubmitted audit.
+	"""
+	voucher = frappe.get_doc("VECRM Travel Voucher", voucher_name)
+	_require_voucher_submitter_self_or_admin(voucher.submitter)
+
+	from vecrm.vecrm.doctype.vecrm_travel_voucher.vecrm_travel_voucher import (
+		voucher_resubmit_travel as _resubmit,
+	)
+
+	return _resubmit(voucher, visit_lines, business_date or None)
+
+
+@frappe.whitelist()
+def voucher_resubmit_expense(
+	voucher_name: str, expense_lines: str, expense_date: str = ""
+) -> str:
+	"""Submitter or admin edits a Rejected Expense Voucher in place and resubmits.
+
+	Sibling of voucher_resubmit_travel; same DocPerm-bypass rationale.
+	See vecrm.api.voucher_resubmit_travel for the architectural notes.
+	"""
+	voucher = frappe.get_doc("VECRM Expense Voucher", voucher_name)
+	_require_voucher_submitter_self_or_admin(voucher.submitter)
+
+	from vecrm.vecrm.doctype.vecrm_expense_voucher.vecrm_expense_voucher import (
+		voucher_resubmit_expense as _resubmit,
+	)
+
+	return _resubmit(voucher, expense_lines, expense_date or None)
+
+
+@frappe.whitelist()
 def create_travel_voucher_draft(
 	submitter: str,
 	business_date: str,
