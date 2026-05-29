@@ -217,8 +217,12 @@ class VECRMTravelVoucher(Document):
         back to Pending for re-review: clear reject markers, flip status,
         emit a resubmitted audit event. Any other after-submit edit throws.
 
-        validate() has already re-run on this save (recomputing totals + line
-        integrity), so no recompute is needed here — this is guard + transition.
+        IMPORTANT (PD-S35 5.9): Frappe's update_after_submit save path does
+        NOT fire validate() automatically. Callers performing in-place edits
+        (e.g. voucher_resubmit_travel) MUST call voucher.validate() explicitly
+        before voucher.save() to recompute totals from edited child rows.
+        Without that, self.total_km/self.total_amount read here will be stale,
+        and the audit payload below will record the pre-edit values.
         """
         prior_status = frappe.db.get_value(self.doctype, self.name, "approval_status")
 
@@ -480,10 +484,20 @@ def voucher_resubmit_travel(
         new_children.append(merged)
     voucher.set("visit_lines", new_children)
 
-    if business_date:
+    if business_date is not None:
         voucher.business_date = business_date
 
-    # validate() recomputes total_km / total_amount + per-line totals.
-    # on_update_after_submit (same save cycle) does the transition + audit.
+    # PD-S35 5.9: Frappe's update_after_submit save path does NOT fire
+    # validate() automatically (only the per-field gate
+    # validate_update_after_submit fires, and we bypass that via the flag
+    # below). Our controller's validate() is where total_km / total_amount
+    # are recomputed from child rows + per-line totals are set — without
+    # an explicit call, totals stay stale and the audit emits pre-edit
+    # values. The flag bypasses Frappe's per-field "not allowed to change
+    # after submission" gate, which would otherwise refuse the End KM /
+    # Start KM mutations. on_update_after_submit (fires post-save) handles
+    # the Rejected→Pending transition + audit emit.
+    voucher.flags.ignore_validate_update_after_submit = True
+    voucher.validate()
     voucher.save()
     return voucher.name

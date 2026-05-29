@@ -396,8 +396,20 @@ def voucher_resubmit_expense(
         new_children.append(merged)
     voucher.set("expense_lines", new_children)
 
-    if expense_date:
-        voucher.expense_date = expense_date
+    if business_date is not None:
+        voucher.business_date = business_date
 
+    # PD-S35 5.9: Frappe's update_after_submit save path does NOT fire
+    # validate() automatically (only the per-field gate
+    # validate_update_after_submit fires, and we bypass that via the flag
+    # below). Our controller's validate() is where total_km / total_amount
+    # are recomputed from child rows + per-line totals are set — without
+    # an explicit call, totals stay stale and the audit emits pre-edit
+    # values. The flag bypasses Frappe's per-field "not allowed to change
+    # after submission" gate, which would otherwise refuse the End KM /
+    # Start KM mutations. on_update_after_submit (fires post-save) handles
+    # the Rejected→Pending transition + audit emit.
+    voucher.flags.ignore_validate_update_after_submit = True
+    voucher.validate()
     voucher.save()
     return voucher.name
