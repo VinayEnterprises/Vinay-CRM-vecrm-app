@@ -129,10 +129,9 @@
   },
   {
    "fieldname": "lead_owner",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Lead Owner",
-   "options": "User",
    "reqd": 1
   },
   {
