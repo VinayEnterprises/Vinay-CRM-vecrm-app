@@ -401,8 +401,8 @@ def voucher_resubmit_expense(
         new_children.append(merged)
     voucher.set("expense_lines", new_children)
 
-    if business_date is not None:
-        voucher.business_date = business_date
+    if expense_date is not None:
+        voucher.expense_date = expense_date
 
     # PD-S35 5.9: Frappe's update_after_submit save path does NOT fire
     # validate() automatically (only the per-field gate
