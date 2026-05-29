@@ -147,16 +147,21 @@ class VECRMExpenseVoucher(Document):
     def on_update_after_submit(self) -> None:
         """Guarded in-place edit of a REJECTED submitted voucher (S35 Model A).
 
-        Fires on doc.save() of a docstatus=1 doc. Approve/reject use db_set
-        (no controller cycle) so they do NOT reach here — only a genuine
-        content edit (expense lines / total) does.
+        Fires on doc.save() of a docstatus=1 doc. The approve/reject flows
+        use db_set (no controller cycle) so they do NOT reach here — only a
+        genuine content edit (visit lines / totals) does.
 
-        Permit ONLY if approval_status == 'Rejected' AND editor is submitter
-        (or Admin). On a valid edit, transition back to Pending: clear reject
-        markers, flip status, emit resubmitted audit. Else throw.
+        Permit the edit ONLY if approval_status == 'Rejected' AND the editor
+        is the submitter (or Admin). On a valid edit, transition the voucher
+        back to Pending for re-review: clear reject markers, flip status,
+        emit a resubmitted audit event. Any other after-submit edit throws.
 
-        validate() already re-ran on this save (recomputed total + line
-        integrity); this is guard + transition only.
+        IMPORTANT (PD-S35 5.9): Frappe's update_after_submit save path does
+        NOT fire validate() automatically. Callers performing in-place edits
+        (e.g. voucher_resubmit_travel) MUST call voucher.validate() explicitly
+        before voucher.save() to recompute totals from edited child rows.
+        Without that, self.total_km/self.total_amount read here will be stale,
+        and the audit payload below will record the pre-edit values.
         """
         prior_status = frappe.db.get_value(self.doctype, self.name, "approval_status")
 
