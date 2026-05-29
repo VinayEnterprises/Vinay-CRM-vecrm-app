@@ -147,16 +147,21 @@ class VECRMExpenseVoucher(Document):
     def on_update_after_submit(self) -> None:
         """Guarded in-place edit of a REJECTED submitted voucher (S35 Model A).
 
-        Fires on doc.save() of a docstatus=1 doc. Approve/reject use db_set
-        (no controller cycle) so they do NOT reach here — only a genuine
-        content edit (expense lines / total) does.
+        Fires on doc.save() of a docstatus=1 doc. The approve/reject flows
+        use db_set (no controller cycle) so they do NOT reach here — only a
+        genuine content edit (visit lines / totals) does.
 
-        Permit ONLY if approval_status == 'Rejected' AND editor is submitter
-        (or Admin). On a valid edit, transition back to Pending: clear reject
-        markers, flip status, emit resubmitted audit. Else throw.
+        Permit the edit ONLY if approval_status == 'Rejected' AND the editor
+        is the submitter (or Admin). On a valid edit, transition the voucher
+        back to Pending for re-review: clear reject markers, flip status,
+        emit a resubmitted audit event. Any other after-submit edit throws.
 
-        validate() already re-ran on this save (recomputed total + line
-        integrity); this is guard + transition only.
+        IMPORTANT (PD-S35 5.9): Frappe's update_after_submit save path does
+        NOT fire validate() automatically. Callers performing in-place edits
+        (e.g. voucher_resubmit_travel) MUST call voucher.validate() explicitly
+        before voucher.save() to recompute totals from edited child rows.
+        Without that, self.total_km/self.total_amount read here will be stale,
+        and the audit payload below will record the pre-edit values.
         """
         prior_status = frappe.db.get_value(self.doctype, self.name, "approval_status")
 
@@ -340,4 +345,76 @@ def reject_expense_voucher(
         "to_state": "rejected",
     })
 
+    return voucher.name
+
+
+def voucher_resubmit_expense(
+    voucher,
+    expense_lines: str,
+    expense_date: str | None = None,
+) -> str:
+    """Apply edits to a Rejected Expense Voucher and resubmit via doc.save().
+
+    PD-S35 Dispatch 5.8. Sibling of voucher_resubmit_travel; see that
+    function for the architectural notes. EV diverges only in:
+      - Children field name: expense_lines (vs visit_lines)
+      - Top-level date: expense_date (vs business_date)
+      - Audit event: voucher.expense.resubmitted (vs travel)
+    All hook + validate semantics are otherwise identical.
+    """
+    if voucher.approval_status != "Rejected":
+        frappe.throw(
+            f"Voucher {voucher.name} is not in Rejected state "
+            f"(approval_status={voucher.approval_status!r}); only Rejected "
+            f"vouchers can be resubmitted via edit.",
+            frappe.ValidationError,
+        )
+
+    try:
+        incoming = json.loads(expense_lines)
+    except json.JSONDecodeError as exc:
+        frappe.throw(
+            f"expense_lines is not valid JSON: {exc}",
+            frappe.ValidationError,
+        )
+
+    if not isinstance(incoming, list) or not incoming:
+        frappe.throw(
+            "expense_lines must be a non-empty JSON array.",
+            frappe.ValidationError,
+        )
+
+    existing_names = [
+        getattr(child, "name", None) for child in (voucher.expense_lines or [])
+    ]
+
+    new_children = []
+    for idx, line in enumerate(incoming):
+        if not isinstance(line, dict):
+            frappe.throw(
+                "Each expense_lines entry must be a JSON object.",
+                frappe.ValidationError,
+            )
+        merged = dict(line)
+        if idx < len(existing_names) and existing_names[idx]:
+            merged["name"] = existing_names[idx]
+        new_children.append(merged)
+    voucher.set("expense_lines", new_children)
+
+    if expense_date is not None:
+        voucher.expense_date = expense_date
+
+    # PD-S35 5.9: Frappe's update_after_submit save path does NOT fire
+    # validate() automatically (only the per-field gate
+    # validate_update_after_submit fires, and we bypass that via the flag
+    # below). Our controller's validate() is where total_km / total_amount
+    # are recomputed from child rows + per-line totals are set — without
+    # an explicit call, totals stay stale and the audit emits pre-edit
+    # values. The flag bypasses Frappe's per-field "not allowed to change
+    # after submission" gate, which would otherwise refuse the End KM /
+    # Start KM mutations. on_update_after_submit (fires post-save) handles
+    # the Rejected→Pending transition + audit emit.
+    voucher.flags.ignore_validate_update_after_submit = True
+    voucher.validate()
+    voucher.save()
     return voucher.name
