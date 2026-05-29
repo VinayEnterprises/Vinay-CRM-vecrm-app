@@ -2756,3 +2756,121 @@ def _compute_lead_touchpoint_stats(lead_name: str) -> tuple:
     count = frappe.db.count("VECRM Lead Touchpoint", filters={"lead": lead_name})
 
     return (last, count)
+
+
+@frappe.whitelist()
+def get_voucher_period_summary(month, year, period):
+    """
+    Get aggregated voucher summary for a bi-monthly period.
+    HR + Admin only.
+    """
+    _require_hr_or_admin()
+    
+    month = int(month)
+    year = int(year)
+    
+    if period == "H1":
+        start_date = f"{year}-{month:02d}-01"
+        end_date = f"{year}-{month:02d}-15"
+    elif period == "H2":
+        import calendar
+        last_day = calendar.monthrange(year, month)[1]
+        start_date = f"{year}-{month:02d}-16"
+        end_date = f"{year}-{month:02d}-{last_day}"
+    else:
+        frappe.throw("Period must be H1 or H2")
+    
+    tv_summary = frappe.db.sql("""
+        SELECT
+            tv.submitter,
+            emp.employee_name as submitter_name,
+            COUNT(*) as count,
+            SUM(tv.total_km) as total_km,
+            SUM(tv.total_amount) as total_amount,
+            SUM(CASE WHEN tv.approval_status = 'Approved' THEN 1 ELSE 0 END)
+              as approved_count,
+            SUM(CASE WHEN tv.payment_status = 'Paid' THEN 1 ELSE 0 END)
+              as paid_count
+        FROM `tabVECRM Travel Voucher` tv
+        LEFT JOIN `tabVECRM Employee` emp ON emp.name = tv.submitter
+        WHERE tv.docstatus = 1
+          AND tv.business_date BETWEEN %(start)s AND %(end)s
+        GROUP BY tv.submitter, emp.employee_name
+        ORDER BY emp.employee_name
+    """, {"start": start_date, "end": end_date}, as_dict=True)
+    
+    ev_summary = frappe.db.sql("""
+        SELECT
+            ev.submitter,
+            emp.employee_name as submitter_name,
+            COUNT(*) as count,
+            SUM(ev.total_amount) as total_amount,
+            SUM(CASE WHEN ev.approval_status = 'Approved' THEN 1 ELSE 0 END)
+              as approved_count,
+            SUM(CASE WHEN ev.payment_status = 'Paid' THEN 1 ELSE 0 END)
+              as paid_count
+        FROM `tabVECRM Expense Voucher` ev
+        LEFT JOIN `tabVECRM Employee` emp ON emp.name = ev.submitter
+        WHERE ev.docstatus = 1
+          AND ev.expense_date BETWEEN %(start)s AND %(end)s
+        GROUP BY ev.submitter, emp.employee_name
+        ORDER BY emp.employee_name
+    """, {"start": start_date, "end": end_date}, as_dict=True)
+    
+    return {
+        "period_start": start_date,
+        "period_end": end_date,
+        "travel_vouchers": tv_summary,
+        "expense_vouchers": ev_summary,
+    }
+
+
+@frappe.whitelist()
+def get_voucher_period_detail(month, year, period, submitter=None, voucher_type="travel"):
+    """Return individual voucher rows for a period, optionally filtered by submitter. HR + Admin only."""
+    _require_hr_or_admin()
+    
+    month = int(month)
+    year = int(year)
+    
+    if period == "H1":
+        start_date = f"{year}-{month:02d}-01"
+        end_date = f"{year}-{month:02d}-15"
+    elif period == "H2":
+        import calendar
+        last_day = calendar.monthrange(year, month)[1]
+        start_date = f"{year}-{month:02d}-16"
+        end_date = f"{year}-{month:02d}-{last_day}"
+    else:
+        frappe.throw("Period must be H1 or H2")
+
+    filters = [
+        ["docstatus", "=", 1],
+    ]
+    
+    if voucher_type == "travel":
+        doctype = "VECRM Travel Voucher"
+        date_field = "business_date"
+    elif voucher_type == "expense":
+        doctype = "VECRM Expense Voucher"
+        date_field = "expense_date"
+    else:
+        frappe.throw("Invalid voucher_type")
+
+    filters.append([date_field, "between", [start_date, end_date]])
+    
+    if submitter:
+        filters.append(["submitter", "=", submitter])
+        
+    vouchers = frappe.get_all(
+        doctype,
+        filters=filters,
+        fields=["name"],
+        order_by=f"{date_field} asc"
+    )
+    
+    result = []
+    for v in vouchers:
+        result.append(frappe.get_doc(doctype, v.name).as_dict())
+        
+    return result
