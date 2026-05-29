@@ -128,6 +128,72 @@ def reject_expense_voucher(
 
 
 @frappe.whitelist()
+def mark_travel_voucher_paid(voucher_name: str) -> dict:
+	"""Mark an approved TV as paid. HR + Admin only."""
+	_require_hr_or_admin()
+	doc = frappe.get_doc("VECRM Travel Voucher", voucher_name)
+
+	if doc.docstatus != 1:
+		frappe.throw("Only submitted vouchers can be marked as paid.", frappe.ValidationError)
+	if getattr(doc, "approval_status", None) != "Approved":
+		frappe.throw("Only approved vouchers can be marked as paid.", frappe.ValidationError)
+	if getattr(doc, "payment_status", None) == "Paid":
+		frappe.throw("This voucher is already marked as paid.", frappe.ValidationError)
+
+	session_data = frappe.session.data or {}
+	employee_phone = session_data.get("vecrm_employee_phone")
+	employee_role = session_data.get("vecrm_employee_role")
+
+	doc.db_set("payment_status", "Paid")
+	doc.db_set("paid_at", frappe.utils.now())
+	doc.db_set("paid_by_employee", employee_phone)
+	doc.db_set("paid_by_role", employee_role)
+
+	doc._audit("voucher.travel.paid", {
+		"actor_employee": employee_phone,
+		"actor_role": employee_role,
+		"total_amount": float(doc.total_amount or 0),
+		"from_state": "approved",
+		"to_state": "paid",
+	})
+
+	return {"status": "ok", "voucher_name": voucher_name}
+
+
+@frappe.whitelist()
+def mark_expense_voucher_paid(voucher_name: str) -> dict:
+	"""Mark an approved EV as paid. HR + Admin only."""
+	_require_hr_or_admin()
+	doc = frappe.get_doc("VECRM Expense Voucher", voucher_name)
+
+	if doc.docstatus != 1:
+		frappe.throw("Only submitted vouchers can be marked as paid.", frappe.ValidationError)
+	if getattr(doc, "approval_status", None) != "Approved":
+		frappe.throw("Only approved vouchers can be marked as paid.", frappe.ValidationError)
+	if getattr(doc, "payment_status", None) == "Paid":
+		frappe.throw("This voucher is already marked as paid.", frappe.ValidationError)
+
+	session_data = frappe.session.data or {}
+	employee_phone = session_data.get("vecrm_employee_phone")
+	employee_role = session_data.get("vecrm_employee_role")
+
+	doc.db_set("payment_status", "Paid")
+	doc.db_set("paid_at", frappe.utils.now())
+	doc.db_set("paid_by_employee", employee_phone)
+	doc.db_set("paid_by_role", employee_role)
+
+	doc._audit("voucher.expense.paid", {
+		"actor_employee": employee_phone,
+		"actor_role": employee_role,
+		"total_amount": float(doc.total_amount or 0),
+		"from_state": "approved",
+		"to_state": "paid",
+	})
+
+	return {"status": "ok", "voucher_name": voucher_name}
+
+
+@frappe.whitelist()
 def voucher_resubmit_travel(
 	voucher_name: str, visit_lines: str, business_date: str = ""
 ) -> str:
@@ -2090,12 +2156,7 @@ def change_pin(current_pin: str = "", new_pin: str = "") -> dict[str, Any]:
 
 
 def _require_admin_session() -> None:
-    """Throw frappe.PermissionError if the current session is not Admin.
-
-    Reads role from `frappe.session.data.vecrm_employee_role`, NOT from
-    `frappe.get_roles()` — per VECRM-LOCK-PORTAL-USER-ROLES, the shared
-    Frappe user always has the same Frappe roles, so role-differentiated
-    authorization MUST consult session.data.
+    """Throw frappe.PermissionError if caller is not Admin.
 
     No-session is treated as not-admin (throws). Missing role field is
     treated as not-admin (throws). Anything other than the literal string
@@ -2105,6 +2166,16 @@ def _require_admin_session() -> None:
     if role != "Admin":
         frappe.throw(
             frappe._("This action requires Admin role."),
+            frappe.PermissionError,
+        )
+
+
+def _require_hr_or_admin() -> None:
+    """Throw frappe.PermissionError if caller is not HR or Admin."""
+    role = (frappe.session.data or {}).get("vecrm_employee_role")
+    if role not in ("HR", "Admin"):
+        frappe.throw(
+            frappe._("Only HR or Admin can mark vouchers as paid."),
             frappe.PermissionError,
         )
 
