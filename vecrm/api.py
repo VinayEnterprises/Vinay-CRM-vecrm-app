@@ -2419,6 +2419,41 @@ def _generate_temp_password() -> str:
 
 
 @frappe.whitelist()
+def list_employees_directory() -> list[dict]:
+    """Phone→display-name directory for portal voucher surfaces.
+
+    Auth gate: any authenticated VECRM session (frappe.session.data must
+    carry a vecrm_employee_phone — established by login_with_password /
+    login_with_pin via _issue_session). No role check.
+
+    Symmetry argument: the response carries ONLY {name, employee_name,
+    vecrm_base_city}. Same fields the existing /travel-vouchers/new
+    submitter dropdown already exposes to admins. No auth secrets, no
+    role/status, no email. Strictly the minimum needed to humanize the
+    raw phone PK stored in voucher submitter / approver / paid_by /
+    rejected_by fields on the list and detail pages.
+
+    For the richer admin-only directory (full row including role,
+    status, login_at, etc.) used by the admin user-management surface
+    /admin/users, see admin_list_employees.
+
+    Returns the list ordered by employee_name for stable rendering.
+    """
+    if not (frappe.session.data or {}).get("vecrm_employee_phone"):
+        frappe.throw(
+            frappe._("Authentication required."),
+            frappe.PermissionError,
+        )
+    return frappe.get_all(
+        "VECRM Employee",
+        filters=[["vecrm_account_status", "=", "Active"]],
+        fields=["name", "employee_name", "vecrm_base_city"],
+        order_by="employee_name asc",
+        limit_page_length=0,  # No limit — small table, single use per page load.
+    )
+
+
+@frappe.whitelist()
 def admin_list_employees(
     status: str = "",
     role: str = "",
