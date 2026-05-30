@@ -223,6 +223,27 @@ def voucher_resubmit_travel(
 	voucher = frappe.get_doc("VECRM Travel Voucher", voucher_name)
 	_require_voucher_submitter_self_or_admin(voucher.submitter)
 
+	# Bi-monthly cutoff check (PD-S29-BACKFILL-PREVENTION). Resubmit
+	# accepts edited visit_lines + optional business_date — without this
+	# check, a rejected voucher could be re-submitted with backfilled
+	# dates inside a closed period, bypassing the create-time gate.
+	# Same per-line semantics as create.
+	try:
+		resubmit_lines = json.loads(visit_lines)
+	except json.JSONDecodeError as exc:
+		frappe.throw(
+			f"visit_lines is not valid JSON: {exc}", frappe.ValidationError
+		)
+	if business_date:
+		_check_voucher_date_cutoff(business_date)
+	else:
+		_check_voucher_date_cutoff(voucher.business_date)
+	if isinstance(resubmit_lines, list):
+		for line in resubmit_lines:
+			vd = line.get("visit_date") if isinstance(line, dict) else None
+			if vd:
+				_check_voucher_date_cutoff(vd)
+
 	from vecrm.vecrm.doctype.vecrm_travel_voucher.vecrm_travel_voucher import (
 		voucher_resubmit_travel as _resubmit,
 	)
@@ -241,6 +262,11 @@ def voucher_resubmit_expense(
 	"""
 	voucher = frappe.get_doc("VECRM Expense Voucher", voucher_name)
 	_require_voucher_submitter_self_or_admin(voucher.submitter)
+
+	# Bi-monthly cutoff check (PD-S29-BACKFILL-PREVENTION). Use the
+	# new expense_date if provided in the resubmit payload, else the
+	# voucher's current date.
+	_check_voucher_date_cutoff(expense_date or voucher.expense_date)
 
 	from vecrm.vecrm.doctype.vecrm_expense_voucher.vecrm_expense_voucher import (
 		voucher_resubmit_expense as _resubmit,
@@ -309,6 +335,18 @@ def create_travel_voucher_draft(
 		frappe.throw(
 			"visit_lines must be a non-empty JSON array.", frappe.ValidationError
 		)
+
+	# Bi-monthly submission cutoff (PD-S29-BACKFILL-PREVENTION). Check
+	# each visit's date — per-line because a voucher can legitimately
+	# span both halves of a month (a visit on the 14th and one on the
+	# 16th are H1 + H2 respectively). business_date is checked too as
+	# defense-in-depth since it drives FY allocation. Admin/Sales
+	# Head/HR bypass; see _check_voucher_date_cutoff.
+	_check_voucher_date_cutoff(business_date)
+	for line in lines:
+		visit_date = line.get("visit_date")
+		if visit_date:
+			_check_voucher_date_cutoff(visit_date)
 
 	doc = frappe.new_doc("VECRM Travel Voucher")
 	doc.submitter = submitter
@@ -390,6 +428,16 @@ def submit_travel_voucher_draft(voucher_name: str) -> dict:
 
 	# No ownership check in Sub-A — Admin-only interim. S25 VECRM Auth
 	# will add session-based ownership verification.
+
+	# Bi-monthly cutoff re-check (PD-S29-BACKFILL-PREVENTION). The draft
+	# may have been created inside the window and now be sitting past
+	# the deadline. Block the submit attempt with the same gate that
+	# guards create. Per visit_date (line-level) + business_date
+	# defense-in-depth.
+	_check_voucher_date_cutoff(doc.business_date)
+	for line in doc.visit_lines:
+		if line.visit_date:
+			_check_voucher_date_cutoff(line.visit_date)
 
 	# Submit — triggers on_submit -> _audit("voucher.travel.submitted", ...)
 	doc.submit()
@@ -481,6 +529,11 @@ def create_expense_voucher_draft(
 			frappe.ValidationError,
 		)
 
+	# Bi-monthly submission cutoff (PD-S29-BACKFILL-PREVENTION). EV
+	# has a single voucher-level expense_date (no per-line dates); one
+	# check covers the whole voucher. Admin/Sales Head/HR bypass.
+	_check_voucher_date_cutoff(expense_date)
+
 	# Per-line validation (Q-EV-CONFIRM-ATTACH=b + Q-EV-RECEIPT-VERIFY=on).
 	# Doctype's attachment field is reqd=0 to preserve Desk admin flexibility
 	# for corrective EVs; portal-originated submissions MUST include a
@@ -571,6 +624,10 @@ def submit_expense_voucher_draft(voucher_name: str) -> dict:
 
 	# Reuse PR #43 helper: only the submitter (or admin) may submit.
 	_require_voucher_submitter_self_or_admin(doc.submitter)
+
+	# Bi-monthly cutoff re-check (PD-S29-BACKFILL-PREVENTION). Draft may
+	# have been created during an open window and now sit past deadline.
+	_check_voucher_date_cutoff(doc.expense_date)
 
 	# doc.submit() triggers on_submit -> _audit("voucher.expense.submitted")
 	doc.submit()
@@ -2198,6 +2255,79 @@ def _require_hr_or_admin() -> None:
         frappe.throw(
             frappe._("Only HR or Admin can mark vouchers as paid."),
             frappe.PermissionError,
+        )
+
+
+def _check_voucher_date_cutoff(voucher_date, session_role: str | None = None) -> None:
+    """Enforce the bi-monthly voucher submission cutoff with 2-day grace.
+
+    The payment cycle splits each month into two periods:
+      H1: visit/expense dates 1st-15th, submission window closes 17th.
+      H2: visit/expense dates 16th-last day, submission window closes
+          2nd of the NEXT month.
+
+    "Closes" is strict — submission ON the deadline day is still
+    allowed; the rejection fires on the day AFTER. Matches the kickoff's
+    "After 17th, dates in 1st-15th of that month are blocked." Once a
+    period's window closes, reps cannot create or submit vouchers whose
+    voucher_date falls inside it.
+
+    Bypass roles: Admin, Sales Head, HR. These are the
+    approvers/managers; they can backfill on behalf of reps when there's
+    a legitimate reason (late receipts, field-connectivity gaps, paid
+    leave overlapping a deadline, etc.). Sales Rep / Field Engineer /
+    Head of Engineers are subject to the cutoff. Mirrors the role
+    cluster used by _require_hr_or_admin + isVoucherApproverRole on the
+    portal side.
+
+    Args:
+      voucher_date: ISO YYYY-MM-DD string OR datetime/date object.
+        For TV this is the visit_date on each visit_line (the line's
+        own date, not the voucher's business_date). For EV this is
+        the voucher's expense_date.
+      session_role: Optional override. When None, reads
+        frappe.session.data['vecrm_employee_role']. Production callers
+        leave this None; tests pass an explicit role.
+
+    Raises:
+      frappe.ValidationError if voucher_date is in a closed period and
+        the caller is not in the bypass set.
+    """
+    if session_role is None:
+        session_role = (frappe.session.data or {}).get("vecrm_employee_role")
+
+    # Approver / manager bypass — backfill is their call.
+    if session_role in ("Admin", "Sales Head", "HR"):
+        return
+
+    import calendar
+
+    d = frappe.utils.getdate(voucher_date)
+    today = frappe.utils.getdate(frappe.utils.today())
+
+    if d.day <= 15:
+        period_label = f"H1 ({d.strftime('%b %Y')} 1-15)"
+        deadline = d.replace(day=17)
+    else:
+        last_day = calendar.monthrange(d.year, d.month)[1]
+        period_label = f"H2 ({d.strftime('%b %Y')} 16-{last_day})"
+        # H2 deadline = 2nd of the following month. Handle December
+        # rollover into January of the next year.
+        if d.month == 12:
+            deadline = d.replace(year=d.year + 1, month=1, day=2)
+        else:
+            deadline = d.replace(month=d.month + 1, day=2)
+
+    if today > deadline:
+        frappe.throw(
+            frappe._(
+                "The submission window for {period} has closed (deadline "
+                "was {deadline}). Contact your manager."
+            ).format(
+                period=period_label,
+                deadline=deadline.strftime("%d %b %Y"),
+            ),
+            frappe.ValidationError,
         )
 
 
