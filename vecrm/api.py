@@ -2922,7 +2922,27 @@ def test_email_pipeline(recipient):
 # fires Friday 18:00 IST that's Mon 00:00 → Fri 18:00 — captures the
 # full work week.
 
-_WEEKLY_REPORT_RECIPIENTS = ["ajay@vinayenterprises.co.in"]
+_WEEKLY_REPORT_DEFAULT_RECIPIENTS = ["ajay@vinayenterprises.co.in"]
+
+
+def _get_weekly_report_recipients() -> list[str]:
+    """Read recipients from site_config (`weekly_report_recipients`),
+    fallback to the default list.
+
+    Config shape — a JSON array of email strings:
+      bench --site crm.vinayenterprises.co.in set-config \\
+        weekly_report_recipients '["a@x.com","b@x.com"]'
+
+    Validation: must be a non-empty list with at least one string. Any
+    other shape (None, dict, empty list, list of non-strings) → fall
+    back to the default list rather than fail the cron.
+    """
+    raw = frappe.conf.get("weekly_report_recipients")
+    if isinstance(raw, list) and raw:
+        emails = [e for e in raw if isinstance(e, str) and e]
+        if emails:
+            return emails
+    return _WEEKLY_REPORT_DEFAULT_RECIPIENTS
 
 
 def _weekly_report_window():
@@ -3270,7 +3290,7 @@ def generate_weekly_meeting_report():
     )
 
     send_email(
-        to=_WEEKLY_REPORT_RECIPIENTS,
+        to=_get_weekly_report_recipients(),
         subject=subject,
         html_body=html,
     )
@@ -3304,8 +3324,27 @@ def test_weekly_report():
 # We additionally look up VECRM Employee for employee_name to greet
 # the rep by name.
 
-_FOLLOWUP_ADMIN_RECIPIENT = "ajay@vinayenterprises.co.in"
+_FOLLOWUP_ADMIN_DEFAULT_RECIPIENTS = ["ajay@vinayenterprises.co.in"]
 _PORTAL_BASE = "https://app.vinayenterprises.co.in"
+
+
+def _get_followup_admin_recipients() -> list[str]:
+    """Read admin-digest recipients for daily follow-up reminders from
+    site_config (`followup_admin_recipients`), fallback to the default.
+
+    Config shape — a JSON array of email strings:
+      bench --site crm.vinayenterprises.co.in set-config \\
+        followup_admin_recipients '["ajay@x.com","ops@x.com"]'
+
+    Same validation contract as _get_weekly_report_recipients —
+    non-empty list of non-empty strings, else fallback.
+    """
+    raw = frappe.conf.get("followup_admin_recipients")
+    if isinstance(raw, list) and raw:
+        emails = [e for e in raw if isinstance(e, str) and e]
+        if emails:
+            return emails
+    return _FOLLOWUP_ADMIN_DEFAULT_RECIPIENTS
 
 
 def _build_employee_name_map(emails):
@@ -3612,7 +3651,7 @@ def send_followup_reminders():
     )
     admin_html = _render_admin_followup_html(groups, name_map, today_iso)
     send_email(
-        to=_FOLLOWUP_ADMIN_RECIPIENT,
+        to=_get_followup_admin_recipients(),
         subject=admin_subject,
         html_body=admin_html,
     )
