@@ -2887,3 +2887,381 @@ def test_email_pipeline(recipient):
         html_body="<p>If you see this, the VECRM email pipeline is operational.</p>"
     )
     return {"status": "ok", "sent_to": recipient}
+
+
+# ─── Weekly meeting report (PD-S29) ──────────────────────────────────
+#
+# Scheduled via hooks.py scheduler_events: 18:00 IST every Friday.
+# Aggregates the current week's leads / vouchers / inquiries and sends
+# a single HTML digest through the Graph API pipeline. Recipients are
+# hardcoded for now (per kickoff); promote to a site_config list if
+# the distribution grows.
+#
+# Date window: Monday 00:00 of the current week → now(). When the cron
+# fires Friday 18:00 IST that's Mon 00:00 → Fri 18:00 — captures the
+# full work week.
+
+_WEEKLY_REPORT_RECIPIENTS = ["ajay@vinayenterprises.co.in"]
+
+
+def _weekly_report_window():
+    """Return (start_dt, end_dt) for the current week's Mon 00:00 → now()."""
+    now = frappe.utils.now_datetime()
+    # weekday() — Monday=0, Sunday=6.
+    start = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    return start, now
+
+
+def _fmt_inr(amount) -> str:
+    """Render a number as ₹X,XX,XXX.XX (Indian grouping). Tolerant of None."""
+    n = float(amount or 0)
+    # Indian number grouping: last 3 digits, then groups of 2.
+    s = f"{n:,.2f}"
+    if "." in s:
+        whole, frac = s.split(".")
+    else:
+        whole, frac = s, "00"
+    # Convert Western 1,234,567 → Indian 12,34,567.
+    digits = whole.replace(",", "")
+    if len(digits) > 3:
+        head, tail = digits[:-3], digits[-3:]
+        # Group head in pairs from the right.
+        groups = []
+        while len(head) > 2:
+            groups.insert(0, head[-2:])
+            head = head[:-2]
+        if head:
+            groups.insert(0, head)
+        whole = ",".join(groups) + "," + tail
+    return f"₹{whole}.{frac}"
+
+
+def _aggregate_leads(start_iso: str, end_iso: str) -> dict:
+    """Lead activity for the window.
+
+    new       — leads with creation in [start, end]
+    converted — leads with status='Converted' AND modified in [start, end]
+    won       — leads with status='Closed-Won'  AND modified in [start, end]
+    lost      — leads with status='Closed-Lost' AND modified in [start, end]
+    """
+    fields = ["name", "company_name", "status", "lead_owner"]
+
+    new_leads = frappe.get_all(
+        "VECRM Lead",
+        filters=[["creation", "between", [start_iso, end_iso]]],
+        fields=fields,
+        order_by="creation asc",
+    )
+
+    def _status_modified(status):
+        return frappe.get_all(
+            "VECRM Lead",
+            filters=[
+                ["status", "=", status],
+                ["modified", "between", [start_iso, end_iso]],
+            ],
+            fields=fields,
+            order_by="modified asc",
+        )
+
+    return {
+        "new": new_leads,
+        "converted": _status_modified("Converted"),
+        "won": _status_modified("Closed-Won"),
+        "lost": _status_modified("Closed-Lost"),
+    }
+
+
+def _aggregate_inquiries(start_iso: str, end_iso: str) -> list:
+    """Inquiries created in the window."""
+    return frappe.get_all(
+        "VECRM Inquiry",
+        filters=[["creation", "between", [start_iso, end_iso]]],
+        fields=["name", "company_name", "status", "inquiry_owner"],
+        order_by="creation asc",
+    )
+
+
+def _voucher_window_stats(doctype: str, start_iso: str, end_iso: str) -> dict:
+    """Aggregate one voucher doctype across the three timeline events.
+
+    submitted — docstatus=1 AND creation in window
+    approved  — approval_status='Approved' AND approved_at in window
+    paid      — payment_status='Paid'     AND paid_at     in window
+
+    Returns each bucket as {count, total_amount} (amount summed in Python
+    over a small list; voucher volumes per week are low double digits).
+    """
+    def _sum(rows):
+        return {
+            "count": len(rows),
+            "total_amount": sum(float(r.get("total_amount") or 0) for r in rows),
+        }
+
+    submitted = frappe.get_all(
+        doctype,
+        filters=[
+            ["docstatus", "=", 1],
+            ["creation", "between", [start_iso, end_iso]],
+        ],
+        fields=["name", "total_amount"],
+    )
+    approved = frappe.get_all(
+        doctype,
+        filters=[
+            ["approval_status", "=", "Approved"],
+            ["approved_at", "between", [start_iso, end_iso]],
+        ],
+        fields=["name", "total_amount"],
+    )
+    paid = frappe.get_all(
+        doctype,
+        filters=[
+            ["payment_status", "=", "Paid"],
+            ["paid_at", "between", [start_iso, end_iso]],
+        ],
+        fields=["name", "total_amount"],
+    )
+
+    return {
+        "submitted": _sum(submitted),
+        "approved": _sum(approved),
+        "paid": _sum(paid),
+    }
+
+
+# Inline-styled HTML — email clients (Outlook in particular) strip
+# <style> blocks; every visual choice must travel on the element.
+_HEADER_BG = "#1a237e"
+_SECTION_BG = "#283593"
+_BORDER = "#e0e0e0"
+_TEXT = "#212121"
+_MUTED = "#616161"
+
+
+def _render_weekly_report_html(data: dict) -> str:
+    start = data["start_label"]
+    end = data["end_label"]
+    leads = data["leads"]
+    inquiries = data["inquiries"]
+    tv = data["travel_vouchers"]
+    ev = data["expense_vouchers"]
+
+    def _lead_rows(rows):
+        if not rows:
+            return (
+                f'<tr><td colspan="3" style="padding:12px;color:{_MUTED};'
+                'text-align:center;font-style:italic;">No activity</td></tr>'
+            )
+        out = []
+        for r in rows:
+            out.append(
+                f'<tr>'
+                f'<td style="padding:8px 12px;border-bottom:1px solid {_BORDER};">{frappe.utils.escape_html(r.get("name") or "")}</td>'
+                f'<td style="padding:8px 12px;border-bottom:1px solid {_BORDER};">{frappe.utils.escape_html(r.get("company_name") or "—")}</td>'
+                f'<td style="padding:8px 12px;border-bottom:1px solid {_BORDER};">{frappe.utils.escape_html(r.get("lead_owner") or "—")}</td>'
+                f'</tr>'
+            )
+        return "".join(out)
+
+    def _inquiry_rows(rows):
+        if not rows:
+            return (
+                f'<tr><td colspan="3" style="padding:12px;color:{_MUTED};'
+                'text-align:center;font-style:italic;">No activity</td></tr>'
+            )
+        out = []
+        for r in rows:
+            out.append(
+                f'<tr>'
+                f'<td style="padding:8px 12px;border-bottom:1px solid {_BORDER};">{frappe.utils.escape_html(r.get("name") or "")}</td>'
+                f'<td style="padding:8px 12px;border-bottom:1px solid {_BORDER};">{frappe.utils.escape_html(r.get("company_name") or "—")}</td>'
+                f'<td style="padding:8px 12px;border-bottom:1px solid {_BORDER};">{frappe.utils.escape_html(r.get("inquiry_owner") or "—")}</td>'
+                f'</tr>'
+            )
+        return "".join(out)
+
+    def _voucher_row(label, stats):
+        return (
+            f'<tr>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid {_BORDER};">{label}</td>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid {_BORDER};text-align:right;">{stats["count"]}</td>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid {_BORDER};text-align:right;font-variant-numeric:tabular-nums;">{_fmt_inr(stats["total_amount"])}</td>'
+            f'</tr>'
+        )
+
+    def _section_header(title):
+        return (
+            f'<tr><td style="background:{_SECTION_BG};color:#ffffff;'
+            f'padding:10px 14px;font-size:14px;font-weight:600;'
+            f'letter-spacing:0.3px;">{title}</td></tr>'
+        )
+
+    def _table_open():
+        return (
+            f'<table cellpadding="0" cellspacing="0" border="0" '
+            f'style="width:100%;border-collapse:collapse;'
+            f'border:1px solid {_BORDER};font-size:13px;color:{_TEXT};">'
+        )
+
+    # ─── Sub-tables ──────────────────────────────────────────────────
+    lead_table = (
+        _table_open()
+        + f'<thead><tr style="background:#f5f5f5;">'
+        f'<th style="text-align:left;padding:8px 12px;border-bottom:1px solid {_BORDER};font-size:12px;color:{_MUTED};font-weight:600;">Name</th>'
+        f'<th style="text-align:left;padding:8px 12px;border-bottom:1px solid {_BORDER};font-size:12px;color:{_MUTED};font-weight:600;">Company</th>'
+        f'<th style="text-align:left;padding:8px 12px;border-bottom:1px solid {_BORDER};font-size:12px;color:{_MUTED};font-weight:600;">Owner</th>'
+        f'</tr></thead><tbody>{{rows}}</tbody></table>'
+    )
+    inquiry_table = (
+        _table_open()
+        + f'<thead><tr style="background:#f5f5f5;">'
+        f'<th style="text-align:left;padding:8px 12px;border-bottom:1px solid {_BORDER};font-size:12px;color:{_MUTED};font-weight:600;">Name</th>'
+        f'<th style="text-align:left;padding:8px 12px;border-bottom:1px solid {_BORDER};font-size:12px;color:{_MUTED};font-weight:600;">Company</th>'
+        f'<th style="text-align:left;padding:8px 12px;border-bottom:1px solid {_BORDER};font-size:12px;color:{_MUTED};font-weight:600;">Owner</th>'
+        f'</tr></thead><tbody>{{rows}}</tbody></table>'
+    )
+
+    voucher_table = (
+        _table_open()
+        + f'<thead><tr style="background:#f5f5f5;">'
+        f'<th style="text-align:left;padding:8px 12px;border-bottom:1px solid {_BORDER};font-size:12px;color:{_MUTED};font-weight:600;">Stage</th>'
+        f'<th style="text-align:right;padding:8px 12px;border-bottom:1px solid {_BORDER};font-size:12px;color:{_MUTED};font-weight:600;">Count</th>'
+        f'<th style="text-align:right;padding:8px 12px;border-bottom:1px solid {_BORDER};font-size:12px;color:{_MUTED};font-weight:600;">Total Amount</th>'
+        f'</tr></thead><tbody>{{rows}}</tbody></table>'
+    )
+
+    tv_rows = (
+        _voucher_row("Submitted", tv["submitted"])
+        + _voucher_row("Approved", tv["approved"])
+        + _voucher_row("Paid", tv["paid"])
+    )
+    ev_rows = (
+        _voucher_row("Submitted", ev["submitted"])
+        + _voucher_row("Approved", ev["approved"])
+        + _voucher_row("Paid", ev["paid"])
+    )
+
+    # ─── Outer document ─────────────────────────────────────────────
+    sections = []
+
+    sections.append(
+        f'<div style="background:{_HEADER_BG};color:#ffffff;padding:20px 24px;">'
+        f'<div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;opacity:0.7;">VECRM Weekly Report</div>'
+        f'<div style="font-size:20px;font-weight:600;margin-top:4px;">{start} — {end}</div>'
+        f'</div>'
+    )
+
+    # Lead sections
+    sections.append(
+        f'<div style="margin-top:24px;">'
+        f'<table cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">'
+        + _section_header(f'New Leads ({len(leads["new"])})')
+        + f'<tr><td>{lead_table.format(rows=_lead_rows(leads["new"]))}</td></tr>'
+        + _section_header(f'Leads Converted to Inquiry ({len(leads["converted"])})')
+        + f'<tr><td>{lead_table.format(rows=_lead_rows(leads["converted"]))}</td></tr>'
+        + _section_header(f'Leads Closed-Won ({len(leads["won"])})')
+        + f'<tr><td>{lead_table.format(rows=_lead_rows(leads["won"]))}</td></tr>'
+        + _section_header(f'Leads Closed-Lost ({len(leads["lost"])})')
+        + f'<tr><td>{lead_table.format(rows=_lead_rows(leads["lost"]))}</td></tr>'
+        + f'</table></div>'
+    )
+
+    # Inquiry section
+    sections.append(
+        f'<div style="margin-top:24px;">'
+        f'<table cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">'
+        + _section_header(f'New Inquiries ({len(inquiries)})')
+        + f'<tr><td>{inquiry_table.format(rows=_inquiry_rows(inquiries))}</td></tr>'
+        + f'</table></div>'
+    )
+
+    # Voucher sections
+    sections.append(
+        f'<div style="margin-top:24px;">'
+        f'<table cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">'
+        + _section_header("Travel Vouchers")
+        + f'<tr><td>{voucher_table.format(rows=tv_rows)}</td></tr>'
+        + _section_header("Expense Vouchers")
+        + f'<tr><td>{voucher_table.format(rows=ev_rows)}</td></tr>'
+        + f'</table></div>'
+    )
+
+    sections.append(
+        f'<div style="margin-top:32px;padding-top:16px;border-top:1px solid {_BORDER};'
+        f'font-size:11px;color:{_MUTED};">'
+        f'Generated by VECRM. Aggregation window: {start} 00:00 → {end} (Asia/Kolkata).'
+        f'</div>'
+    )
+
+    return (
+        f'<div style="max-width:760px;margin:0 auto;font-family:-apple-system,'
+        f'BlinkMacSystemFont,\'Segoe UI\',Helvetica,Arial,sans-serif;color:{_TEXT};">'
+        + "".join(sections)
+        + "</div>"
+    )
+
+
+def generate_weekly_meeting_report():
+    """Generate and send the weekly meeting report email.
+
+    Invoked by the scheduler (hooks.scheduler_events cron at 18:00 IST
+    every Friday). Can also be invoked manually via test_weekly_report
+    by a System Manager.
+
+    Failures inside the aggregation are caught + logged via
+    frappe.log_error so a transient issue doesn't poison the scheduler
+    queue. The send_email call itself is allowed to bubble — Graph
+    failures should be visible in the scheduler log.
+    """
+    from vecrm.email_utils import send_email
+
+    start_dt, end_dt = _weekly_report_window()
+    start_iso = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    end_iso = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        data = {
+            "start_label": start_dt.strftime("%a %d %b %Y"),
+            "end_label": end_dt.strftime("%a %d %b %Y"),
+            "leads": _aggregate_leads(start_iso, end_iso),
+            "inquiries": _aggregate_inquiries(start_iso, end_iso),
+            "travel_vouchers": _voucher_window_stats(
+                "VECRM Travel Voucher", start_iso, end_iso,
+            ),
+            "expense_vouchers": _voucher_window_stats(
+                "VECRM Expense Voucher", start_iso, end_iso,
+            ),
+        }
+    except Exception:
+        frappe.log_error(
+            title="VECRM weekly report — aggregation failed",
+            message=frappe.get_traceback(),
+        )
+        raise
+
+    html = _render_weekly_report_html(data)
+    subject = (
+        f"VECRM Weekly Report — "
+        f"{start_dt.strftime('%d %b')} to {end_dt.strftime('%d %b %Y')}"
+    )
+
+    send_email(
+        to=_WEEKLY_REPORT_RECIPIENTS,
+        subject=subject,
+        html_body=html,
+    )
+
+
+@frappe.whitelist()
+def test_weekly_report():
+    """Manually trigger the weekly meeting report. System Manager only.
+
+    Bypasses the scheduler — useful for sanity-checking copy/layout
+    without waiting for Friday 18:00 IST. Identical send path.
+    """
+    frappe.only_for("System Manager")
+    generate_weekly_meeting_report()
+    return {"status": "ok", "message": "Weekly report sent"}

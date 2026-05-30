@@ -167,24 +167,22 @@ fixtures = [
 
 # Scheduled Tasks
 # ---------------
+# OBS-S34-M: this is the FIRST active scheduler registration for the
+# VECRM app. Adding this turns the Frappe worker on for VECRM background
+# jobs; there were no others before. doc_events above remain commented
+# out intentionally — do NOT activate them as part of this hook.
+#
+# PD-S29 weekly meeting report: Friday 18:00 IST. The VPS site timezone
+# is Asia/Kolkata, so the cron expression is plain "0 18 * * 5"
+# (5 = Friday). Aggregates the current Mon 00:00 → now() window.
 
-# scheduler_events = {
-# 	"all": [
-# 		"vecrm.tasks.all"
-# 	],
-# 	"daily": [
-# 		"vecrm.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"vecrm.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"vecrm.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"vecrm.tasks.monthly"
-# 	],
-# }
+scheduler_events = {
+	"cron": {
+		"0 18 * * 5": [
+			"vecrm.api.generate_weekly_meeting_report",
+		],
+	},
+}
 
 # Testing
 # -------
