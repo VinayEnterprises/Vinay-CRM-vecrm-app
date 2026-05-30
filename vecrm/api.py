@@ -3265,3 +3265,346 @@ def test_weekly_report():
     frappe.only_for("System Manager")
     generate_weekly_meeting_report()
     return {"status": "ok", "message": "Weekly report sent"}
+
+
+# ─── Daily follow-up reminders (PD-S33-PIPELINE-DECAY) ───────────────
+#
+# Scheduled via hooks.py scheduler_events: 09:00 IST Mon–Sat.
+# Scans VECRM Lead for next_followup_date < today AND status='Open'
+# (the only non-terminal value; Converted / Closed-Won / Closed-Lost
+# are terminal per the doctype Select options). Groups by lead_owner
+# and sends one summary email per rep — explicit anti-noise design
+# from the kickoff (single digest > per-lead email storm).
+#
+# lead_owner storage shape: a vecrm_email string (per the
+# LEAD-OWNER-ATTRIBUTION fix at create_lead — doc.lead_owner is set
+# from frappe.session.data['vecrm_email'], NOT a User Link). So
+# lead_owner is the rep's email — usable directly as a To: address.
+# We additionally look up VECRM Employee for employee_name to greet
+# the rep by name.
+
+_FOLLOWUP_ADMIN_RECIPIENT = "ajay@vinayenterprises.co.in"
+_PORTAL_BASE = "https://app.vinayenterprises.co.in"
+
+
+def _build_employee_name_map(emails):
+    """Resolve {lead_owner_email: employee_name} via one query.
+
+    Tolerates an empty input (returns {}) and rows whose vecrm_email
+    has no matching VECRM Employee (those owners simply won't be
+    personalized — the email still sends).
+    """
+    if not emails:
+        return {}
+    rows = frappe.get_all(
+        "VECRM Employee",
+        filters=[["vecrm_email", "in", list(emails)]],
+        fields=["vecrm_email", "employee_name"],
+    )
+    return {r["vecrm_email"]: (r.get("employee_name") or "") for r in rows}
+
+
+def _portal_lead_url(lead_name: str) -> str:
+    """Build the portal deep-link to a lead detail page.
+
+    Lead names contain forward slashes (e.g. VE/LEAD/00010/26-27); the
+    portal route uses URL-encoded segments — match the encoding the BFF
+    expects (single quote() pass; the [name] dynamic segment is
+    decodeURIComponent-ed at the page entry per app/leads/[name]).
+    """
+    from urllib.parse import quote
+    return f"{_PORTAL_BASE}/leads/{quote(lead_name, safe='')}"
+
+
+def _aggregate_overdue_followups():
+    """Return overdue Open leads as (owner_email_or_empty, lead_row) pairs.
+
+    Sorted oldest-overdue first so the rendered tables read worst → best.
+    """
+    today = frappe.utils.today()  # "YYYY-MM-DD"
+    rows = frappe.get_all(
+        "VECRM Lead",
+        filters=[
+            ["status", "=", "Open"],
+            ["next_followup_date", "<", today],
+        ],
+        fields=[
+            "name",
+            "company_name",
+            "contact_person_name",
+            "lead_owner",
+            "next_followup_date",
+            "priority",
+        ],
+        order_by="next_followup_date asc",
+    )
+    return rows, today
+
+
+def _group_by_owner(rows):
+    """Group lead rows by lead_owner. Empty / missing owner → bucketed
+    under the key ''.
+
+    Returns dict[owner_email, list[lead_row]].
+    """
+    out: dict = {}
+    for r in rows:
+        owner = (r.get("lead_owner") or "").strip()
+        out.setdefault(owner, []).append(r)
+    return out
+
+
+def _render_followup_lead_rows(rows, today_iso: str) -> str:
+    """One <tr> per lead; empty placeholder when rows is empty."""
+    if not rows:
+        return (
+            f'<tr><td colspan="5" style="padding:12px;color:{_MUTED};'
+            'text-align:center;font-style:italic;">No overdue follow-ups</td></tr>'
+        )
+    today_dt = frappe.utils.getdate(today_iso)
+    cells = []
+    for r in rows:
+        due_dt = frappe.utils.getdate(r.get("next_followup_date"))
+        days_overdue = (today_dt - due_dt).days
+        # Severity tint on the days-overdue cell — visual cue without
+        # introducing new palette colors (reds outside the scheme would
+        # render inconsistently across clients).
+        if days_overdue >= 14:
+            overdue_style = "color:#c62828;font-weight:600;"
+        elif days_overdue >= 7:
+            overdue_style = "color:#e65100;font-weight:600;"
+        else:
+            overdue_style = f"color:{_TEXT};"
+        lead_name = r.get("name") or ""
+        link = _portal_lead_url(lead_name)
+        cells.append(
+            f'<tr>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid {_BORDER};">'
+            f'<a href="{frappe.utils.escape_html(link)}" style="color:{_HEADER_BG};text-decoration:none;">'
+            f'{frappe.utils.escape_html(lead_name)}</a></td>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid {_BORDER};">'
+            f'{frappe.utils.escape_html(r.get("company_name") or "—")}</td>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid {_BORDER};">'
+            f'{frappe.utils.escape_html(r.get("contact_person_name") or "—")}</td>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid {_BORDER};">'
+            f'{frappe.utils.escape_html(str(r.get("next_followup_date") or "—"))}</td>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid {_BORDER};'
+            f'text-align:right;font-variant-numeric:tabular-nums;{overdue_style}">'
+            f'{days_overdue}</td>'
+            f'</tr>'
+        )
+    return "".join(cells)
+
+
+def _followup_table(rows_html: str) -> str:
+    """Standard 5-column overdue-leads table."""
+    return (
+        f'<table cellpadding="0" cellspacing="0" border="0" '
+        f'style="width:100%;border-collapse:collapse;border:1px solid {_BORDER};'
+        f'font-size:13px;color:{_TEXT};">'
+        f'<thead><tr style="background:#f5f5f5;">'
+        f'<th style="text-align:left;padding:8px 12px;border-bottom:1px solid {_BORDER};'
+        f'font-size:12px;color:{_MUTED};font-weight:600;">Lead</th>'
+        f'<th style="text-align:left;padding:8px 12px;border-bottom:1px solid {_BORDER};'
+        f'font-size:12px;color:{_MUTED};font-weight:600;">Company</th>'
+        f'<th style="text-align:left;padding:8px 12px;border-bottom:1px solid {_BORDER};'
+        f'font-size:12px;color:{_MUTED};font-weight:600;">Contact</th>'
+        f'<th style="text-align:left;padding:8px 12px;border-bottom:1px solid {_BORDER};'
+        f'font-size:12px;color:{_MUTED};font-weight:600;">Was Due</th>'
+        f'<th style="text-align:right;padding:8px 12px;border-bottom:1px solid {_BORDER};'
+        f'font-size:12px;color:{_MUTED};font-weight:600;">Days Overdue</th>'
+        f'</tr></thead><tbody>'
+        + rows_html
+        + '</tbody></table>'
+    )
+
+
+def _render_rep_followup_html(rep_name: str, rows: list, today_iso: str) -> str:
+    """Per-rep email — greeting + single table of their overdue leads."""
+    greeting_name = rep_name or "there"
+    count = len(rows)
+    label = "follow-up" if count == 1 else "follow-ups"
+
+    body = []
+    body.append(
+        f'<div style="background:{_HEADER_BG};color:#ffffff;padding:20px 24px;">'
+        f'<div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;opacity:0.7;">'
+        f'VECRM Daily Reminder</div>'
+        f'<div style="font-size:20px;font-weight:600;margin-top:4px;">'
+        f'{count} overdue {label}</div>'
+        f'</div>'
+    )
+    body.append(
+        f'<div style="padding:20px 24px 8px;font-size:14px;color:{_TEXT};">'
+        f'Hi {frappe.utils.escape_html(greeting_name)} — these leads have a '
+        f'follow-up date in the past. Open each one in the portal, log a '
+        f'touchpoint, and either set the next follow-up date or close it out.'
+        f'</div>'
+    )
+    body.append(
+        f'<div style="padding:0 24px 24px;">'
+        f'{_followup_table(_render_followup_lead_rows(rows, today_iso))}'
+        f'</div>'
+    )
+    body.append(
+        f'<div style="padding:0 24px 24px;font-size:11px;color:{_MUTED};'
+        f'border-top:1px solid {_BORDER};padding-top:16px;">'
+        f'Sent daily at 09:00 IST. Reply to this email if a lead should not '
+        f'have a follow-up date — admin will reset it.'
+        f'</div>'
+    )
+    return (
+        f'<div style="max-width:760px;margin:0 auto;font-family:-apple-system,'
+        f'BlinkMacSystemFont,\'Segoe UI\',Helvetica,Arial,sans-serif;color:{_TEXT};">'
+        + "".join(body)
+        + "</div>"
+    )
+
+
+def _render_admin_followup_html(
+    groups: dict,
+    name_map: dict,
+    today_iso: str,
+) -> str:
+    """Admin digest — one section per owner (incl. an 'Unassigned' bucket
+    for leads whose lead_owner is blank). Sections rendered in
+    descending-count order so the worst offenders are at the top.
+    """
+    total = sum(len(v) for v in groups.values())
+    rep_count = sum(1 for k in groups if k)  # exclude '' (unassigned)
+
+    sections = []
+    sections.append(
+        f'<div style="background:{_HEADER_BG};color:#ffffff;padding:20px 24px;">'
+        f'<div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;opacity:0.7;">'
+        f'VECRM Admin Digest</div>'
+        f'<div style="font-size:20px;font-weight:600;margin-top:4px;">'
+        f'{total} overdue follow-ups across {rep_count} reps</div>'
+        f'</div>'
+    )
+
+    # Sort owners by overdue count desc; '' (unassigned) goes last
+    # regardless of count so admins read the named-owner backlog first.
+    ordered = sorted(
+        groups.items(),
+        key=lambda kv: (kv[0] == "", -len(kv[1]), kv[0]),
+    )
+
+    for owner, rows in ordered:
+        if owner:
+            display = name_map.get(owner) or owner
+            heading = (
+                f'{frappe.utils.escape_html(display)} '
+                f'<span style="opacity:0.7;font-weight:400;">'
+                f'&lt;{frappe.utils.escape_html(owner)}&gt;</span> · {len(rows)}'
+            )
+        else:
+            heading = f'Unassigned · {len(rows)}'
+        sections.append(
+            f'<div style="margin-top:24px;">'
+            f'<table cellpadding="0" cellspacing="0" border="0" '
+            f'style="width:100%;border-collapse:collapse;">'
+            f'<tr><td style="background:{_SECTION_BG};color:#ffffff;'
+            f'padding:10px 14px;font-size:14px;font-weight:600;'
+            f'letter-spacing:0.3px;">{heading}</td></tr>'
+            f'<tr><td>{_followup_table(_render_followup_lead_rows(rows, today_iso))}</td></tr>'
+            f'</table></div>'
+        )
+
+    sections.append(
+        f'<div style="margin-top:32px;padding-top:16px;border-top:1px solid {_BORDER};'
+        f'font-size:11px;color:{_MUTED};">'
+        f'Generated by VECRM. Snapshot date: {today_iso} (Asia/Kolkata). '
+        f'Reps received their personal slice in a separate email.'
+        f'</div>'
+    )
+    return (
+        f'<div style="max-width:760px;margin:0 auto;font-family:-apple-system,'
+        f'BlinkMacSystemFont,\'Segoe UI\',Helvetica,Arial,sans-serif;color:{_TEXT};">'
+        + "".join(sections)
+        + "</div>"
+    )
+
+
+def send_followup_reminders():
+    """Daily scan for leads with overdue follow-ups. Sends email nudges.
+
+    Invoked by the scheduler (hooks.scheduler_events cron at 09:00 IST
+    Mon-Sat). Also callable manually via test_followup_reminders by a
+    System Manager.
+
+    Behaviour:
+      * Zero overdue leads → silent exit (no admin email, no noise).
+      * Per-rep emails: one digest per non-empty lead_owner.
+      * Admin digest: ALL overdue leads (incl. unassigned bucket).
+      * Aggregation failures are logged + re-raised so the scheduler
+        surface them. Per-rep send failures are logged but DON'T abort
+        the loop — one bad address shouldn't suppress everyone else's
+        email, and the admin digest still lands.
+    """
+    from vecrm.email_utils import send_email
+
+    try:
+        rows, today_iso = _aggregate_overdue_followups()
+    except Exception:
+        frappe.log_error(
+            title="VECRM follow-up reminders — aggregation failed",
+            message=frappe.get_traceback(),
+        )
+        raise
+
+    # Silent exit when nothing is overdue. This is the steady state on
+    # a healthy pipeline — no inbox noise.
+    if not rows:
+        return
+
+    groups = _group_by_owner(rows)
+
+    # One name lookup for all owners (single round-trip; tiny payload).
+    owner_emails = [k for k in groups.keys() if k]
+    name_map = _build_employee_name_map(owner_emails)
+
+    # ─── Per-rep emails ─────────────────────────────────────────────
+    for owner, owned_rows in groups.items():
+        if not owner:
+            # Leads without a lead_owner can't be addressed; they still
+            # appear in the admin digest below. Skip silently here.
+            continue
+        rep_name = name_map.get(owner) or ""
+        count = len(owned_rows)
+        subject = f"VECRM: You have {count} overdue follow-up{'s' if count != 1 else ''}"
+        html = _render_rep_followup_html(rep_name, owned_rows, today_iso)
+        try:
+            send_email(to=owner, subject=subject, html_body=html)
+        except Exception:
+            frappe.log_error(
+                title=f"VECRM follow-up reminder send failed: {owner}",
+                message=frappe.get_traceback(),
+            )
+            # Keep going — don't let one bad recipient block the rest.
+
+    # ─── Admin digest ───────────────────────────────────────────────
+    total = len(rows)
+    rep_count = sum(1 for k in groups if k)
+    admin_subject = (
+        f"VECRM Admin: {total} overdue follow-ups across {rep_count} reps"
+    )
+    admin_html = _render_admin_followup_html(groups, name_map, today_iso)
+    send_email(
+        to=_FOLLOWUP_ADMIN_RECIPIENT,
+        subject=admin_subject,
+        html_body=admin_html,
+    )
+
+
+@frappe.whitelist()
+def test_followup_reminders():
+    """Manually trigger follow-up reminders. System Manager only.
+
+    Identical send path to the scheduled run — useful for verifying
+    grouping, copy, and inline styling before/without waiting for the
+    next 09:00 IST tick.
+    """
+    frappe.only_for("System Manager")
+    send_followup_reminders()
+    return {"status": "ok", "message": "Follow-up reminders sent"}

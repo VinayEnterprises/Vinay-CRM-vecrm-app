@@ -178,8 +178,15 @@ fixtures = [
 
 scheduler_events = {
 	"cron": {
+		# PD-S29 weekly meeting report — Fri 18:00 IST.
 		"0 18 * * 5": [
 			"vecrm.api.generate_weekly_meeting_report",
+		],
+		# PD-S33-PIPELINE-DECAY daily follow-up reminders — Mon-Sat 09:00 IST
+		# (working days in India; Sun excluded so reps don't get a Monday
+		# inbox flooded with Sunday's "everything is overdue" backlog).
+		"0 9 * * 1-6": [
+			"vecrm.api.send_followup_reminders",
 		],
 	},
 }
