@@ -2878,9 +2878,7 @@ def get_voucher_period_detail(month, year, period, submitter=None, voucher_type=
 @frappe.whitelist()
 def test_email_pipeline(recipient):
     """Test email pipeline. Admin only."""
-    session = _get_session_or_throw()  # use whatever the actual session guard is
-    if session.get("vecrm_role") != "Admin":
-        frappe.throw("Admin only", frappe.PermissionError)
+    frappe.only_for("System Manager")
 
     from vecrm.email_utils import send_email
     send_email(
