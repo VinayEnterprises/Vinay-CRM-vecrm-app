@@ -3629,3 +3629,417 @@ def test_followup_reminders():
     frappe.only_for("System Manager")
     send_followup_reminders()
     return {"status": "ok", "message": "Follow-up reminders sent"}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Account 360 — admin aggregation across the company_name dimension.
+#
+# VECRM has no Account/Company doctype. Companies exist as the
+# `company_name` text field on VECRM Lead and VECRM Inquiry. These two
+# endpoints fold leads + inquiries + touchpoints up by company_name for
+# the Account 360 admin view.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _timeline_sort_key(date_str: str) -> str:
+    """Pad bare YYYY-MM-DD dates so timeline string-sort matches chrono order.
+
+    Touchpoints carry a Date (`YYYY-MM-DD`); leads/inquiries carry a
+    Datetime (`YYYY-MM-DD HH:MM:SS...`). Without padding, the shorter
+    string sorts before the longer same-day datetime under string
+    comparison, which inverts the intended order under reverse=True.
+    """
+    return date_str if len(date_str) > 10 else f"{date_str} 00:00:00"
+
+
+@frappe.whitelist()
+def get_company_list() -> dict:
+    """List all unique companies with aggregated lead/inquiry stats.
+
+    System Manager only. Companies are derived from the
+    `company_name` text field on VECRM Lead and VECRM Inquiry; both
+    sources contribute to the company set.
+
+    Returns:
+      Dict with `success` and `companies` (sorted by latest_activity desc).
+      Each company entry: company_name, total_leads, open_leads,
+      converted_leads, closed_won, closed_lost, total_inquiries,
+      first_contact, latest_activity, primary_owner (most frequent
+      lead_owner; None when the company has only inquiry rows).
+    """
+    frappe.only_for("System Manager")
+
+    from collections import Counter
+
+    leads = frappe.get_all(
+        "VECRM Lead",
+        fields=["company_name", "status", "lead_owner", "creation", "modified"],
+        limit_page_length=0,
+    )
+    inquiries = frappe.get_all(
+        "VECRM Inquiry",
+        fields=["company_name", "creation", "modified"],
+        limit_page_length=0,
+    )
+
+    # Touchpoint activity folded to company via touchpoint→lead→company.
+    tp_rows = frappe.db.sql(
+        """SELECT l.company_name AS company_name,
+                  MAX(tp.modified) AS latest_tp_modified
+             FROM `tabVECRM Lead Touchpoint` tp
+             JOIN `tabVECRM Lead` l ON l.name = tp.lead
+            GROUP BY l.company_name""",
+        as_dict=True,
+    )
+    tp_latest_by_company = {
+        r["company_name"]: r["latest_tp_modified"] for r in tp_rows
+    }
+
+    def _new_bucket(c: str) -> dict:
+        return {
+            "company_name": c,
+            "total_leads": 0,
+            "open_leads": 0,
+            "converted_leads": 0,
+            "closed_won": 0,
+            "closed_lost": 0,
+            "total_inquiries": 0,
+            "first_contact": None,
+            "latest_activity": None,
+            "_owners": Counter(),
+        }
+
+    companies: dict = {}
+
+    for r in leads:
+        c = r.get("company_name")
+        if not c:
+            continue
+        bucket = companies.setdefault(c, _new_bucket(c))
+        bucket["total_leads"] += 1
+
+        status = r.get("status")
+        if status == "Open":
+            bucket["open_leads"] += 1
+        elif status == "Converted":
+            bucket["converted_leads"] += 1
+        elif status == "Closed-Won":
+            bucket["closed_won"] += 1
+        elif status == "Closed-Lost":
+            bucket["closed_lost"] += 1
+
+        owner = r.get("lead_owner")
+        if owner:
+            bucket["_owners"][owner] += 1
+
+        creation = r.get("creation")
+        if creation and (
+            bucket["first_contact"] is None or creation < bucket["first_contact"]
+        ):
+            bucket["first_contact"] = creation
+
+        modified = r.get("modified")
+        if modified and (
+            bucket["latest_activity"] is None or modified > bucket["latest_activity"]
+        ):
+            bucket["latest_activity"] = modified
+
+    for r in inquiries:
+        c = r.get("company_name")
+        if not c:
+            continue
+        bucket = companies.setdefault(c, _new_bucket(c))
+        bucket["total_inquiries"] += 1
+
+        modified = r.get("modified")
+        if modified and (
+            bucket["latest_activity"] is None or modified > bucket["latest_activity"]
+        ):
+            bucket["latest_activity"] = modified
+
+    for company, tp_modified in tp_latest_by_company.items():
+        bucket = companies.get(company)
+        if not bucket or not tp_modified:
+            continue
+        if (
+            bucket["latest_activity"] is None
+            or tp_modified > bucket["latest_activity"]
+        ):
+            bucket["latest_activity"] = tp_modified
+
+    out = []
+    for bucket in companies.values():
+        owners = bucket.pop("_owners")
+        bucket["primary_owner"] = (
+            owners.most_common(1)[0][0] if owners else None
+        )
+        bucket["first_contact"] = (
+            str(bucket["first_contact"]) if bucket["first_contact"] else None
+        )
+        bucket["latest_activity"] = (
+            str(bucket["latest_activity"]) if bucket["latest_activity"] else None
+        )
+        out.append(bucket)
+
+    out.sort(key=lambda b: b["latest_activity"] or "", reverse=True)
+
+    return {"success": True, "companies": out}
+
+
+@frappe.whitelist()
+def get_company_360(company_name: str) -> dict:
+    """Return the full activity surface for a single company.
+
+    System Manager only. Aggregates leads + inquiries + touchpoints
+    matching `company_name` (exact, case-sensitive — same string the UI
+    receives from `get_company_list`).
+
+    Args:
+      company_name: VECRM Lead.company_name / VECRM Inquiry.company_name
+
+    Returns:
+      Dict with `success`, `company_name`, `summary`, `leads`,
+      `inquiries`, `touchpoints`, and a merged `timeline` sorted by
+      event date desc.
+
+    Raises:
+      ValidationError if company_name is empty.
+      DoesNotExistError if no leads and no inquiries reference this company.
+    """
+    frappe.only_for("System Manager")
+
+    if not company_name:
+        frappe.throw(frappe._("company_name is required"))
+
+    leads = frappe.get_all(
+        "VECRM Lead",
+        filters={"company_name": company_name},
+        fields=[
+            "name",
+            "status",
+            "lead_owner",
+            "contact_person_name",
+            "priority",
+            "creation",
+            "modified",
+            "next_followup_date",
+        ],
+        order_by="creation desc",
+        limit_page_length=0,
+    )
+    inquiries = frappe.get_all(
+        "VECRM Inquiry",
+        filters={"company_name": company_name},
+        fields=[
+            "name",
+            "status",
+            "inquiry_owner",
+            "source_lead",
+            "creation",
+            "modified",
+        ],
+        order_by="creation desc",
+        limit_page_length=0,
+    )
+
+    if not leads and not inquiries:
+        frappe.throw(
+            frappe._("Company {0} not found.").format(company_name),
+            frappe.DoesNotExistError,
+        )
+
+    lead_names = [l["name"] for l in leads]
+    touchpoints: list = []
+    if lead_names:
+        touchpoints = frappe.get_all(
+            "VECRM Lead Touchpoint",
+            filters={"lead": ["in", lead_names]},
+            fields=[
+                "name",
+                "lead",
+                "touchpoint_type",
+                "touchpoint_date",
+                "summary",
+                "actor_employee",
+                "creation",
+                "modified",
+                "owner",
+            ],
+            order_by="touchpoint_date desc, creation desc",
+            limit_page_length=0,
+        )
+
+    tp_count_by_lead: dict = {}
+    for tp in touchpoints:
+        tp_count_by_lead[tp["lead"]] = tp_count_by_lead.get(tp["lead"], 0) + 1
+
+    # ─── Per-lead response shape (with touchpoint_count rollup) ─────
+    status_counts: dict = {}
+    leads_out = []
+    for l in leads:
+        status = l.get("status")
+        if status:
+            status_counts[status] = status_counts.get(status, 0) + 1
+        leads_out.append(
+            {
+                "name": l["name"],
+                "status": status,
+                "lead_owner": l.get("lead_owner"),
+                "contact_person": l.get("contact_person_name"),
+                "priority": l.get("priority"),
+                "creation": str(l["creation"]) if l.get("creation") else None,
+                "modified": str(l["modified"]) if l.get("modified") else None,
+                "next_followup_date": (
+                    str(l["next_followup_date"]) if l.get("next_followup_date") else None
+                ),
+                "touchpoint_count": tp_count_by_lead.get(l["name"], 0),
+            }
+        )
+
+    inquiries_out = [
+        {
+            "name": i["name"],
+            "status": i.get("status"),
+            "inquiry_owner": i.get("inquiry_owner"),
+            "source_lead": i.get("source_lead"),
+            "creation": str(i["creation"]) if i.get("creation") else None,
+            "modified": str(i["modified"]) if i.get("modified") else None,
+        }
+        for i in inquiries
+    ]
+
+    touchpoints_out = [
+        {
+            "name": tp["name"],
+            "lead": tp["lead"],
+            "type": tp.get("touchpoint_type"),
+            "touchpoint_date": (
+                str(tp["touchpoint_date"]) if tp.get("touchpoint_date") else None
+            ),
+            "notes": tp.get("summary"),
+            "actor_employee": tp.get("actor_employee"),
+            "creation": str(tp["creation"]) if tp.get("creation") else None,
+            "created_by": tp.get("owner"),
+        }
+        for tp in touchpoints
+    ]
+
+    # ─── Merged chronological timeline ──────────────────────────────
+    timeline: list = []
+    for l in leads:
+        if l.get("creation"):
+            timeline.append(
+                {
+                    "date": str(l["creation"]),
+                    "event_type": "lead_created",
+                    "description": f"Lead {l['name']} created (status: {l.get('status') or 'Open'})",
+                    "actor": l.get("lead_owner"),
+                }
+            )
+        # modified > creation ⇒ later activity (status flip, edit, etc).
+        if (
+            l.get("modified")
+            and l.get("creation")
+            and l["modified"] > l["creation"]
+        ):
+            timeline.append(
+                {
+                    "date": str(l["modified"]),
+                    "event_type": "lead_updated",
+                    "description": f"Lead {l['name']} status: {l.get('status')}",
+                    "actor": l.get("lead_owner"),
+                }
+            )
+
+    for i in inquiries:
+        if i.get("creation"):
+            timeline.append(
+                {
+                    "date": str(i["creation"]),
+                    "event_type": "inquiry_created",
+                    "description": f"Inquiry {i['name']} created (status: {i.get('status') or 'Open'})",
+                    "actor": i.get("inquiry_owner"),
+                }
+            )
+        if (
+            i.get("modified")
+            and i.get("creation")
+            and i["modified"] > i["creation"]
+        ):
+            timeline.append(
+                {
+                    "date": str(i["modified"]),
+                    "event_type": "inquiry_updated",
+                    "description": f"Inquiry {i['name']} status: {i.get('status')}",
+                    "actor": i.get("inquiry_owner"),
+                }
+            )
+
+    for tp in touchpoints:
+        if tp.get("touchpoint_date"):
+            descr = f"{tp.get('touchpoint_type') or 'Touchpoint'} on {tp['lead']}"
+            if tp.get("summary"):
+                descr += f": {tp['summary']}"
+            timeline.append(
+                {
+                    "date": str(tp["touchpoint_date"]),
+                    "event_type": "touchpoint",
+                    "description": descr,
+                    "actor": tp.get("actor_employee") or tp.get("owner"),
+                }
+            )
+
+    timeline.sort(key=lambda e: _timeline_sort_key(e["date"]), reverse=True)
+
+    # ─── Summary rollup ────────────────────────────────────────────
+    first_contact_dt = None
+    latest_activity_dt = None
+    for l in leads:
+        if l.get("creation") and (
+            first_contact_dt is None or l["creation"] < first_contact_dt
+        ):
+            first_contact_dt = l["creation"]
+        if l.get("modified") and (
+            latest_activity_dt is None or l["modified"] > latest_activity_dt
+        ):
+            latest_activity_dt = l["modified"]
+    for i in inquiries:
+        if i.get("creation") and (
+            first_contact_dt is None or i["creation"] < first_contact_dt
+        ):
+            first_contact_dt = i["creation"]
+        if i.get("modified") and (
+            latest_activity_dt is None or i["modified"] > latest_activity_dt
+        ):
+            latest_activity_dt = i["modified"]
+    for tp in touchpoints:
+        if tp.get("modified") and (
+            latest_activity_dt is None or tp["modified"] > latest_activity_dt
+        ):
+            latest_activity_dt = tp["modified"]
+
+    days_since_first_contact = None
+    if first_contact_dt:
+        days_since_first_contact = (
+            frappe.utils.getdate(frappe.utils.today())
+            - frappe.utils.getdate(first_contact_dt)
+        ).days
+
+    summary = {
+        "total_leads": len(leads),
+        "lead_statuses": status_counts,
+        "total_inquiries": len(inquiries),
+        "first_contact": str(first_contact_dt) if first_contact_dt else None,
+        "latest_activity": str(latest_activity_dt) if latest_activity_dt else None,
+        "days_since_first_contact": days_since_first_contact,
+    }
+
+    return {
+        "success": True,
+        "company_name": company_name,
+        "summary": summary,
+        "leads": leads_out,
+        "inquiries": inquiries_out,
+        "touchpoints": touchpoints_out,
+        "timeline": timeline,
+    }
