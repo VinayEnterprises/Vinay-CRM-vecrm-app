@@ -733,6 +733,27 @@ def create_lead(
 
 
 @frappe.whitelist()
+def update_lead_status(lead_name: str, new_status: str) -> dict:
+    """Update a lead's status. Used by Kanban drag-and-drop.
+    
+    Valid transitions to Converted go through convert_lead_to_inquiry.
+    """
+    valid_statuses = {"Open", "Closed-Won", "Closed-Lost"}
+    if new_status not in valid_statuses:
+        frappe.throw(
+            f"Invalid status: {new_status}. Allowed: {', '.join(valid_statuses)}",
+            frappe.ValidationError,
+        )
+
+    frappe.db.set_value("VECRM Lead", lead_name, "status", new_status)
+    doc = frappe.get_doc("VECRM Lead", lead_name)
+    return {
+        "name": doc.name,
+        "status": doc.status,
+    }
+
+
+@frappe.whitelist()
 def close_lead(name: str, outcome: str, notes: str = "") -> dict:
     """Close a VECRM Lead with a final outcome.
 
