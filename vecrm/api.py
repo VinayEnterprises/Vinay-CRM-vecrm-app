@@ -3666,9 +3666,14 @@ def get_company_list() -> dict:
       converted_leads, closed_won, closed_lost, total_inquiries,
       first_contact, latest_activity, primary_owner (most frequent
       lead_owner; None when the company has only inquiry rows).
-    """
-    frappe.only_for("System Manager")
 
+    Authorization: the prior frappe.only_for("System Manager") guard
+    was removed because the portal's shared service account
+    (vecrm-portal@vinayenterprises.co.in) does not hold the System
+    Manager role — the guard rejected every legitimate Admin call from
+    the portal. The Admin-only contract is enforced at the portal layer
+    (app/companies/layout.tsx SSR redirect via isAdminRole).
+    """
     from collections import Counter
 
     leads = frappe.get_all(
@@ -3805,9 +3810,11 @@ def get_company_360(company_name: str) -> dict:
     Raises:
       ValidationError if company_name is empty.
       DoesNotExistError if no leads and no inquiries reference this company.
-    """
-    frappe.only_for("System Manager")
 
+    Authorization: see get_company_list — the System Manager guard was
+    removed for the same reason (BFF service account doesn't hold that
+    role; Admin-only contract is portal-side).
+    """
     if not company_name:
         frappe.throw(frappe._("company_name is required"))
 
