@@ -4271,8 +4271,16 @@ def delete_record(doctype: str, name: str) -> dict:
 	if doctype == "VECRM Lead":
 		inq = frappe.db.get_value("VECRM Lead", name, "converted_inquiry")
 		if inq:
+			inq_doc = frappe.get_doc("VECRM Inquiry", inq)
+			if inq_doc.docstatus == 1:
+				inq_doc.flags.ignore_permissions = True
+				inq_doc.cancel()
 			frappe.delete_doc("VECRM Inquiry", inq, ignore_permissions=True, force=True)
-			
+
+	doc = frappe.get_doc(doctype, name)
+	if doc.docstatus == 1:
+		doc.flags.ignore_permissions = True
+		doc.cancel()
 	frappe.delete_doc(doctype, name, ignore_permissions=True, force=True)
 	return {"success": True}
 
