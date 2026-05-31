@@ -23,11 +23,10 @@
   },
   {
    "fieldname": "fcm_token",
-   "fieldtype": "Data",
+   "fieldtype": "Small Text",
    "in_list_view": 1,
    "label": "FCM Token",
-   "reqd": 1,
-   "unique": 1
+   "reqd": 1
   },
   {
    "fieldname": "last_active",
