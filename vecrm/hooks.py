@@ -176,7 +176,29 @@ doc_events = {
 		"on_submit": "vecrm.audit.log_doc_event",
 		"on_cancel": "vecrm.audit.log_doc_event",
 		"on_trash": "vecrm.audit.log_doc_event",
-	}
+	},
+	# Per-doctype FCM push notifications. Frappe merges these with the "*"
+	# entry above, so the audit hook still fires alongside every targeted
+	# handler. Each notification function is internally try/except-wrapped
+	# so a push failure cannot block the document save.
+	"VECRM Lead": {
+		"on_update": [
+			"vecrm.notifications.notify_lead_assigned",
+			"vecrm.notifications.notify_lead_status",
+		],
+	},
+	"VECRM Inquiry": {
+		"after_insert": "vecrm.notifications.notify_lead_converted",
+	},
+	"VECRM Petrol Voucher": {
+		"on_update_after_submit": "vecrm.notifications.notify_voucher_status",
+	},
+	"VECRM Travel Voucher": {
+		"on_update_after_submit": "vecrm.notifications.notify_voucher_status",
+	},
+	"VECRM Expense Voucher": {
+		"on_update_after_submit": "vecrm.notifications.notify_voucher_status",
+	},
 }
 
 # Scheduled Tasks
@@ -201,6 +223,18 @@ scheduler_events = {
 		# inbox flooded with Sunday's "everything is overdue" backlog).
 		"0 9 * * 1-6": [
 			"vecrm.api.send_followup_reminders",
+		],
+		# FCM push reminders — daily 10:00 IST.
+		# daily_lead_reminder always fires; voucher_period_reminder
+		# self-gates by date (only days 13-17 and 28-2 produce a push).
+		# follow_up_due_reminder hits each lead owner with leads whose
+		# next_followup_date is today; manager_overdue_alert pings
+		# MANAGER_EMAIL once with the overdue count.
+		"0 10 * * *": [
+			"vecrm.notifications.daily_lead_reminder",
+			"vecrm.notifications.voucher_period_reminder",
+			"vecrm.notifications.follow_up_due_reminder",
+			"vecrm.notifications.manager_overdue_alert",
 		],
 	},
 }

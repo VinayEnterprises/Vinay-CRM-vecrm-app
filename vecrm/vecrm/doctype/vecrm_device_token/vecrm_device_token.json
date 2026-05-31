@@ -1,0 +1,69 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-05-31 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "user_email",
+  "fcm_token",
+  "last_active",
+  "device_label"
+ ],
+ "fields": [
+  {
+   "fieldname": "user_email",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "User Email",
+   "options": "Email",
+   "reqd": 1
+  },
+  {
+   "fieldname": "fcm_token",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "FCM Token",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "last_active",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Last Active"
+  },
+  {
+   "fieldname": "device_label",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Device Label"
+  }
+ ],
+ "idx": 0,
+ "links": [],
+ "modified": "2026-05-31 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "VECRM",
+ "name": "VECRM Device Token",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

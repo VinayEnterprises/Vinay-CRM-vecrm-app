@@ -4393,3 +4393,27 @@ def get_audit_logs(
 		"has_more": end < total
 	}
 
+
+@frappe.whitelist()
+def register_device_token(fcm_token: str, device_label: str = "Android") -> dict:
+	user_email = frappe.session.user
+	now_dt = frappe.utils.now_datetime()
+
+	existing = frappe.db.get_value("VECRM Device Token", {"fcm_token": fcm_token}, "name")
+	if existing:
+		doc = frappe.get_doc("VECRM Device Token", existing)
+		doc.user_email = user_email
+		doc.last_active = now_dt
+		doc.device_label = device_label
+		doc.save(ignore_permissions=True)
+	else:
+		frappe.get_doc({
+			"doctype": "VECRM Device Token",
+			"user_email": user_email,
+			"fcm_token": fcm_token,
+			"last_active": now_dt,
+			"device_label": device_label,
+		}).insert(ignore_permissions=True)
+
+	return {"success": True}
+
