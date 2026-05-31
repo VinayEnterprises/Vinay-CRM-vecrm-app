@@ -4313,9 +4313,10 @@ def get_audit_logs(
 	inq_logs = []
 	assign_logs = []
 	
-	if log_type in ("all", "login", "logout", "delete"):
+	USER_AUDIT_EVENT_TYPES = ("login", "logout", "create", "update", "submit", "cancel", "delete")
+	if log_type == "all" or log_type in USER_AUDIT_EVENT_TYPES:
 		user_filters = []
-		if log_type in ("login", "logout", "delete"):
+		if log_type in USER_AUDIT_EVENT_TYPES:
 			user_filters.append(["event_type", "=", log_type])
 		if from_date:
 			user_filters.append(["event_timestamp", ">=", f"{from_date} 00:00:00"])

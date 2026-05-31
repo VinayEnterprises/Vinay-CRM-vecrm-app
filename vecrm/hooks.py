@@ -165,6 +165,20 @@ fixtures = [
 # 	}
 # }
 
+# Auto-audit lifecycle events for VECRM doctypes. The "*" dispatch
+# fires for every doctype; log_doc_event filters by TRACKED_DOCTYPES
+# (5 VECRM types) and no-ops for everything else, so the per-save
+# overhead is a doctype-membership check.
+doc_events = {
+	"*": {
+		"after_insert": "vecrm.audit.log_doc_event",
+		"on_update": "vecrm.audit.log_doc_event",
+		"on_submit": "vecrm.audit.log_doc_event",
+		"on_cancel": "vecrm.audit.log_doc_event",
+		"on_trash": "vecrm.audit.log_doc_event",
+	}
+}
+
 # Scheduled Tasks
 # ---------------
 # OBS-S34-M: this is the FIRST active scheduler registration for the
