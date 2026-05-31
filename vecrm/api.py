@@ -4254,3 +4254,133 @@ def get_company_360(company_name: str) -> dict:
         "touchpoints": touchpoints_out,
         "timeline": timeline,
     }
+
+
+@frappe.whitelist()
+def delete_record(doctype: str, name: str) -> dict:
+	allowed = {
+		"VECRM Lead", "VECRM Inquiry", "VECRM Petrol Voucher",
+		"VECRM Travel Voucher", "VECRM Expense Voucher"
+	}
+	if doctype not in allowed:
+		frappe.throw(f"Doctype {doctype} not allowed for deletion")
+		
+	if not frappe.db.exists(doctype, name):
+		frappe.throw(f"Record {name} not found")
+		
+	if doctype == "VECRM Lead":
+		inq = frappe.db.get_value("VECRM Lead", name, "converted_inquiry")
+		if inq:
+			frappe.delete_doc("VECRM Inquiry", inq, ignore_permissions=True, force=True)
+			
+	frappe.delete_doc(doctype, name, ignore_permissions=True, force=True)
+	return {"success": True}
+
+
+@frappe.whitelist()
+def get_audit_logs(
+	log_type: str = "all", from_date: str = "", to_date: str = "", 
+	actor: str = "", page: str = "1", limit: str = "20"
+) -> dict:
+	page_int = int(page)
+	limit_int = int(limit)
+	
+	user_logs = []
+	inq_logs = []
+	assign_logs = []
+	
+	if log_type in ("all", "login", "logout"):
+		user_filters = []
+		if log_type in ("login", "logout"):
+			user_filters.append(["event_type", "=", log_type])
+		if from_date:
+			user_filters.append(["event_timestamp", ">=", f"{from_date} 00:00:00"])
+		if to_date:
+			user_filters.append(["event_timestamp", "<=", f"{to_date} 23:59:59"])
+		if actor:
+			user_filters.append(["actor", "like", f"%{actor}%"])
+			
+		user_logs = frappe.get_all(
+			"VECRM User Audit Log", 
+			filters=user_filters, 
+			fields=["name", "event_type", "actor", "target", "event_timestamp", "detail"], 
+			ignore_permissions=True
+		)
+		
+	if log_type in ("all", "conversion") and not actor:
+		inq_filters = []
+		if from_date:
+			inq_filters.append(["event_timestamp", ">=", f"{from_date} 00:00:00"])
+		if to_date:
+			inq_filters.append(["event_timestamp", "<=", f"{to_date} 23:59:59"])
+			
+		inq_logs = frappe.get_all(
+			"VECRM Inquiry Audit Log", 
+			filters=inq_filters, 
+			fields=["name", "event", "event_timestamp", "payload"], 
+			ignore_permissions=True
+		)
+
+	if log_type in ("all", "assignment"):
+		assign_filters = []
+		if from_date:
+			assign_filters.append(["event_timestamp", ">=", f"{from_date} 00:00:00"])
+		if to_date:
+			assign_filters.append(["event_timestamp", "<=", f"{to_date} 23:59:59"])
+		if actor:
+			assign_filters.append(["changed_by", "like", f"%{actor}%"])
+			
+		assign_logs = frappe.get_all(
+			"VECRM Assignment Ledger Entry", 
+			filters=assign_filters, 
+			fields=["name", "event_timestamp", "from_owner", "to_owner", "changed_by", "change_reason", "ref_document"], 
+			ignore_permissions=True
+		)
+		
+	unified = []
+	for r in user_logs:
+		unified.append({
+			"id": r.name,
+			"timestamp": r.event_timestamp,
+			"type": r.event_type or "other",
+			"actor": r.actor or "System",
+			"description": r.detail or f"Target: {r.target}",
+			"ref_document": None,
+			"source": "user_audit"
+		})
+		
+	for r in inq_logs:
+		unified.append({
+			"id": r.name,
+			"timestamp": r.event_timestamp,
+			"type": "conversion",
+			"actor": "System/Unknown",
+			"description": r.payload or "-",
+			"ref_document": None,
+			"source": "inquiry_audit"
+		})
+		
+	for r in assign_logs:
+		unified.append({
+			"id": r.name,
+			"timestamp": r.event_timestamp,
+			"type": "assignment",
+			"actor": r.changed_by or "System",
+			"description": r.change_reason or f"{r.from_owner} -> {r.to_owner}",
+			"ref_document": r.ref_document,
+			"source": "assignment_ledger"
+		})
+		
+	unified.sort(key=lambda x: str(x["timestamp"]), reverse=True)
+	
+	total = len(unified)
+	start = (page_int - 1) * limit_int
+	end = start + limit_int
+	
+	return {
+		"entries": unified[start:end],
+		"total": total,
+		"page": page_int,
+		"has_more": end < total
+	}
+
