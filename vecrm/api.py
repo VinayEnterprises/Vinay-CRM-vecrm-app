@@ -4275,28 +4275,12 @@ def delete_record(doctype: str, name: str) -> dict:
 			if inq_doc.docstatus == 1:
 				inq_doc.flags.ignore_permissions = True
 				inq_doc.cancel()
-			frappe.get_doc({
-				"doctype": "VECRM User Audit Log",
-				"event_type": "delete",
-				"actor": frappe.session.user,
-				"target": inq,
-				"event_timestamp": frappe.utils.now_datetime(),
-				"detail": f"Deleted VECRM Inquiry: {inq}"
-			}).insert(ignore_permissions=True)
 			frappe.delete_doc("VECRM Inquiry", inq, ignore_permissions=True, force=True)
 
 	doc = frappe.get_doc(doctype, name)
 	if doc.docstatus == 1:
 		doc.flags.ignore_permissions = True
 		doc.cancel()
-	frappe.get_doc({
-		"doctype": "VECRM User Audit Log",
-		"event_type": "delete",
-		"actor": frappe.session.user,
-		"target": name,
-		"event_timestamp": frappe.utils.now_datetime(),
-		"detail": f"Deleted {doctype}: {name}"
-	}).insert(ignore_permissions=True)
 	frappe.delete_doc(doctype, name, ignore_permissions=True, force=True)
 	return {"success": True}
 
