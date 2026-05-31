@@ -4296,8 +4296,9 @@ def get_audit_logs(
 	user_logs = []
 	inq_logs = []
 	assign_logs = []
+	auth_logs = []
 	
-	USER_AUDIT_EVENT_TYPES = ("login", "logout", "create", "update", "submit", "cancel", "delete")
+	USER_AUDIT_EVENT_TYPES = ("create", "update", "submit", "cancel", "delete")
 	if log_type == "all" or log_type in USER_AUDIT_EVENT_TYPES:
 		user_filters = []
 		if log_type in USER_AUDIT_EVENT_TYPES:
@@ -4313,6 +4314,27 @@ def get_audit_logs(
 			"VECRM User Audit Log", 
 			filters=user_filters, 
 			fields=["name", "event_type", "actor", "target", "event_timestamp", "detail"], 
+			ignore_permissions=True
+		)
+		
+	if log_type == "all" or log_type in ("login", "logout"):
+		auth_filters = []
+		if log_type in ("login", "logout"):
+			# In VECRM Auth Audit Log, the event is like "auth.login.failed" or "auth.logout"
+			# Actually the portal sends "Login/Logout" which maps to "login"
+			# We'll match prefix or exact
+			auth_filters.append(["event", "like", f"%{log_type}%"])
+		if from_date:
+			auth_filters.append(["creation", ">=", f"{from_date} 00:00:00"])
+		if to_date:
+			auth_filters.append(["creation", "<=", f"{to_date} 23:59:59"])
+		if actor:
+			auth_filters.append(["employee", "like", f"%{actor}%"])
+			
+		auth_logs = frappe.get_all(
+			"VECRM Auth Audit Log", 
+			filters=auth_filters, 
+			fields=["name", "event", "employee", "identifier", "creation", "path", "reason"], 
 			ignore_permissions=True
 		)
 		
@@ -4356,6 +4378,19 @@ def get_audit_logs(
 			"description": r.detail or f"Target: {r.target}",
 			"ref_document": None,
 			"source": "user_audit"
+		})
+		
+	for r in auth_logs:
+		# Format event like auth.login.failed into Login Failed
+		event_clean = str(r.event).replace("auth.", "").replace(".", " ")
+		unified.append({
+			"id": r.name,
+			"timestamp": r.creation,
+			"type": event_clean,
+			"actor": r.employee or r.identifier or "System",
+			"description": f"Path: {r.path or '-'}" + (f", Reason: {r.reason}" if r.reason else ""),
+			"ref_document": None,
+			"source": "auth_audit"
 		})
 		
 	for r in inq_logs:
