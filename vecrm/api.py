@@ -4415,5 +4415,11 @@ def register_device_token(fcm_token: str, device_label: str = "Android") -> dict
 			"device_label": device_label,
 		}).insert(ignore_permissions=True)
 
+	# Portal BFF calls this via GET to bypass Frappe's CSRF 417 on cookie-
+	# auth POSTs. Frappe skips its auto-commit on GET requests (the implicit
+	# safety: read-only methods shouldn't persist writes), so the insert/
+	# save above would roll back at request end. Force the commit so the
+	# token row actually persists.
+	frappe.db.commit()
 	return {"success": True}
 
