@@ -4384,6 +4384,17 @@ def delete_record(doctype: str, name: str) -> dict:
 	if doc.docstatus == 1:
 		doc.flags.ignore_permissions = True
 		doc.cancel()
+		
+	# Explicitly log the deletion
+	frappe.get_doc({
+		"doctype": "VECRM User Audit Log",
+		"event_type": "delete",
+		"actor": frappe.session.user,
+		"target": name,
+		"event_timestamp": frappe.utils.now_datetime(),
+		"detail": f"Delete {doctype}: {name}"
+	}).insert(ignore_permissions=True)
+	
 	frappe.delete_doc(doctype, name, ignore_permissions=True, force=True)
 	return {"success": True}
 
@@ -4554,7 +4565,9 @@ def get_audit_logs(
 
 @frappe.whitelist()
 def register_device_token(fcm_token: str, device_label: str = "Android") -> dict:
-	user_email = frappe.session.user
+	# Portal requests run as the shared vecrm-portal user; the true identity
+	# is stashed in session data.
+	user_email = frappe.session.data.get("vecrm_email") or frappe.session.user
 	now_dt = frappe.utils.now_datetime()
 
 	existing = frappe.db.get_value("VECRM Device Token", {"fcm_token": fcm_token}, "name")

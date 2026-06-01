@@ -233,6 +233,7 @@ scheduler_events = {
 		"0 10 * * *": [
 			"vecrm.notifications.daily_lead_reminder",
 			"vecrm.notifications.voucher_period_reminder",
+			"vecrm.notifications.follow_up_upcoming_reminder",
 			"vecrm.notifications.follow_up_due_reminder",
 			"vecrm.notifications.manager_overdue_alert",
 		],
