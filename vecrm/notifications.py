@@ -233,6 +233,30 @@ def follow_up_due_reminder():
 		frappe.log_error(frappe.get_traceback(), "notifications.follow_up_due_reminder")
 
 
+def follow_up_upcoming_reminder():
+	"""Fire each lead's owner: 'Follow-up due tomorrow for {company}'."""
+	try:
+		tomorrow = frappe.utils.add_days(frappe.utils.today(), 1)
+		rows = frappe.get_all(
+			"VECRM Lead",
+			filters={"next_followup_date": tomorrow, "status": "Open"},
+			fields=["name", "company_name", "lead_owner"],
+			ignore_permissions=True,
+		)
+		for r in rows:
+			tokens = _tokens_for_user(r.lead_owner)
+			if not tokens:
+				continue
+			send_push(
+				tokens,
+				"Follow-up due tomorrow",
+				f"Upcoming follow-up tomorrow for {r.company_name}",
+				{"screen": "leads", "lead": r.name},
+			)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "notifications.follow_up_upcoming_reminder")
+
+
 def manager_overdue_alert():
 	"""If any open leads are past their follow-up date, alert the manager."""
 	try:
