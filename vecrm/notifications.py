@@ -301,3 +301,99 @@ def notify_admin_lead_created(doc, method):
 			frappe.log_error(f"No tokens found for {admin_email}", "Push Notification Debug")
 	except Exception as e:
 		frappe.log_error(f"notify_admin_lead_created failed: {str(e)}", "Push Notification Error")
+
+
+def notify_voucher_submitted(doc, method):
+	"""Ping approvers when a new voucher is submitted."""
+	try:
+		submitter_email = _employee_email(getattr(doc, "submitter", None))
+		if not submitter_email:
+			return
+		
+		submitter_employee = frappe.get_all(
+			"VECRM Employee", 
+			filters={"vecrm_email": submitter_email}, 
+			fields=["role"], 
+			limit=1
+		)
+		submitter_role = submitter_employee[0].role if submitter_employee else None
+
+		target_roles = ["Admin", "HR"]
+		if submitter_role == "Field Engineer":
+			target_roles.append("Head of Engineers")
+		elif submitter_role == "Sales Rep":
+			target_roles.append("Sales Head")
+
+		approver_employees = frappe.get_all(
+			"VECRM Employee",
+			filters={"role": ["in", target_roles]},
+			fields=["vecrm_email"],
+			ignore_permissions=True
+		)
+
+		approver_emails = [e.vecrm_email for e in approver_employees if e.vecrm_email]
+		
+		for email in approver_emails:
+			tokens = _tokens_for_user(email)
+			if tokens:
+				send_push(
+					tokens,
+					"New Voucher Submitted",
+					f"New {doc.doctype.replace('VECRM ', '')} submitted by {submitter_email}",
+					{"screen": "vouchers", "voucher": doc.name, "doctype": doc.doctype}
+				)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "notifications.notify_voucher_submitted")
+
+
+def stale_inquiry_reminder():
+	"""Find inquiries with status Open that haven't been modified in 3 days."""
+	try:
+		three_days_ago = frappe.utils.add_days(frappe.utils.today(), -3)
+		stale_inquiries = frappe.get_all(
+			"VECRM Inquiry",
+			filters={
+				"status": "Open",
+				"modified": ["<", three_days_ago]
+			},
+			fields=["name", "company_name", "inquiry_owner"]
+		)
+
+		for r in stale_inquiries:
+			tokens = _tokens_for_user(r.inquiry_owner)
+			if tokens:
+				send_push(
+					tokens,
+					"Stale Inquiry",
+					f"Your inquiry for {r.company_name} hasn't been updated recently. Give them a call?",
+					{"screen": "inquiries", "inquiry": r.name}
+				)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "notifications.stale_inquiry_reminder")
+
+
+def manager_daily_digest():
+	"""Send a daily digest to the manager summarizing today's activity."""
+	try:
+		today = frappe.utils.today()
+		
+		leads_created = frappe.db.count("VECRM Lead", {"creation": ["like", f"{today}%"]})
+		
+		tv_submitted = frappe.db.count("VECRM Travel Voucher", {"docstatus": 1, "modified": ["like", f"{today}%"]})
+		ev_submitted = frappe.db.count("VECRM Expense Voucher", {"docstatus": 1, "modified": ["like", f"{today}%"]})
+		pv_submitted = frappe.db.count("VECRM Petrol Voucher", {"docstatus": 1, "modified": ["like", f"{today}%"]})
+		vouchers_submitted = tv_submitted + ev_submitted + pv_submitted
+
+		if leads_created == 0 and vouchers_submitted == 0:
+			return
+
+		tokens = _tokens_for_user(MANAGER_EMAIL)
+		if tokens:
+			send_push(
+				tokens,
+				"Daily Digest",
+				f"Your team added {leads_created} leads and submitted {vouchers_submitted} vouchers today.",
+				{"screen": "dashboard"}
+			)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "notifications.manager_daily_digest")

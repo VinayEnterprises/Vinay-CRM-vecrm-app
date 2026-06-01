@@ -192,12 +192,15 @@ doc_events = {
 		"after_insert": "vecrm.notifications.notify_lead_converted",
 	},
 	"VECRM Petrol Voucher": {
+		"on_submit": "vecrm.notifications.notify_voucher_submitted",
 		"on_update_after_submit": "vecrm.notifications.notify_voucher_status",
 	},
 	"VECRM Travel Voucher": {
+		"on_submit": "vecrm.notifications.notify_voucher_submitted",
 		"on_update_after_submit": "vecrm.notifications.notify_voucher_status",
 	},
 	"VECRM Expense Voucher": {
+		"on_submit": "vecrm.notifications.notify_voucher_submitted",
 		"on_update_after_submit": "vecrm.notifications.notify_voucher_status",
 	},
 }
@@ -219,6 +222,14 @@ scheduler_events = {
 		"0 18 * * 5": [
 			"vecrm.api.generate_weekly_meeting_report",
 		],
+		# Manager Daily Digest — daily 18:00 IST.
+		"0 18 * * *": [
+			"vecrm.notifications.manager_daily_digest",
+		],
+		# Evening lead reminder — daily 19:30 IST.
+		"30 19 * * *": [
+			"vecrm.notifications.daily_lead_reminder",
+		],
 		# PD-S33-PIPELINE-DECAY daily follow-up reminders — Mon-Sat 09:00 IST
 		# (working days in India; Sun excluded so reps don't get a Monday
 		# inbox flooded with Sunday's "everything is overdue" backlog).
@@ -237,6 +248,7 @@ scheduler_events = {
 			"vecrm.notifications.follow_up_upcoming_reminder",
 			"vecrm.notifications.follow_up_due_reminder",
 			"vecrm.notifications.manager_overdue_alert",
+			"vecrm.notifications.stale_inquiry_reminder",
 		],
 	},
 }
