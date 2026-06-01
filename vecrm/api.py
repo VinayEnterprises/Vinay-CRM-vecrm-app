@@ -645,7 +645,7 @@ def create_lead(
 	company_name: str,
 	territory: str,
 	contact_date: str,
-	priority: int,
+	priority: str = "3",
 	contact_number: str = None,
 	contact_email: str = None,
 	meeting_brief: str = None,
