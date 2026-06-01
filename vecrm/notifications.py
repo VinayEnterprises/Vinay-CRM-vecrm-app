@@ -144,7 +144,7 @@ def notify_lead_status(doc, method):
 		send_push(
 			tokens,
 			f"Lead status: {doc.company_name}",
-			f"{doc.company_name}: {old_status or '—'} → {new_status or '—'}",
+			f"{doc.company_name}: {old_status or '-'} → {new_status or '-'}",
 			{"screen": "leads", "lead": doc.name},
 		)
 	except Exception:
@@ -293,7 +293,7 @@ def notify_admin_lead_created(doc, method):
 			res = send_push(
 				tokens=tokens,
 				title="New Lead Created",
-				body=f"Lead: {company} — created by {creator}",
+				body=f"Lead: {company} - created by {creator}",
 				data={"screen": "leads", "lead": doc.name}
 			)
 			frappe.log_error(f"Tokens: {len(tokens)}, Result: {res}", "Push Notification Debug")
