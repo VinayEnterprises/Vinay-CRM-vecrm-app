@@ -4564,10 +4564,10 @@ def get_audit_logs(
 
 
 @frappe.whitelist()
-def register_device_token(fcm_token: str, device_label: str = "Android") -> dict:
+def register_device_token(fcm_token: str, device_label: str = "Android", user_email: str = None) -> dict:
 	# Portal requests run as the shared vecrm-portal user; the true identity
-	# is stashed in session data.
-	user_email = frappe.session.data.get("vecrm_email") or frappe.session.user
+	# is passed explicitly or stashed in session data.
+	user_email = user_email or frappe.session.data.get("vecrm_email") or frappe.session.user
 	now_dt = frappe.utils.now_datetime()
 
 	existing = frappe.db.get_value("VECRM Device Token", {"fcm_token": fcm_token}, "name")
