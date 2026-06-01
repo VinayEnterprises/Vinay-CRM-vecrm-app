@@ -282,6 +282,8 @@ def manager_overdue_alert():
 
 def notify_admin_lead_created(doc, method):
 	"""Push notification to admin when any lead is created."""
+	if getattr(doc.flags, 'skip_notification', False):
+		return
 	try:
 		admin_email = "ajay@vinayenterprises.co.in"
 		tokens = _tokens_for_user(admin_email)
