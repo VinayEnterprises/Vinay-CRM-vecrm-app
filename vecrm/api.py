@@ -562,6 +562,7 @@ def create_expense_voucher_draft(
 	for line in lines:
 		doc.append("expense_lines", {
 			"category": line.get("category"),
+			"days": line.get("days") or 0,
 			"amount": line.get("amount"),
 			"description": line.get("description"),
 			"attachment": line.get("attachment"),
@@ -583,6 +584,7 @@ def create_expense_voucher_draft(
 		"expense_lines": [
 			{
 				"category": line.category,
+				"days": line.days,
 				"amount": line.amount,
 				"description": line.description,
 				"attachment": line.attachment,

@@ -8,6 +8,7 @@
   "istable": 1,
   "field_order": [
     "category",
+    "days",
     "amount",
     "description",
     "attachment"
@@ -21,6 +22,13 @@
       "reqd": 1,
       "options": "Hotel\nFood Allowance\nTravel\nSupplies\nCommunication\nMisc",
       "description": "Expense category. Locked Select; no free-text. PD-S38 Fix #5 added 'Travel'; Fix #7 renamed 'Food' → 'Food Allowance' (portal auto-fills ₹380/day on selection)."
+    },
+    {
+      "fieldname": "days",
+      "fieldtype": "Int",
+      "in_list_view": 1,
+      "label": "Days (Food Allowance)",
+      "description": "Number of days for Food Allowance."
     },
     {
       "fieldname": "amount",

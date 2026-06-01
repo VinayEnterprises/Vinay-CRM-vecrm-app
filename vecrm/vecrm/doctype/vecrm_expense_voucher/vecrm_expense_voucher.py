@@ -106,11 +106,24 @@ class VECRMExpenseVoucher(Document):
 
         # Per-line amount validation
         for idx, line in enumerate(self.expense_lines, start=1):
-            if line.amount is None or float(line.amount) <= 0:
-                frappe.throw(
-                    f"Expense line {idx}: amount must be > 0. Got {line.amount!r}.",
-                    frappe.ValidationError,
-                )
+            if line.category == "Food Allowance":
+                if not line.days or int(line.days) <= 0:
+                    frappe.throw(
+                        f"Expense line {idx}: Food Allowance requires a valid number of days (> 0).",
+                        frappe.ValidationError,
+                    )
+                expected_amount = int(line.days) * 380
+                if float(line.amount or 0) != expected_amount:
+                    frappe.throw(
+                        f"Expense line {idx}: Food Allowance amount must be ₹{expected_amount} ({line.days} days @ ₹380/day). Got ₹{line.amount or 0}.",
+                        frappe.ValidationError,
+                    )
+            else:
+                if line.amount is None or float(line.amount) <= 0:
+                    frappe.throw(
+                        f"Expense line {idx}: amount must be > 0. Got {line.amount!r}.",
+                        frappe.ValidationError,
+                    )
 
         # Recompute total_amount (defense against client-side tampering)
         self.total_amount = sum(float(line.amount) for line in self.expense_lines)
