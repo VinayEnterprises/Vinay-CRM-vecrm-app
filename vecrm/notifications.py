@@ -27,6 +27,30 @@ def send_push(tokens: list, title: str, body: str, data: dict = None):
 		tokens=tokens,
 	)
 	response = messaging.send_each_for_multicast(message)
+	
+	try:
+		users_to_notify = set()
+		for t in tokens:
+			rows = frappe.get_all("VECRM Device Token", filters={"fcm_token": t}, fields=["user_email"])
+			for r in rows:
+				if r.user_email:
+					users_to_notify.add(r.user_email)
+					
+		for user in users_to_notify:
+			doc_type = data.get("doctype") if data else None
+			doc_name = (data.get("voucher") or data.get("lead") or data.get("inquiry")) if data else None
+			frappe.get_doc({
+				"doctype": "Notification Log",
+				"subject": title,
+				"email_content": body,
+				"for_user": user,
+				"type": "Alert",
+				"document_type": doc_type,
+				"document_name": doc_name
+			}).insert(ignore_permissions=True)
+	except Exception as e:
+		frappe.log_error(f"Error logging notification: {e}", "Notification Log Error")
+
 	return {"sent": response.success_count, "failed": response.failure_count}
 
 
@@ -397,3 +421,46 @@ def manager_daily_digest():
 			)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications.manager_daily_digest")
+
+
+def voucher_approver_payment_reminder():
+	"""Cron job that runs daily at 10 AM to remind Approvers about Vouchers."""
+	try:
+		from datetime import date
+		day = date.today().day
+		
+		messages = []
+		if day in (15, 16, 17):
+			messages.append("Please approve pending vouchers for the 1st-15th period.")
+		elif day in (1, 2, 3):
+			messages.append("Please approve pending vouchers for the preceding month.")
+			
+		if day == 20:
+			messages.append("Voucher payments for the 1st-15th period are due today.")
+		elif day == 5:
+			messages.append("Voucher payments for the preceding month are due today.")
+			
+		if not messages:
+			return
+			
+		approver_employees = frappe.get_all(
+			"VECRM Employee",
+			filters={"role": ["in", ["Admin", "HR", "Sales Head", "Head of Engineers"]]},
+			fields=["vecrm_email"],
+			ignore_permissions=True
+		)
+		
+		approver_emails = [e.vecrm_email for e in approver_employees if e.vecrm_email]
+		
+		for email in approver_emails:
+			tokens = _tokens_for_user(email)
+			if tokens:
+				for msg in messages:
+					send_push(
+						tokens,
+						"Voucher Action Required",
+						msg,
+						{"screen": "vouchers"}
+					)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "notifications.voucher_approver_payment_reminder")

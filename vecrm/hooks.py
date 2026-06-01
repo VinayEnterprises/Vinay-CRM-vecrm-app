@@ -249,6 +249,7 @@ scheduler_events = {
 			"vecrm.notifications.follow_up_due_reminder",
 			"vecrm.notifications.manager_overdue_alert",
 			"vecrm.notifications.stale_inquiry_reminder",
+			"vecrm.notifications.voucher_approver_payment_reminder",
 		],
 	},
 }
