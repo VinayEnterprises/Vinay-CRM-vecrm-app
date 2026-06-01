@@ -2458,6 +2458,8 @@ def admin_list_employees(
     status: str = "",
     role: str = "",
     search: str = "",
+    page: str = "1",
+    limit: str = "50",
 ) -> dict[str, Any]:
     """Admin-only: list all VECRM Employees with optional filters.
 
@@ -2473,13 +2475,17 @@ def admin_list_employees(
          "vecrm_account_status": ..., "reporting_approver": ...,
          "last_login_at": ..., "creation": ...},
         ...
-      ]}
+      ], "total": ..., "page": ..., "has_more": ...}
 
     The doc returned has the same shape as the VECRM Employee row but
     EXCLUDES auth credential fields (password_hash, pin_hash, etc.) —
     these are never sent to the portal.
     """
     _require_admin_session()
+
+    page_int = int(page)
+    limit_int = int(limit)
+    limit_start = (page_int - 1) * limit_int
 
     filters: dict[str, Any] = {}
     if status:
@@ -2503,6 +2509,8 @@ def admin_list_employees(
     if search:
         filters["employee_name"] = ["like", f"%{search}%"]
 
+    total_count = frappe.db.count("VECRM Employee", filters=filters)
+
     rows = frappe.get_all(
         "VECRM Employee",
         filters=filters,
@@ -2519,10 +2527,45 @@ def admin_list_employees(
             "creation",
         ],
         order_by="employee_name asc",
-        limit_page_length=200,
+        limit_start=limit_start,
+        limit_page_length=limit_int,
     )
 
-    return {"data": rows}
+    return {"data": rows, "total": total_count, "page": page_int, "has_more": limit_start + limit_int < total_count}
+
+
+def _resolve_employee(identifier: str, field_label: str = "Employee") -> str:
+    """Resolve an employee's exact name (phone PK) from email, partial phone, or employee_name."""
+    if not identifier:
+        return ""
+        
+    identifier = identifier.strip()
+    
+    # 1. Exact PK match
+    if frappe.db.exists("VECRM Employee", identifier):
+        return identifier
+        
+    # 2. Email match
+    if "@" in identifier:
+        matching = frappe.get_all("VECRM Employee", filters={"vecrm_email": identifier}, limit=1)
+        if matching:
+            return matching[0].name
+            
+    # 3. Unformatted phone match
+    if re.search(r'\d{10}', identifier):
+        clean_phone = "+91-" + re.sub(r'\D', '', identifier)[-10:]
+        if frappe.db.exists("VECRM Employee", clean_phone):
+            return clean_phone
+            
+    # 4. Name match (Active only, to avoid resolving to suspended old accounts)
+    matching = frappe.get_all("VECRM Employee", filters={"employee_name": identifier, "vecrm_account_status": "Active"}, limit=1)
+    if matching:
+        return matching[0].name
+        
+    frappe.throw(
+        frappe._("Could not find {1}: {0}").format(identifier, field_label),
+        frappe.DoesNotExistError
+    )
 
 
 @frappe.whitelist()
@@ -2618,7 +2661,7 @@ def admin_create_employee(
     if vecrm_email:
         doc.vecrm_email = vecrm_email
     if reporting_approver:
-        doc.reporting_approver = reporting_approver
+        doc.reporting_approver = _resolve_employee(reporting_approver, "Reporting Approver")
 
     doc.insert(ignore_permissions=True)
 
@@ -2708,7 +2751,7 @@ def admin_update_employee(
     if vecrm_email:
         doc.vecrm_email = vecrm_email.strip()
     if reporting_approver:
-        doc.reporting_approver = reporting_approver.strip()
+        doc.reporting_approver = _resolve_employee(reporting_approver.strip(), "Reporting Approver")
     if vecrm_account_status:
         if vecrm_account_status not in ("Active", "Suspended"):
             frappe.throw(
@@ -2724,6 +2767,66 @@ def admin_update_employee(
         "success": True,
         "name": doc.name,
     }
+
+
+@frappe.whitelist()
+def admin_delete_employee(employee: str = "") -> dict[str, Any]:
+    """Admin-only: Delete an employee from the system.
+
+    Frappe referential integrity (Link fields with on_delete=Restrict)
+    will block the deletion if the employee is linked to existing Vouchers,
+    Leads, Touchpoints, or Audit Logs. We catch LinkExistsError to return
+    a friendly message.
+
+    Returns:
+      {"success": True}
+
+    Raises:
+      PermissionError if session not Admin.
+      ValidationError on missing employee or link integrity failure.
+    """
+    _require_admin_session()
+
+    employee = (employee or "").strip()
+    if not employee:
+        frappe.throw(
+            frappe._("Employee identifier (phone) is required."),
+            frappe.ValidationError,
+        )
+
+    if not frappe.db.exists("VECRM Employee", employee):
+        frappe.throw(
+            frappe._("Employee '{0}' not found.").format(employee),
+            frappe.DoesNotExistError,
+        )
+
+    # Audit before deletion because the doc will be gone
+    _audit_auth(
+        "auth.admin.delete_employee",
+        employee=employee,
+        path="admin",
+        reason="Admin deleted employee",
+    )
+    
+    frappe.get_doc({
+        "doctype": "VECRM User Audit Log",
+        "event_type": "delete",
+        "actor": frappe.session.user,
+        "target": employee,
+        "event_timestamp": frappe.utils.now_datetime(),
+        "detail": f"Delete VECRM Employee: {employee}"
+    }).insert(ignore_permissions=True)
+
+    try:
+        frappe.delete_doc("VECRM Employee", employee, ignore_permissions=True)
+    except frappe.LinkExistsError:
+        frappe.throw(
+            frappe._("Cannot delete employee '{0}' because they are linked to existing records (e.g., Vouchers, Leads, or Logs). Suspend the account instead.").format(employee),
+            frappe.ValidationError,
+        )
+
+    return {"success": True}
+
 # ============================================================================
 # PD-S30-LEAD-FOLLOWUP Phase 2 — Touchpoint API
 # ============================================================================
@@ -4369,12 +4472,24 @@ def get_audit_logs(
 		)
 		
 	unified = []
+	
+	employees = frappe.get_all("VECRM Employee", fields=["name", "vecrm_email", "employee_name"])
+	emp_map = {}
+	for e in employees:
+		emp_map[e.name] = e.employee_name
+		if e.vecrm_email:
+			emp_map[e.vecrm_email] = e.employee_name
+			
+	def get_actor_name(actor_id):
+		if not actor_id:
+			return "System"
+		return emp_map.get(actor_id, actor_id)
 	for r in user_logs:
 		unified.append({
 			"id": r.name,
 			"timestamp": r.event_timestamp,
 			"type": r.event_type or "other",
-			"actor": r.actor or "System",
+			"actor": get_actor_name(r.actor),
 			"description": r.detail or f"Target: {r.target}",
 			"ref_document": None,
 			"source": "user_audit"
@@ -4387,7 +4502,7 @@ def get_audit_logs(
 			"id": r.name,
 			"timestamp": r.creation,
 			"type": event_clean,
-			"actor": r.employee or r.identifier or "System",
+			"actor": get_actor_name(r.employee or r.identifier),
 			"description": f"Path: {r.path or '-'}" + (f", Reason: {r.reason}" if r.reason else ""),
 			"ref_document": None,
 			"source": "auth_audit"
@@ -4409,7 +4524,7 @@ def get_audit_logs(
 			"id": r.name,
 			"timestamp": r.event_timestamp,
 			"type": "assignment",
-			"actor": r.changed_by or "System",
+			"actor": get_actor_name(r.changed_by),
 			"description": r.change_reason or f"{r.from_owner} -> {r.to_owner}",
 			"ref_document": r.ref_document,
 			"source": "assignment_ledger"
