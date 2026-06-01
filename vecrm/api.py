@@ -540,20 +540,30 @@ def create_expense_voucher_draft(
 	# receipt and the receipt URL MUST exist in the File doctype.
 	for idx, line in enumerate(lines, start=1):
 		attachment = line.get("attachment")
-		if not attachment or not str(attachment).strip():
-			frappe.throw(
-				f"Expense line {idx}: receipt attachment is required. "
-				f"Upload a receipt (jpg/png/pdf, max 5MB) before submitting.",
-				frappe.ValidationError,
-			)
-		# Defense-in-depth: confirm the URL refers to a real File row.
-		# Prevents spoofed/fabricated URLs from being attached to a voucher.
-		if not frappe.db.exists("File", {"file_url": attachment}):
-			frappe.throw(
-				f"Expense line {idx}: receipt URL {attachment!r} is not a "
-				f"recognized upload. Re-upload the receipt and try again.",
-				frappe.ValidationError,
-			)
+		if line.get("category") == "Food Allowance":
+			# Food Allowance does not strictly require a receipt.
+			if attachment and str(attachment).strip():
+				if not frappe.db.exists("File", {"file_url": attachment}):
+					frappe.throw(
+						f"Expense line {idx}: receipt URL {attachment!r} is not a "
+						f"recognized upload. Re-upload the receipt and try again.",
+						frappe.ValidationError,
+					)
+		else:
+			if not attachment or not str(attachment).strip():
+				frappe.throw(
+					f"Expense line {idx}: receipt attachment is required. "
+					f"Upload a receipt (jpg/png/pdf, max 5MB) before submitting.",
+					frappe.ValidationError,
+				)
+			# Defense-in-depth: confirm the URL refers to a real File row.
+			# Prevents spoofed/fabricated URLs from being attached to a voucher.
+			if not frappe.db.exists("File", {"file_url": attachment}):
+				frappe.throw(
+					f"Expense line {idx}: receipt URL {attachment!r} is not a "
+					f"recognized upload. Re-upload the receipt and try again.",
+					frappe.ValidationError,
+				)
 
 	doc = frappe.new_doc("VECRM Expense Voucher")
 	doc.submitter = submitter
