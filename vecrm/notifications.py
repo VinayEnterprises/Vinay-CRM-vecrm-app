@@ -295,5 +295,5 @@ def notify_admin_lead_created(doc, method):
 				body=f"Lead: {company} — created by {doc.owner}",
 				data={"screen": "leads", "lead": doc.name}
 			)
-	except Exception:
-		pass
+	except Exception as e:
+		frappe.log_error(f"notify_admin_lead_created failed: {str(e)}", "Push Notification Error")
