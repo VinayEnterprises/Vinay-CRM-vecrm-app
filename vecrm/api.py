@@ -4417,7 +4417,9 @@ def get_audit_logs(
 			"VECRM User Audit Log", 
 			filters=user_filters, 
 			fields=["name", "event_type", "actor", "target", "event_timestamp", "detail"], 
-			ignore_permissions=True
+			ignore_permissions=True,
+			limit_page_length=0,
+			order_by="creation desc"
 		)
 		
 	if log_type == "all" or log_type in ("login", "logout"):
@@ -4438,7 +4440,9 @@ def get_audit_logs(
 			"VECRM Auth Audit Log", 
 			filters=auth_filters, 
 			fields=["name", "event", "employee", "identifier", "creation", "path", "reason"], 
-			ignore_permissions=True
+			ignore_permissions=True,
+			limit_page_length=0,
+			order_by="creation desc"
 		)
 		
 	if log_type in ("all", "conversion") and not actor:
@@ -4452,7 +4456,9 @@ def get_audit_logs(
 			"VECRM Inquiry Audit Log", 
 			filters=inq_filters, 
 			fields=["name", "event", "event_timestamp", "payload"], 
-			ignore_permissions=True
+			ignore_permissions=True,
+			limit_page_length=0,
+			order_by="creation desc"
 		)
 
 	if log_type in ("all", "assignment"):
@@ -4468,7 +4474,9 @@ def get_audit_logs(
 			"VECRM Assignment Ledger Entry", 
 			filters=assign_filters, 
 			fields=["name", "event_timestamp", "from_owner", "to_owner", "changed_by", "change_reason", "ref_document"], 
-			ignore_permissions=True
+			ignore_permissions=True,
+			limit_page_length=0,
+			order_by="creation desc"
 		)
 		
 	unified = []
