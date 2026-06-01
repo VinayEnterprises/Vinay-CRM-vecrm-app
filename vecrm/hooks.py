@@ -182,6 +182,7 @@ doc_events = {
 	# handler. Each notification function is internally try/except-wrapped
 	# so a push failure cannot block the document save.
 	"VECRM Lead": {
+		"after_insert": "vecrm.notifications.notify_admin_lead_created",
 		"on_update": [
 			"vecrm.notifications.notify_lead_assigned",
 			"vecrm.notifications.notify_lead_status",

@@ -278,3 +278,20 @@ def manager_overdue_alert():
 		)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications.manager_overdue_alert")
+
+
+def notify_admin_lead_created(doc, method):
+	"""Push notification to admin when any lead is created."""
+	try:
+		admin_email = "ajay@vinayenterprises.co.in"
+		tokens = _tokens_for_user(admin_email)
+		if tokens:
+			company = doc.get("company_name", "Unknown")
+			send_push(
+				tokens=tokens,
+				title="New Lead Created",
+				body=f"Lead: {company} — created by {doc.owner}",
+				data={"screen": "leads", "lead": doc.name}
+			)
+	except Exception:
+		pass
