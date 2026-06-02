@@ -50,14 +50,16 @@ def _send_lead_notification(lead_doc, subject, html_body):
 	for email in recipients:
 		if frappe.db.exists("User", email):
 			try:
-				frappe.get_doc({
+				notif_log = frappe.get_doc({
 					"doctype": "Notification Log",
 					"subject": subject,
 					"for_user": email,
 					"type": "Alert",
 					"document_type": "VECRM Lead",
 					"document_name": lead_doc.name,
-				}).insert(ignore_permissions=True)
+				})
+				notif_log.flags.ignore_links = True
+				notif_log.insert(ignore_permissions=True)
 			except Exception as e:
 				pass
 
