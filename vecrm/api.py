@@ -1889,10 +1889,10 @@ def request_pin_reset(phone: str = "") -> dict[str, Any]:
     # empty-string-on-NULL Frappe quirk so the BFF can do a clean
     # `if internal.delivery_email` check.
     response["_internal"]["delivery_email"] = employee_doc.vecrm_email or None
-	if "employee" in response:
-		del response["employee"]
-	
-	return response
+    if "employee" in response:
+        del response["employee"]
+    
+    return response
 
 @frappe.whitelist()
 def get_dashboard_summary() -> dict:
