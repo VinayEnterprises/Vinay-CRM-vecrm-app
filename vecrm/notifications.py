@@ -134,6 +134,16 @@ def _employee_email(employee_name):
 	return frappe.db.get_value("VECRM Employee", employee_name, "vecrm_email")
 
 
+def _employee_name(email):
+	"""Resolve a login email to the employee's display name for human-
+	readable notifications. Falls back to the email itself when no matching
+	VECRM Employee exists (e.g. the portal service account)."""
+	if not email:
+		return "Unknown"
+	name = frappe.db.get_value("VECRM Employee", {"vecrm_email": email}, "employee_name")
+	return name or email
+
+
 def notify_lead_assigned(doc, method):
 	"""On Lead update: push to new owner when lead_owner is (re)assigned."""
 	try:
@@ -187,7 +197,7 @@ def notify_lead_status(doc, method):
 			subject = f"Lead {new_status}: {doc.company_name}"
 			message = f"""
 				<p>Hello,</p>
-				<p>The lead <strong>{doc.company_name}</strong> was marked as <strong>{new_status}</strong> by {doc.lead_owner}.</p>
+				<p>The lead <strong>{doc.company_name}</strong> was marked as <strong>{new_status}</strong> by {_employee_name(doc.lead_owner)}.</p>
 				<p>Previous Status: {old_status or '-'}</p>
 				<p>Regards,<br>VECRM System</p>
 			"""
@@ -198,7 +208,7 @@ def notify_lead_status(doc, method):
 					send_push(
 						head_tokens,
 						subject,
-						f"Lead marked as {new_status} by {doc.lead_owner}",
+						f"Lead marked as {new_status} by {_employee_name(doc.lead_owner)}",
 						{"screen": "leads", "lead": doc.name},
 					)
 				try:
@@ -352,7 +362,7 @@ def notify_admin_lead_created(doc, method):
 		tokens = _tokens_for_user(admin_email)
 		if tokens:
 			company = doc.get("company_name", "Unknown")
-			creator = doc.lead_owner or doc.owner
+			creator = _employee_name(doc.lead_owner or doc.owner)
 			res = send_push(
 				tokens=tokens,
 				title="New Lead Created",
@@ -402,7 +412,7 @@ def notify_voucher_submitted(doc, method):
 				send_push(
 					tokens,
 					"New Voucher Submitted",
-					f"New {doc.doctype.replace('VECRM ', '')} submitted by {submitter_email}",
+					f"New {doc.doctype.replace('VECRM ', '')} submitted by {_employee_name(submitter_email)}",
 					{"screen": "vouchers", "voucher": doc.name, "doctype": doc.doctype}
 				)
 	except Exception:
