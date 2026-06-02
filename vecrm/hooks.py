@@ -171,11 +171,11 @@ fixtures = [
 # overhead is a doctype-membership check.
 doc_events = {
 	"*": {
-		"after_insert": "vecrm.audit.log_doc_event",
-		"on_update": "vecrm.audit.log_doc_event",
-		"on_submit": "vecrm.audit.log_doc_event",
-		"on_cancel": "vecrm.audit.log_doc_event",
-		"on_trash": "vecrm.audit.log_doc_event",
+		"after_insert": "vecrm.audit.enqueue_log_doc_event",
+		"on_update": "vecrm.audit.enqueue_log_doc_event",
+		"on_submit": "vecrm.audit.enqueue_log_doc_event",
+		"on_cancel": "vecrm.audit.enqueue_log_doc_event",
+		"on_trash": "vecrm.audit.enqueue_log_doc_event",
 	},
 	# Per-doctype FCM push notifications. Frappe merges these with the "*"
 	# entry above, so the audit hook still fires alongside every targeted

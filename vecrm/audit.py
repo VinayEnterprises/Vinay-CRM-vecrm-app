@@ -5,12 +5,24 @@ TRACKED_DOCTYPES = [
 	"VECRM Petrol Voucher", "VECRM Travel Voucher", "VECRM Expense Voucher"
 ]
 
-
-def log_doc_event(doc, method):
-	"""Auto-log lifecycle events for VECRM doctypes."""
+def enqueue_log_doc_event(doc, method):
+	"""Wrapper to enqueue the audit log off the critical path."""
 	if doc.doctype not in TRACKED_DOCTYPES:
 		return
+	frappe.enqueue(
+		"vecrm.audit.log_doc_event_worker",
+		doc_doctype=doc.doctype,
+		doc_name=doc.name,
+		doc_creation=doc.creation,
+		doc_modified=doc.modified,
+		method=method,
+		user=frappe.session.user,
+		queue="short",
+		enqueue_after_commit=True
+	)
 
+def log_doc_event_worker(doc_doctype, doc_name, doc_creation, doc_modified, method, user):
+	"""Auto-log lifecycle events for VECRM doctypes."""
 	event_map = {
 		"after_insert": "create",
 		"on_update": "update",
@@ -21,16 +33,16 @@ def log_doc_event(doc, method):
 	event_type = event_map.get(method, method)
 
 	# Skip redundant update events (every insert also triggers on_update)
-	if event_type == "update" and doc.creation == doc.modified:
+	if event_type == "update" and doc_creation == doc_modified:
 		return
 
 	audit_doc = frappe.get_doc({
 		"doctype": "VECRM User Audit Log",
 		"event_type": event_type,
-		"actor": frappe.session.user,
-		"target": doc.name,
+		"actor": user,
+		"target": doc_name,
 		"event_timestamp": frappe.utils.now_datetime(),
-		"detail": f"{event_type.title()} {doc.doctype}: {doc.name}"
+		"detail": f"{event_type.title()} {doc_doctype}: {doc_name}"
 	})
 	try:
 		audit_doc.set_new_name()
