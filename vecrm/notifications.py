@@ -37,19 +37,20 @@ def send_push(tokens: list, title: str, body: str, data: dict = None):
 					users_to_notify.add(r.user_email)
 					
 		for user in users_to_notify:
-			doc_type = data.get("doctype") if data else None
-			doc_name = (data.get("voucher") or data.get("lead") or data.get("inquiry")) if data else None
-			notif_log = frappe.get_doc({
-				"doctype": "Notification Log",
-				"subject": title,
-				"email_content": body,
-				"for_user": user,
-				"type": "Alert",
-				"document_type": doc_type,
-				"document_name": doc_name
-			})
-			notif_log.flags.ignore_links = True
-			notif_log.insert(ignore_permissions=True, ignore_links=True)
+			if frappe.db.exists("User", user):
+				doc_type = data.get("doctype") if data else None
+				doc_name = (data.get("voucher") or data.get("lead") or data.get("inquiry")) if data else None
+				notif_log = frappe.get_doc({
+					"doctype": "Notification Log",
+					"subject": title,
+					"email_content": body,
+					"for_user": user,
+					"type": "Alert",
+					"document_type": doc_type,
+					"document_name": doc_name
+				})
+				notif_log.flags.ignore_links = True
+				notif_log.insert(ignore_permissions=True, ignore_links=True)
 	except Exception as e:
 		frappe.log_error(f"Error logging notification: {e}", "Notification Log Error")
 
