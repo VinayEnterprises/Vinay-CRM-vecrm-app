@@ -2875,14 +2875,16 @@ def admin_delete_employee(employee: str = "") -> dict[str, Any]:
         reason="Admin deleted employee",
     )
     
-    frappe.get_doc({
+    audit_doc = frappe.get_doc({
         "doctype": "VECRM User Audit Log",
         "event_type": "delete",
         "actor": frappe.session.user,
         "target": employee,
         "event_timestamp": frappe.utils.now_datetime(),
         "detail": f"Delete VECRM Employee: {employee}"
-    }).insert(ignore_permissions=True)
+    })
+    audit_doc.flags.ignore_links = True
+    audit_doc.insert(ignore_permissions=True)
 
     try:
         frappe.delete_doc("VECRM Employee", employee, ignore_permissions=True)
@@ -4457,14 +4459,16 @@ def delete_record(doctype: str, name: str) -> dict:
 		doc.cancel()
 		
 	# Explicitly log the deletion
-	frappe.get_doc({
+	audit_doc = frappe.get_doc({
 		"doctype": "VECRM User Audit Log",
 		"event_type": "delete",
 		"actor": frappe.session.user,
 		"target": name,
 		"event_timestamp": frappe.utils.now_datetime(),
 		"detail": f"Delete {doctype}: {name}"
-	}).insert(ignore_permissions=True)
+	})
+	audit_doc.flags.ignore_links = True
+	audit_doc.insert(ignore_permissions=True)
 	
 	frappe.delete_doc(doctype, name, ignore_permissions=True, force=True)
 	return {"success": True}

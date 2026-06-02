@@ -24,14 +24,16 @@ def log_doc_event(doc, method):
 	if event_type == "update" and doc.creation == doc.modified:
 		return
 
-	frappe.get_doc({
+	audit_doc = frappe.get_doc({
 		"doctype": "VECRM User Audit Log",
 		"event_type": event_type,
 		"actor": frappe.session.user,
 		"target": doc.name,
 		"event_timestamp": frappe.utils.now_datetime(),
 		"detail": f"{event_type.title()} {doc.doctype}: {doc.name}"
-	}).insert(ignore_permissions=True)
+	})
+	audit_doc.flags.ignore_links = True
+	audit_doc.insert(ignore_permissions=True)
 
 
 @frappe.whitelist()
@@ -40,13 +42,15 @@ def log_auth_event(event_type: str, actor: str) -> dict:
 	if event_type not in ("login", "logout"):
 		frappe.throw("Invalid auth event type")
 
-	frappe.get_doc({
+	audit_doc = frappe.get_doc({
 		"doctype": "VECRM User Audit Log",
 		"event_type": event_type,
 		"actor": actor,
 		"target": actor,
 		"event_timestamp": frappe.utils.now_datetime(),
 		"detail": f"{event_type.title()}: {actor}"
-	}).insert(ignore_permissions=True)
+	})
+	audit_doc.flags.ignore_links = True
+	audit_doc.insert(ignore_permissions=True)
 
 	return {"success": True}
