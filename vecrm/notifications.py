@@ -64,9 +64,35 @@ def _all_active_tokens():
 	return [r.fcm_token for r in rows if r.fcm_token]
 
 
+# Lead/inquiry broadcasts go ONLY to sales-side roles. Field Engineer and
+# Head of Engineers are voucher-only and must NOT receive lead/inquiry nudges.
+LEAD_AUDIENCE_ROLES = ("Sales Rep", "Sales Head", "Admin")
+
+
+def _tokens_for_lead_audience():
+	"""Device tokens for active users in lead-relevant roles, excluding the
+	voucher-only engineering roles. Used for lead/inquiry broadcasts so
+	field engineers don't get lead notifications."""
+	emps = frappe.get_all(
+		"VECRM Employee",
+		filters={"role": ["in", LEAD_AUDIENCE_ROLES], "vecrm_account_status": "Active"},
+		fields=["vecrm_email"],
+	)
+	emails = [e.vecrm_email for e in emps if e.vecrm_email]
+	if not emails:
+		return []
+	rows = frappe.get_all(
+		"VECRM Device Token",
+		filters={"user_email": ["in", emails]},
+		fields=["fcm_token"],
+		ignore_permissions=True,
+	)
+	return [r.fcm_token for r in rows if r.fcm_token]
+
+
 def daily_lead_reminder():
-	"""Daily nudge to log leads/meeting notes."""
-	tokens = _all_active_tokens()
+	"""Daily nudge to log leads/meeting notes (sales-side roles only)."""
+	tokens = _tokens_for_lead_audience()
 	send_push(
 		tokens,
 		"Log today's meetings",
@@ -268,7 +294,9 @@ def notify_lead_converted(doc, method):
 	try:
 		if not getattr(doc, "source_lead", None):
 			return
-		tokens = _all_active_tokens()
+		# Lead-conversion is a lead/inquiry event — sales-side roles only,
+		# not field engineers.
+		tokens = _tokens_for_lead_audience()
 		if not tokens:
 			return
 		send_push(

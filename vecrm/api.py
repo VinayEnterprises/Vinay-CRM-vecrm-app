@@ -4907,3 +4907,77 @@ def register_device_token(fcm_token: str, device_label: str = "Android", user_em
 	frappe.db.commit()
 	return {"success": True}
 
+
+@frappe.whitelist(allow_guest=True)
+def get_app_version() -> dict:
+    """Public mobile-app version info for the in-app update check.
+
+    allow_guest so the installed app can poll it before/without a portal
+    session. Returns only non-sensitive version metadata stored as global
+    defaults by release_app_update().
+    """
+    return {
+        "version": frappe.db.get_default("vecrm_app_version") or "1.0.0",
+        "message": frappe.db.get_default("vecrm_app_update_msg") or "",
+        "download_url": (
+            frappe.db.get_default("vecrm_app_download_url")
+            or "https://app.vinayenterprises.co.in/VECRM-latest.apk"
+        ),
+    }
+
+
+@frappe.whitelist(allow_guest=False)
+def release_app_update(version: str, message: str = "", download_url: str = "") -> dict:
+    """Admin: publish a new app version + broadcast a push to every
+    registered device.
+
+    Stores the version metadata as global defaults that get_app_version()
+    then serves to the app's update check, and pushes data={"screen":
+    "account"} so tapping the notification routes to /account.
+
+    Authorization: _require_admin_session() (the portal's vecrm_employee_role
+    == "Admin" gate). NOT frappe System Manager — portal users run as the
+    shared vecrm-portal service account which does not hold that Frappe role,
+    so a System Manager check would reject every legitimate admin.
+    """
+    _require_admin_session()
+
+    version = (version or "").strip()
+    if not version:
+        frappe.throw("Version is required.", frappe.ValidationError)
+    download_url = (download_url or "").strip() or (
+        "https://app.vinayenterprises.co.in/VECRM-latest.apk"
+    )
+    message = (message or "").strip()
+
+    frappe.db.set_default("vecrm_app_version", version)
+    frappe.db.set_default("vecrm_app_update_msg", message)
+    frappe.db.set_default("vecrm_app_download_url", download_url)
+
+    from vecrm.notifications import send_push
+
+    rows = frappe.get_all(
+        "VECRM Device Token", fields=["fcm_token"], ignore_permissions=True
+    )
+    tokens = sorted({r.fcm_token for r in rows if r.fcm_token})
+
+    devices_notified = 0
+    if tokens:
+        try:
+            send_push(
+                tokens=tokens,
+                title=f"App update available — v{version}",
+                body=message or f"Version {version} is available. Tap to update.",
+                data={"screen": "account"},
+            )
+            devices_notified = len(tokens)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "release_app_update push failed")
+
+    return {
+        "success": True,
+        "version": version,
+        "download_url": download_url,
+        "devices_notified": devices_notified,
+    }
+
