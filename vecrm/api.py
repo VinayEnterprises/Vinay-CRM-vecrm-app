@@ -98,6 +98,7 @@ def convert_lead_to_inquiry(
 	  Whatever ``VECRMLead.convert_to_inquiry`` returns (the created
 	  Inquiry's name on success).
 	"""
+	_require_lead_owner_or_admin(lead_name)
 	lead = frappe.get_doc("VECRM Lead", lead_name)
 	return lead.convert_to_inquiry(
 		contact_person=contact_person,
@@ -467,6 +468,10 @@ def submit_travel_voucher_draft(voucher_name: str) -> dict:
 		)
 
 	doc = frappe.get_doc("VECRM Travel Voucher", voucher_name)
+
+	# SECURITY: only the voucher's own submitter (or Admin) may submit it
+	# (Sub-A's deferred ownership check, now applied).
+	_require_voucher_submitter_self_or_admin(doc.submitter)
 
 	if doc.docstatus != 0:
 		frappe.throw(
@@ -921,6 +926,7 @@ def close_lead(name: str, outcome: str, notes: str = "") -> dict:
         ValidationError on: invalid outcome, lead already in terminal state,
         invalid lead name, or session lacking vecrm_email.
     """
+    _require_lead_owner_or_admin(name)
     if outcome not in ("Closed-Won", "Closed-Lost"):
         frappe.throw(
             frappe._("Invalid outcome '{0}'. Must be Closed-Won or Closed-Lost.").format(outcome),
@@ -978,6 +984,7 @@ def close_inquiry(name: str, outcome: str, notes: str = "") -> dict:
         ValidationError on: invalid outcome, inquiry already in terminal state,
         or session lacking vecrm_email.
     """
+    _require_inquiry_owner_or_admin(name)
     if outcome not in ("Closed-Won", "Closed-Lost"):
         frappe.throw(
             frappe._("Invalid outcome '{0}'. Must be Closed-Won or Closed-Lost.").format(outcome),
@@ -1031,6 +1038,7 @@ def upload_lead_attachment(lead_name: str, slot: int) -> dict:
         ValidationError on: invalid slot, slot already filled, lead in terminal
         state, missing session identity, or no file in request.
     """
+    _require_lead_owner_or_admin(lead_name)
     if slot not in (1, 2, 3):
         frappe.throw(
             frappe._("Invalid slot {0}. Must be 1, 2, or 3.").format(slot),
@@ -1106,6 +1114,7 @@ def delete_lead_attachment(lead_name: str, slot: int) -> dict:
     Returns:
         {"success": True, "slot": slot}
     """
+    _require_lead_owner_or_admin(lead_name)
     if slot not in (1, 2, 3):
         frappe.throw(
             frappe._("Invalid slot {0}. Must be 1, 2, or 3.").format(slot),
@@ -1225,7 +1234,9 @@ def update_lead_followup(
       NOT re-check at the backend — consistent with close_lead and
       convert_lead_to_inquiry. See PD-S33-NEXT-LEAD-WRITE-AUTH-AUDIT (P3)
       for the future cross-cutting backend-side defense-in-depth refactor.
+      (Now applied here: _require_lead_owner_or_admin below.)
     """
+    _require_lead_owner_or_admin(lead_name)
     from frappe.utils import getdate
 
     # Validate date format
@@ -2441,6 +2452,30 @@ def _require_lead_owner_or_admin(lead_name: str) -> None:
         return
     frappe.throw(
         frappe._("You can only modify your own leads."),
+        frappe.PermissionError,
+    )
+
+
+def _require_inquiry_owner_or_admin(inquiry_name: str) -> None:
+    """Throw frappe.PermissionError unless caller owns the inquiry or is Admin."""
+    session_data = frappe.session.data or {}
+    if session_data.get("vecrm_employee_role") == "Admin":
+        return
+    vecrm_email = session_data.get("vecrm_email")
+    if not vecrm_email:
+        frappe.throw(
+            frappe._("Session does not include employee linkage. Please log in again."),
+            frappe.PermissionError,
+        )
+    if not frappe.db.exists("VECRM Inquiry", inquiry_name):
+        frappe.throw(
+            frappe._("Inquiry {0} not found.").format(inquiry_name),
+            frappe.DoesNotExistError,
+        )
+    if frappe.db.get_value("VECRM Inquiry", inquiry_name, "inquiry_owner") == vecrm_email:
+        return
+    frappe.throw(
+        frappe._("You can only modify your own inquiries."),
         frappe.PermissionError,
     )
 
