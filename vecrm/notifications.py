@@ -187,20 +187,22 @@ def notify_lead_status(doc, method):
 				{"screen": "leads", "lead": doc.name},
 			)
 			
-		# 2. If status is Won or Lost, notify Sales Head and Admin via Push + Email
-		if new_status in ("Won", "Lost"):
+		# 2. If status is Closed-Won or Closed-Lost, notify Sales Head and Admin
+		# via Push + Email. (Was checking "Won"/"Lost" which never matched the
+		# actual VECRM Lead status values, so this email never fired.)
+		if new_status in ("Closed-Won", "Closed-Lost"):
 			sales_heads = frappe.get_all("VECRM Employee", filters={"role": "Sales Head"}, fields=["vecrm_email"])
 			admins = frappe.get_all("VECRM Employee", filters={"role": "Admin"}, fields=["vecrm_email"])
-			
+
 			recipients = [e.vecrm_email for e in sales_heads + admins if e.vecrm_email]
-			
+
 			subject = f"Lead {new_status}: {doc.company_name}"
-			message = f"""
-				<p>Hello,</p>
-				<p>The lead <strong>{doc.company_name}</strong> was marked as <strong>{new_status}</strong> by {_employee_name(doc.lead_owner)}.</p>
-				<p>Previous Status: {old_status or '-'}</p>
-				<p>Regards,<br>VECRM System</p>
-			"""
+			# Branded Vinay Enterprises layout (render_lead_status_email ->
+			# render_email_layout) so won/lost alerts carry company branding.
+			from vecrm.vecrm.email_templates import render_lead_status_email
+			message = render_lead_status_email(
+				doc, old_status or "-", new_status, _employee_name(doc.lead_owner)
+			)
 			
 			for email in recipients:
 				head_tokens = _tokens_for_user(email)

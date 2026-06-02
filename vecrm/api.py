@@ -21,7 +21,7 @@ import re
 import secrets
 
 import frappe
-from vecrm.vecrm.email_templates import render_touchpoint_email
+from vecrm.vecrm.email_templates import render_touchpoint_email, render_email_layout
 
 def _send_lead_notification(lead_doc, subject, html_body):
 	"""Send email and in-app Notification Log to Lead Owner, Sales Head, and Admin."""
@@ -3156,20 +3156,18 @@ def create_touchpoint(
     tp.insert(ignore_permissions=True)
 
     # Best-effort "new touchpoint" notification — must NEVER break the
-    # touchpoint write. The previous version referenced an undefined `lead`
-    # and a removed render_touchpoint_email(), 500'ing every touchpoint after
-    # it was already inserted. Rebuilt inline, guarded, using the real field.
+    # touchpoint write. Uses the branded Vinay Enterprises email layout
+    # (render_touchpoint_email -> render_email_layout) for consistent
+    # company branding on every outgoing mail.
     try:
         lead = frappe.get_doc("VECRM Lead", lead_name)
         actor_name = frappe.session.data.get("vecrm_employee_name") or frappe.session.user
-        esc = frappe.utils.escape_html
-        html_body = (
-            f"<p>A new touchpoint was logged on lead "
-            f"<strong>{esc(lead.company_name or lead.name)}</strong>.</p>"
-            f"<p>Type: {esc(tp.touchpoint_type)}<br>"
-            f"Date: {esc(str(tp.touchpoint_date))}<br>"
-            f"By: {esc(str(actor_name))}</p>"
-            + (f"<p>{esc(tp.summary)}</p>" if tp.summary else "")
+        html_body = render_touchpoint_email(
+            lead,
+            str(tp.touchpoint_date),
+            tp.touchpoint_type,
+            actor_name,
+            tp.summary or "",
         )
         _send_lead_notification(lead, f"New Touchpoint: {lead.company_name or lead.name}", html_body)
     except Exception:
@@ -3749,11 +3747,10 @@ def _render_weekly_report_html(data: dict) -> str:
         f'</div>'
     )
 
-    return (
-        f'<div style="max-width:760px;margin:0 auto;font-family:-apple-system,'
-        f'BlinkMacSystemFont,\'Segoe UI\',Helvetica,Arial,sans-serif;color:{_TEXT};">'
-        + "".join(sections)
-        + "</div>"
+    # Branded Vinay Enterprises layout (logo header + footer) around the digest.
+    return render_email_layout(
+        preheader="Vinay Enterprises CRM",
+        body_html="".join(sections),
     )
 
 
@@ -4025,11 +4022,10 @@ def _render_rep_followup_html(rep_name: str, rows: list, today_iso: str) -> str:
         f'have a follow-up date — admin will reset it.'
         f'</div>'
     )
-    return (
-        f'<div style="max-width:760px;margin:0 auto;font-family:-apple-system,'
-        f'BlinkMacSystemFont,\'Segoe UI\',Helvetica,Arial,sans-serif;color:{_TEXT};">'
-        + "".join(body)
-        + "</div>"
+    # Branded Vinay Enterprises layout (logo header + footer) around the digest.
+    return render_email_layout(
+        preheader=f"{count} overdue {label}",
+        body_html="".join(body),
     )
 
 
@@ -4090,11 +4086,10 @@ def _render_admin_followup_html(
         f'Reps received their personal slice in a separate email.'
         f'</div>'
     )
-    return (
-        f'<div style="max-width:760px;margin:0 auto;font-family:-apple-system,'
-        f'BlinkMacSystemFont,\'Segoe UI\',Helvetica,Arial,sans-serif;color:{_TEXT};">'
-        + "".join(sections)
-        + "</div>"
+    # Branded Vinay Enterprises layout (logo header + footer) around the digest.
+    return render_email_layout(
+        preheader="Vinay Enterprises CRM",
+        body_html="".join(sections),
     )
 
 
