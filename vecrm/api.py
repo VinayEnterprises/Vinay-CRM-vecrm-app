@@ -4282,11 +4282,23 @@ def get_company_list() -> dict:
         ):
             bucket["latest_activity"] = tp_modified
 
+    # Resolve owner emails → employee display names in one bulk query so the
+    # portal's per-rep breakdown shows names, not raw emails.
+    emp_name_by_email = {
+        e.vecrm_email: e.employee_name
+        for e in frappe.get_all(
+            "VECRM Employee", fields=["vecrm_email", "employee_name"]
+        )
+        if e.vecrm_email
+    }
+
     out = []
     for bucket in companies.values():
         owners = bucket.pop("_owners")
-        bucket["primary_owner"] = (
-            owners.most_common(1)[0][0] if owners else None
+        primary_owner_email = owners.most_common(1)[0][0] if owners else None
+        bucket["primary_owner"] = primary_owner_email
+        bucket["primary_owner_name"] = (
+            emp_name_by_email.get(primary_owner_email) or primary_owner_email
         )
         bucket["first_contact"] = (
             str(bucket["first_contact"]) if bucket["first_contact"] else None
