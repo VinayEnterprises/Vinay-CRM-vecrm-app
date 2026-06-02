@@ -24,19 +24,15 @@
     },
     {
       "fieldname": "actor",
-      "fieldtype": "Link",
+      "fieldtype": "Data",
       "in_list_view": 1,
-      "label": "Actor",
-      "options": "VECRM Employee",
-      "on_delete": "Set Null"
+      "label": "Actor"
     },
     {
       "fieldname": "target",
-      "fieldtype": "Link",
+      "fieldtype": "Data",
       "in_list_view": 1,
-      "label": "Target",
-      "options": "VECRM Employee",
-      "on_delete": "Set Null"
+      "label": "Target"
     },
     {
       "fieldname": "event_timestamp",

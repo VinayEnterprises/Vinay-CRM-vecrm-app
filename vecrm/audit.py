@@ -33,7 +33,7 @@ def log_doc_event(doc, method):
 		"detail": f"{event_type.title()} {doc.doctype}: {doc.name}"
 	})
 	audit_doc.flags.ignore_links = True
-	audit_doc.insert(ignore_permissions=True)
+	audit_doc.insert(ignore_permissions=True, ignore_links=True)
 
 
 @frappe.whitelist()

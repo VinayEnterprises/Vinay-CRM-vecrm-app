@@ -59,7 +59,7 @@ def _send_lead_notification(lead_doc, subject, html_body):
 					"document_name": lead_doc.name,
 				})
 				notif_log.flags.ignore_links = True
-				notif_log.insert(ignore_permissions=True)
+				notif_log.insert(ignore_permissions=True, ignore_links=True)
 			except Exception as e:
 				pass
 
@@ -2886,7 +2886,7 @@ def admin_delete_employee(employee: str = "") -> dict[str, Any]:
         "detail": f"Delete VECRM Employee: {employee}"
     })
     audit_doc.flags.ignore_links = True
-    audit_doc.insert(ignore_permissions=True)
+    audit_doc.insert(ignore_permissions=True, ignore_links=True)
 
     try:
         frappe.delete_doc("VECRM Employee", employee, ignore_permissions=True)
@@ -4470,7 +4470,7 @@ def delete_record(doctype: str, name: str) -> dict:
 		"detail": f"Delete {doctype}: {name}"
 	})
 	audit_doc.flags.ignore_links = True
-	audit_doc.insert(ignore_permissions=True)
+	audit_doc.insert(ignore_permissions=True, ignore_links=True)
 	
 	frappe.delete_doc(doctype, name, ignore_permissions=True, force=True)
 	return {"success": True}

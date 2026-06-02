@@ -49,7 +49,7 @@ def send_push(tokens: list, title: str, body: str, data: dict = None):
 				"document_name": doc_name
 			})
 			notif_log.flags.ignore_links = True
-			notif_log.insert(ignore_permissions=True)
+			notif_log.insert(ignore_permissions=True, ignore_links=True)
 	except Exception as e:
 		frappe.log_error(f"Error logging notification: {e}", "Notification Log Error")
 
