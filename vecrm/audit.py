@@ -16,7 +16,11 @@ def enqueue_log_doc_event(doc, method=None, **kwargs):
 			doc_name=doc.name,
 			doc_creation=doc.creation,
 			doc_modified=doc.modified,
-			method=method,
+			# NOT `method=` — frappe.enqueue's own first positional param is
+			# named `method` (the job path), so a `method=` kwarg collides:
+			# "enqueue() got multiple values for argument 'method'". Forward
+			# the doc-event under a distinct name the worker accepts.
+			event_method=method,
 			user=getattr(frappe.session, "user", "Administrator"),
 			queue="short",
 			enqueue_after_commit=True
@@ -26,7 +30,7 @@ def enqueue_log_doc_event(doc, method=None, **kwargs):
 			frappe.local.message_log = []
 		frappe.log_error(f"Failed to enqueue audit event: {str(e)}", "Audit Enqueue Error")
 
-def log_doc_event_worker(doc_doctype, doc_name, doc_creation, doc_modified, method, user):
+def log_doc_event_worker(doc_doctype, doc_name, doc_creation, doc_modified, event_method, user):
 	"""Auto-log lifecycle events for VECRM doctypes."""
 	event_map = {
 		"after_insert": "create",
@@ -35,7 +39,7 @@ def log_doc_event_worker(doc_doctype, doc_name, doc_creation, doc_modified, meth
 		"on_cancel": "cancel",
 		"on_trash": "delete",
 	}
-	event_type = event_map.get(method, method)
+	event_type = event_map.get(event_method, event_method)
 
 	# Skip redundant update events (every insert also triggers on_update)
 	if event_type == "update" and doc_creation == doc_modified:

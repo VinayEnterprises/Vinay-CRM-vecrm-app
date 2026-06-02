@@ -363,15 +363,12 @@ def notify_admin_lead_created(doc, method):
 		if tokens:
 			company = doc.get("company_name", "Unknown")
 			creator = _employee_name(doc.lead_owner or doc.owner)
-			res = send_push(
+			send_push(
 				tokens=tokens,
 				title="New Lead Created",
 				body=f"Lead: {company} - created by {creator}",
 				data={"screen": "leads", "lead": doc.name}
 			)
-			frappe.log_error(f"Tokens: {len(tokens)}, Result: {res}", "Push Notification Debug")
-		else:
-			frappe.log_error(f"No tokens found for {admin_email}", "Push Notification Debug")
 	except Exception as e:
 		frappe.log_error(f"notify_admin_lead_created failed: {str(e)}", "Push Notification Error")
 
