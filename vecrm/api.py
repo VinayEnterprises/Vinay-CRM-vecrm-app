@@ -1905,35 +1905,35 @@ def get_dashboard_summary() -> dict:
 	# Build TV summary
 	tv_pending = frappe.db.get_all("VECRM Travel Voucher", 
 		filters={"approval_status": "Pending"}, 
-		fields=["name", "total_amount_claimed"]
+		fields=["name", "total_amount"]
 	)
 	tv_paid = frappe.db.get_all("VECRM Travel Voucher", 
 		filters={"payment_status": "Paid"}, 
-		fields=["name", "total_amount_approved"]
+		fields=["name", "total_amount"]
 	)
 	
 	# Build EV summary 
-	ev_pending = frappe.db.get_all("VECRM Petrol Voucher", 
+	ev_pending = frappe.db.get_all("VECRM Expense Voucher", 
 		filters={"approval_status": "Pending"}, 
-		fields=["name", "total_amount_claimed"]
+		fields=["name", "total_amount"]
 	)
-	ev_paid = frappe.db.get_all("VECRM Petrol Voucher", 
+	ev_paid = frappe.db.get_all("VECRM Expense Voucher", 
 		filters={"payment_status": "Paid"}, 
-		fields=["name", "total_amount_approved"]
+		fields=["name", "total_amount"]
 	)
 	
 	return {
 		"tv": {
 			"pending_count": len(tv_pending),
-			"pending_amount": sum((v.total_amount_claimed or 0) for v in tv_pending),
+			"pending_amount": sum((v.total_amount or 0) for v in tv_pending),
 			"paid_count": len(tv_paid),
-			"paid_amount": sum((v.total_amount_approved or 0) for v in tv_paid)
+			"paid_amount": sum((v.total_amount or 0) for v in tv_paid)
 		},
 		"ev": {
 			"pending_count": len(ev_pending),
-			"pending_amount": sum((v.total_amount_claimed or 0) for v in ev_pending),
+			"pending_amount": sum((v.total_amount or 0) for v in ev_pending),
 			"paid_count": len(ev_paid),
-			"paid_amount": sum((v.total_amount_approved or 0) for v in ev_paid)
+			"paid_amount": sum((v.total_amount or 0) for v in ev_paid)
 		}
 	}
 
