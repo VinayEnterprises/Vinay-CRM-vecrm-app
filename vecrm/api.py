@@ -4926,22 +4926,10 @@ def get_app_version() -> dict:
     }
 
 
-@frappe.whitelist(allow_guest=False)
-def release_app_update(version: str, message: str = "", download_url: str = "") -> dict:
-    """Admin: publish a new app version + broadcast a push to every
-    registered device.
-
-    Stores the version metadata as global defaults that get_app_version()
-    then serves to the app's update check, and pushes data={"screen":
-    "account"} so tapping the notification routes to /account.
-
-    Authorization: _require_admin_session() (the portal's vecrm_employee_role
-    == "Admin" gate). NOT frappe System Manager — portal users run as the
-    shared vecrm-portal service account which does not hold that Frappe role,
-    so a System Manager check would reject every legitimate admin.
-    """
-    _require_admin_session()
-
+def _publish_app_update(version: str, message: str = "", download_url: str = "") -> dict:
+    """Shared publish + broadcast. Stores the version metadata as global
+    defaults (served by get_app_version) and pushes data={"screen":"account"}
+    to every registered device. Authorization is enforced by the callers."""
     version = (version or "").strip()
     if not version:
         frappe.throw("Version is required.", frappe.ValidationError)
@@ -4972,7 +4960,7 @@ def release_app_update(version: str, message: str = "", download_url: str = "") 
             )
             devices_notified = len(tokens)
         except Exception:
-            frappe.log_error(frappe.get_traceback(), "release_app_update push failed")
+            frappe.log_error(frappe.get_traceback(), "publish_app_update push failed")
 
     return {
         "success": True,
@@ -4980,4 +4968,36 @@ def release_app_update(version: str, message: str = "", download_url: str = "") 
         "download_url": download_url,
         "devices_notified": devices_notified,
     }
+
+
+@frappe.whitelist(allow_guest=False)
+def release_app_update(version: str, message: str = "", download_url: str = "") -> dict:
+    """Admin (portal /admin form): publish a new app version + broadcast.
+
+    Authorization: _require_admin_session() (vecrm_employee_role == "Admin").
+    NOT frappe System Manager — portal users run as the shared vecrm-portal
+    service account which does not hold that Frappe role.
+    """
+    _require_admin_session()
+    return _publish_app_update(version, message, download_url)
+
+
+@frappe.whitelist(allow_guest=True)
+def release_app_update_ci(
+    version: str, message: str = "", download_url: str = "", token: str = ""
+) -> dict:
+    """CI (GitHub Actions release pipeline): publish a new app version +
+    broadcast, authorized by a shared release token instead of an admin
+    session — so a tag-triggered build can publish with no portal login.
+
+    The token lives in site_config.json as `vecrm_release_token` (never in
+    code) and is supplied by CI as a secret; compared in constant time.
+    allow_guest because CI has no session — the token IS the authorization.
+    """
+    import hmac
+
+    expected = frappe.conf.get("vecrm_release_token")
+    if not expected or not token or not hmac.compare_digest(str(token), str(expected)):
+        frappe.throw("Invalid or missing release token.", frappe.PermissionError)
+    return _publish_app_update(version, message, download_url)
 
