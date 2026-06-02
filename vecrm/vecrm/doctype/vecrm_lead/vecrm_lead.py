@@ -141,6 +141,15 @@ class VECRMLead(Document):
 				"ref_document": self.name,
 				"event_timestamp": ts,
 			}).insert(ignore_permissions=True)
+
+			if self.status in ("Closed-Won", "Closed-Lost"):
+				try:
+					from vecrm.api import _send_lead_notification
+					from vecrm.vecrm.email_templates import render_lead_status_email
+					html_body = render_lead_status_email(self, before.status, self.status, actor)
+					_send_lead_notification(self, f"Lead Status Updated: {self.company_name or self.name}", html_body)
+				except Exception as e:
+					frappe.log_error("Failed to send lead status notification", str(e))
 # === Follow-up date change detection (PD-S30-LEAD-FOLLOWUP Phase 1) ===
 		# Same dual-write pattern as owner + status. The flags-borne notes
 		# (set by vecrm.api.update_lead_followup) become the change_reason

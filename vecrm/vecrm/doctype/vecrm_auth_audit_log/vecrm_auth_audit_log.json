@@ -12,18 +12,61 @@
   "track_changes": 0,
   "in_create": 1,
   "fields": [
-    {"fieldname": "event", "fieldtype": "Data", "reqd": 1, "label": "Event"},
-    {"fieldname": "employee", "fieldtype": "Link", "options": "VECRM Employee", "label": "Employee"},
-    {"fieldname": "identifier", "fieldtype": "Data", "label": "Identifier (raw input)"},
-    {"fieldname": "path", "fieldtype": "Data", "label": "Path"},
-    {"fieldname": "ip_address", "fieldtype": "Data", "label": "IP Address"},
-    {"fieldname": "user_agent", "fieldtype": "Small Text", "label": "User Agent"},
-    {"fieldname": "reason", "fieldtype": "Data", "label": "Reason (for failures)"},
-    {"fieldname": "extra", "fieldtype": "Code", "options": "JSON", "label": "Extra Context"}
+    {
+      "fieldname": "event",
+      "fieldtype": "Data",
+      "reqd": 1,
+      "label": "Event"
+    },
+    {
+      "fieldname": "employee",
+      "fieldtype": "Link",
+      "options": "VECRM Employee",
+      "label": "Employee",
+      "on_delete": "Set Null"
+    },
+    {
+      "fieldname": "identifier",
+      "fieldtype": "Data",
+      "label": "Identifier (raw input)"
+    },
+    {
+      "fieldname": "path",
+      "fieldtype": "Data",
+      "label": "Path"
+    },
+    {
+      "fieldname": "ip_address",
+      "fieldtype": "Data",
+      "label": "IP Address"
+    },
+    {
+      "fieldname": "user_agent",
+      "fieldtype": "Small Text",
+      "label": "User Agent"
+    },
+    {
+      "fieldname": "reason",
+      "fieldtype": "Data",
+      "label": "Reason (for failures)"
+    },
+    {
+      "fieldname": "extra",
+      "fieldtype": "Code",
+      "options": "JSON",
+      "label": "Extra Context"
+    }
   ],
   "permissions": [
-    {"role": "System Manager", "read": 1, "create": 1},
-    {"role": "VECRM Admin", "read": 1}
+    {
+      "role": "System Manager",
+      "read": 1,
+      "create": 1
+    },
+    {
+      "role": "VECRM Admin",
+      "read": 1
+    }
   ],
   "sort_field": "creation",
   "sort_order": "DESC"

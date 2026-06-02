@@ -21,7 +21,45 @@ import re
 import secrets
 
 import frappe
+from vecrm.vecrm.email_templates import render_touchpoint_email
 
+def _send_lead_notification(lead_doc, subject, html_body):
+	"""Send email and in-app Notification Log to Lead Owner, Sales Head, and Admin."""
+	from vecrm.email_utils import send_email
+	
+	recipients = set()
+	if lead_doc.lead_owner:
+		recipients.add(lead_doc.lead_owner)
+		
+	roles = frappe.get_all("VECRM Employee", 
+		filters={"role": ["in", ["Sales Head", "Admin"]], "vecrm_account_status": "Active"}, 
+		fields=["vecrm_email"]
+	)
+	for r in roles:
+		if r.vecrm_email:
+			recipients.add(r.vecrm_email)
+			
+	if not recipients:
+		return
+		
+	try:
+		send_email(to=list(recipients), subject=subject, html_body=html_body)
+	except Exception as e:
+		frappe.log_error("Failed to send lead notification email", str(e))
+		
+	for email in recipients:
+		if frappe.db.exists("User", email):
+			try:
+				frappe.get_doc({
+					"doctype": "Notification Log",
+					"subject": subject,
+					"for_user": email,
+					"type": "Alert",
+					"document_type": "VECRM Lead",
+					"document_name": lead_doc.name,
+				}).insert(ignore_permissions=True)
+			except Exception as e:
+				pass
 
 @frappe.whitelist()
 def convert_lead_to_inquiry(
@@ -747,6 +785,23 @@ def create_lead(
 	meeting_brief = (meeting_brief or "").strip()
 	if not meeting_brief:
 		frappe.throw("Meeting brief is required.", frappe.ValidationError)
+
+	# Prevent duplicate leads (PD-S30)
+	company_name = company_name.strip()
+	existing_lead = frappe.db.get_value(
+		"VECRM Lead",
+		{
+			"company_name": company_name,
+			"status": ["not in", ["Closed-Won", "Closed-Lost"]]
+		},
+		"name"
+	)
+	if existing_lead:
+		frappe.throw(
+			f"An active lead for '{company_name}' already exists ({existing_lead}). "
+			f"Please log a touchpoint on the existing lead instead of creating a new one.",
+			frappe.ValidationError
+		)
 
 	doc = frappe.new_doc("VECRM Lead")
 	doc.company_name = company_name
@@ -2942,6 +2997,10 @@ def create_touchpoint(
         "actor_employee": employee_name,
     })
     tp.insert(ignore_permissions=True)
+
+    actor_name = frappe.session.data.get("vecrm_employee_name") or frappe.session.user
+    html_body = render_touchpoint_email(lead, str(tp.touchpoint_date), tp.touchpoint_type, actor_name, tp.notes)
+    _send_lead_notification(lead, f"New Touchpoint: {lead.company_name or lead.name}", html_body)
 
     # Read-time virtual-field computation for the response (Q-LFL-P2-3 = (b)
     # virtual fields, read-time computed)
