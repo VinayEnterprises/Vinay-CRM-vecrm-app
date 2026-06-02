@@ -5,21 +5,26 @@ TRACKED_DOCTYPES = [
 	"VECRM Petrol Voucher", "VECRM Travel Voucher", "VECRM Expense Voucher"
 ]
 
-def enqueue_log_doc_event(doc, method):
+def enqueue_log_doc_event(doc, method=None, **kwargs):
 	"""Wrapper to enqueue the audit log off the critical path."""
 	if doc.doctype not in TRACKED_DOCTYPES:
 		return
-	frappe.enqueue(
-		"vecrm.audit.log_doc_event_worker",
-		doc_doctype=doc.doctype,
-		doc_name=doc.name,
-		doc_creation=doc.creation,
-		doc_modified=doc.modified,
-		method=method,
-		user=frappe.session.user,
-		queue="short",
-		enqueue_after_commit=True
-	)
+	try:
+		frappe.enqueue(
+			"vecrm.audit.log_doc_event_worker",
+			doc_doctype=doc.doctype,
+			doc_name=doc.name,
+			doc_creation=doc.creation,
+			doc_modified=doc.modified,
+			method=method,
+			user=getattr(frappe.session, "user", "Administrator"),
+			queue="short",
+			enqueue_after_commit=True
+		)
+	except Exception as e:
+		if hasattr(frappe.local, "message_log"):
+			frappe.local.message_log = []
+		frappe.log_error(f"Failed to enqueue audit event: {str(e)}", "Audit Enqueue Error")
 
 def log_doc_event_worker(doc_doctype, doc_name, doc_creation, doc_modified, method, user):
 	"""Auto-log lifecycle events for VECRM doctypes."""
