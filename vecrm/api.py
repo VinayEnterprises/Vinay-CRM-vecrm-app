@@ -1947,11 +1947,6 @@ def get_dashboard_summary() -> dict:
 		}
 	}
 
-@frappe.whitelist(allow_guest=True)
-def get_latest_error():
-	errors = frappe.db.get_all("Error Log", fields=["method", "error", "creation"], order_by="creation desc", limit=1)
-	return errors[0] if errors else {}
-
 
 def _consume_reset_token(token: str, expected_reset_for: str) -> Any:
     """Validate a raw reset token and return its loaded doc, OR throw generic.
