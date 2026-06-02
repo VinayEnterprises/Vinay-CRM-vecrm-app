@@ -165,15 +165,49 @@ def notify_lead_status(doc, method):
 		new_status = doc.status
 		if new_status == old_status:
 			return
+		# 1. Notify Lead Owner via Push
 		tokens = _tokens_for_user(doc.lead_owner)
-		if not tokens:
-			return
-		send_push(
-			tokens,
-			f"Lead status: {doc.company_name}",
-			f"{doc.company_name}: {old_status or '-'} → {new_status or '-'}",
-			{"screen": "leads", "lead": doc.name},
-		)
+		if tokens:
+			send_push(
+				tokens,
+				f"Lead status: {doc.company_name}",
+				f"{doc.company_name}: {old_status or '-'} → {new_status or '-'}",
+				{"screen": "leads", "lead": doc.name},
+			)
+			
+		# 2. If status is Won or Lost, notify Sales Head and Admin via Push + Email
+		if new_status in ("Won", "Lost"):
+			sales_heads = frappe.get_all("VECRM Employee", filters={"role": "Sales Head"}, fields=["vecrm_email"])
+			admins = frappe.get_all("VECRM Employee", filters={"role": "Admin"}, fields=["vecrm_email"])
+			
+			recipients = [e.vecrm_email for e in sales_heads + admins if e.vecrm_email]
+			
+			subject = f"Lead {new_status}: {doc.company_name}"
+			message = f"""
+				<p>Hello,</p>
+				<p>The lead <strong>{doc.company_name}</strong> was marked as <strong>{new_status}</strong> by {doc.lead_owner}.</p>
+				<p>Previous Status: {old_status or '-'}</p>
+				<p>Regards,<br>VECRM System</p>
+			"""
+			
+			for email in recipients:
+				head_tokens = _tokens_for_user(email)
+				if head_tokens:
+					send_push(
+						head_tokens,
+						subject,
+						f"Lead marked as {new_status} by {doc.lead_owner}",
+						{"screen": "leads", "lead": doc.name},
+					)
+				try:
+					frappe.sendmail(
+						recipients=email,
+						subject=subject,
+						message=message,
+						delayed=False
+					)
+				except Exception:
+					pass
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications.notify_lead_status")
 

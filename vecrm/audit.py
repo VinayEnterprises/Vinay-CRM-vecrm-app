@@ -33,7 +33,10 @@ def log_doc_event(doc, method):
 		"detail": f"{event_type.title()} {doc.doctype}: {doc.name}"
 	})
 	audit_doc.flags.ignore_links = True
-	audit_doc.insert(ignore_permissions=True, ignore_links=True)
+	try:
+		audit_doc.insert(ignore_permissions=True, ignore_links=True)
+	except Exception as e:
+		frappe.log_error(f"Failed to insert VECRM User Audit Log: {str(e)}", "Audit Log Error")
 
 
 @frappe.whitelist()

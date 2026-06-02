@@ -48,6 +48,14 @@ def _send_lead_notification(lead_doc, subject, html_body):
 		frappe.log_error("Failed to send lead notification email", str(e))
 		
 	for email in recipients:
+		try:
+			from vecrm.notifications import send_push, _tokens_for_user
+			tokens = _tokens_for_user(email)
+			if tokens:
+				send_push(tokens, subject, "New activity on lead", {"screen": "leads", "lead": lead_doc.name})
+		except Exception:
+			pass
+
 		if frappe.db.exists("User", email):
 			try:
 				notif_log = frappe.get_doc({
@@ -4470,7 +4478,10 @@ def delete_record(doctype: str, name: str) -> dict:
 		"detail": f"Delete {doctype}: {name}"
 	})
 	audit_doc.flags.ignore_links = True
-	audit_doc.insert(ignore_permissions=True, ignore_links=True)
+	try:
+		audit_doc.insert(ignore_permissions=True, ignore_links=True)
+	except Exception as e:
+		pass
 	
 	frappe.delete_doc(doctype, name, ignore_permissions=True, force=True)
 	return {"success": True}
