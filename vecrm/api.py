@@ -883,6 +883,9 @@ def update_lead_status(lead_name: str, new_status: str) -> dict:
     
     Valid transitions to Converted go through convert_lead_to_inquiry.
     """
+    # SECURITY: was an unauthenticated IDOR — any caller could flip any
+    # lead's status by name. Require ownership or Admin.
+    _require_lead_owner_or_admin(lead_name)
     valid_statuses = {"Open", "Closed-Won", "Closed-Lost"}
     if new_status not in valid_statuses:
         frappe.throw(
@@ -2390,6 +2393,56 @@ def _require_hr_or_admin() -> None:
             frappe._("Only HR or Admin can mark vouchers as paid."),
             frappe.PermissionError,
         )
+
+
+def _require_admin_or_sales_head() -> None:
+    """Throw frappe.PermissionError unless caller is Admin or Sales Head.
+
+    Backstop for the cross-company aggregation views (get_company_list /
+    get_company_360), mirroring the portal's app/companies access gate.
+    """
+    role = (frappe.session.data or {}).get("vecrm_employee_role")
+    if role not in ("Admin", "Sales Head"):
+        frappe.throw(
+            frappe._("This view is restricted to Admin and Sales Head."),
+            frappe.PermissionError,
+        )
+
+
+def _require_lead_owner_or_admin(lead_name: str) -> None:
+    """Throw frappe.PermissionError unless caller owns the lead or is Admin.
+
+    Ownership = the lead's lead_owner matches the session's vecrm_email OR
+    its creating_employee matches the session's phone (both attribution
+    fields are used across the codebase). Admin bypasses. Backend
+    defence-in-depth behind the BFF's canReadLead gate.
+    """
+    session_data = frappe.session.data or {}
+    if session_data.get("vecrm_employee_role") == "Admin":
+        return
+    vecrm_email = session_data.get("vecrm_email")
+    phone = session_data.get("vecrm_employee_phone")
+    if not vecrm_email and not phone:
+        frappe.throw(
+            frappe._("Session does not include employee linkage. Please log in again."),
+            frappe.PermissionError,
+        )
+    row = frappe.db.get_value(
+        "VECRM Lead", lead_name, ["lead_owner", "creating_employee"], as_dict=True
+    )
+    if not row:
+        frappe.throw(
+            frappe._("Lead {0} not found.").format(lead_name),
+            frappe.DoesNotExistError,
+        )
+    if (vecrm_email and row.lead_owner == vecrm_email) or (
+        phone and row.creating_employee == phone
+    ):
+        return
+    frappe.throw(
+        frappe._("You can only modify your own leads."),
+        frappe.PermissionError,
+    )
 
 
 def _check_voucher_date_cutoff(voucher_date, session_role: str | None = None) -> None:
@@ -4178,7 +4231,12 @@ def get_company_list() -> dict:
     Manager role — the guard rejected every legitimate Admin call from
     the portal. The Admin-only contract is enforced at the portal layer
     (app/companies/layout.tsx SSR redirect via isAdminRole).
+
+    Backend defence-in-depth (added): the portal-only contract left this
+    callable directly by any authenticated session; gate on the session's
+    vecrm_employee_role.
     """
+    _require_admin_or_sales_head()
     from collections import Counter
 
     leads = frappe.get_all(
@@ -4332,6 +4390,7 @@ def get_company_360(company_name: str) -> dict:
     removed for the same reason (BFF service account doesn't hold that
     role; Admin-only contract is portal-side).
     """
+    _require_admin_or_sales_head()
     if not company_name:
         frappe.throw(frappe._("company_name is required"))
 
@@ -4571,6 +4630,9 @@ def get_company_360(company_name: str) -> dict:
 
 @frappe.whitelist()
 def delete_record(doctype: str, name: str) -> dict:
+	# SECURITY: destructive, force-deletes by name. Admin only — was
+	# previously callable by any authenticated session.
+	_require_admin_session()
 	allowed = {
 		"VECRM Lead", "VECRM Inquiry", "VECRM Petrol Voucher",
 		"VECRM Travel Voucher", "VECRM Expense Voucher"
@@ -4621,6 +4683,8 @@ def get_audit_logs(
 	log_type: str = "all", from_date: str = "", to_date: str = "", 
 	actor: str = "", page: str = "1", limit: str = "20"
 ) -> dict:
+	# SECURITY: returns audit + PII across all users. Admin only.
+	_require_admin_session()
 	page_int = int(page)
 	limit_int = int(limit)
 	
@@ -4782,9 +4846,11 @@ def get_audit_logs(
 
 @frappe.whitelist()
 def register_device_token(fcm_token: str, device_label: str = "Android", user_email: str = None) -> dict:
-	# Portal requests run as the shared vecrm-portal user; the true identity
-	# is passed explicitly or stashed in session data.
-	user_email = user_email or frappe.session.data.get("vecrm_email") or frappe.session.user
+	# SECURITY: derive identity from the session (resolved from the sid
+	# cookie), NOT the client-supplied user_email — otherwise a caller could
+	# register a device under someone else's email and receive their push
+	# notifications. The param is retained for backward compat but ignored.
+	user_email = frappe.session.data.get("vecrm_email") or frappe.session.user
 	now_dt = frappe.utils.now_datetime()
 
 	existing = frappe.db.get_value("VECRM Device Token", {"fcm_token": fcm_token}, "name")

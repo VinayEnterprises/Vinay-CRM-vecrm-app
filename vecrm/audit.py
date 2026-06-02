@@ -68,6 +68,12 @@ def log_auth_event(event_type: str, actor: str) -> dict:
 	if event_type not in ("login", "logout"):
 		frappe.throw("Invalid auth event type")
 
+	# SECURITY: bind the actor to the authenticated session identity when
+	# present, so a caller can't forge auth-log rows for an arbitrary actor.
+	session_email = (frappe.session.data or {}).get("vecrm_email")
+	if session_email:
+		actor = session_email
+
 	audit_doc = frappe.get_doc({
 		"doctype": "VECRM User Audit Log",
 		"event_type": event_type,
