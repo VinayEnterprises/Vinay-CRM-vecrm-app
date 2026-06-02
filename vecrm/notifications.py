@@ -49,9 +49,11 @@ def send_push(tokens: list, title: str, body: str, data: dict = None):
 					"document_type": doc_type,
 					"document_name": doc_name
 				})
-				notif_log.flags.ignore_links = True
-				notif_log.insert(ignore_permissions=True, ignore_links=True)
+				notif_log.set_new_name()
+				notif_log.db_insert()
 	except Exception as e:
+		if hasattr(frappe.local, "message_log"):
+			frappe.local.message_log = []
 		frappe.log_error(f"Error logging notification: {e}", "Notification Log Error")
 
 	return {"sent": response.success_count, "failed": response.failure_count}

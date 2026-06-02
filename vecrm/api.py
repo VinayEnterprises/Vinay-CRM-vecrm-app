@@ -66,10 +66,11 @@ def _send_lead_notification(lead_doc, subject, html_body):
 					"document_type": "VECRM Lead",
 					"document_name": lead_doc.name,
 				})
-				notif_log.flags.ignore_links = True
-				notif_log.insert(ignore_permissions=True, ignore_links=True)
+				notif_log.set_new_name()
+				notif_log.db_insert()
 			except Exception as e:
-				pass
+				if hasattr(frappe.local, "message_log"):
+					frappe.local.message_log = []
 
 @frappe.whitelist()
 def convert_lead_to_inquiry(
@@ -4479,9 +4480,11 @@ def delete_record(doctype: str, name: str) -> dict:
 	})
 	audit_doc.flags.ignore_links = True
 	try:
-		audit_doc.insert(ignore_permissions=True, ignore_links=True)
+		audit_doc.set_new_name()
+		audit_doc.db_insert()
 	except Exception as e:
-		pass
+		if hasattr(frappe.local, "message_log"):
+			frappe.local.message_log = []
 	
 	frappe.delete_doc(doctype, name, ignore_permissions=True, force=True)
 	return {"success": True}
