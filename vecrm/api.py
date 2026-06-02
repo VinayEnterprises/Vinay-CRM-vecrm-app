@@ -797,22 +797,31 @@ def create_lead(
 	if not meeting_brief:
 		frappe.throw("Meeting brief is required.", frappe.ValidationError)
 
-	# Prevent duplicate leads (PD-S30)
+	# Dedup (PD-S30, revised): only an OPEN lead blocks a brand-new lead.
+	# Converted / Closed-Won / Closed-Lost leads may each spawn a fresh lead
+	# (a company can have multiple inquiries over time, each needing its own
+	# lead). When an open lead already exists we do NOT create a duplicate —
+	# we log this contact as a touchpoint on that open lead and return
+	# action="touchpoint" so the portal can react. Server-authoritative: this
+	# is the safety net behind the form's typeahead-driven routing.
 	company_name = company_name.strip()
-	existing_lead = frappe.db.get_value(
+	open_lead = frappe.db.get_value(
 		"VECRM Lead",
-		{
-			"company_name": company_name,
-			"status": ["not in", ["Closed-Won", "Closed-Lost"]]
-		},
-		"name"
+		{"company_name": company_name, "status": "Open"},
+		"name",
 	)
-	if existing_lead:
-		frappe.throw(
-			f"An active lead for '{company_name}' already exists ({existing_lead}). "
-			f"Please log a touchpoint on the existing lead instead of creating a new one.",
-			frappe.ValidationError
+	if open_lead:
+		create_touchpoint(
+			lead_name=open_lead,
+			touchpoint_type="Meeting",
+			touchpoint_date=contact_date,
+			summary=meeting_brief or "",
 		)
+		return {
+			"action": "touchpoint",
+			"lead": open_lead,
+			"company_name": company_name,
+		}
 
 	doc = frappe.new_doc("VECRM Lead")
 	doc.company_name = company_name
@@ -852,6 +861,7 @@ def create_lead(
 	doc.insert()
 
 	return {
+		"action": "lead",
 		"name": doc.name,
 		"company_name": doc.company_name,
 		"territory": doc.territory,
@@ -3062,9 +3072,25 @@ def create_touchpoint(
     })
     tp.insert(ignore_permissions=True)
 
-    actor_name = frappe.session.data.get("vecrm_employee_name") or frappe.session.user
-    html_body = render_touchpoint_email(lead, str(tp.touchpoint_date), tp.touchpoint_type, actor_name, tp.notes)
-    _send_lead_notification(lead, f"New Touchpoint: {lead.company_name or lead.name}", html_body)
+    # Best-effort "new touchpoint" notification — must NEVER break the
+    # touchpoint write. The previous version referenced an undefined `lead`
+    # and a removed render_touchpoint_email(), 500'ing every touchpoint after
+    # it was already inserted. Rebuilt inline, guarded, using the real field.
+    try:
+        lead = frappe.get_doc("VECRM Lead", lead_name)
+        actor_name = frappe.session.data.get("vecrm_employee_name") or frappe.session.user
+        esc = frappe.utils.escape_html
+        html_body = (
+            f"<p>A new touchpoint was logged on lead "
+            f"<strong>{esc(lead.company_name or lead.name)}</strong>.</p>"
+            f"<p>Type: {esc(tp.touchpoint_type)}<br>"
+            f"Date: {esc(str(tp.touchpoint_date))}<br>"
+            f"By: {esc(str(actor_name))}</p>"
+            + (f"<p>{esc(tp.summary)}</p>" if tp.summary else "")
+        )
+        _send_lead_notification(lead, f"New Touchpoint: {lead.company_name or lead.name}", html_body)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "create_touchpoint notification failed")
 
     # Read-time virtual-field computation for the response (Q-LFL-P2-3 = (b)
     # virtual fields, read-time computed)
@@ -4081,6 +4107,48 @@ def test_followup_reminders():
 # endpoints fold leads + inquiries + touchpoints up by company_name for
 # the Account 360 admin view.
 # ──────────────────────────────────────────────────────────────────────
+
+
+@frappe.whitelist()
+def search_companies(q: str = "", limit: int = 8) -> dict:
+    """Typeahead for the new-lead form: distinct company names matching `q`,
+    each annotated with whether the company already has an OPEN lead (and the
+    open lead's name). Steers reps away from duplicate leads — an exact match
+    with an open lead routes the submission to a touchpoint instead.
+
+    Global across reps (dedup is company-level, not per-rep). Read-only.
+    """
+    q = (q or "").strip()
+    if not q:
+        return {"results": []}
+    try:
+        limit = max(1, min(int(limit), 20))
+    except (TypeError, ValueError):
+        limit = 8
+    rows = frappe.db.sql(
+        """
+        SELECT
+            company_name,
+            MAX(CASE WHEN status = 'Open' THEN name END) AS open_lead,
+            SUM(CASE WHEN status = 'Open' THEN 1 ELSE 0 END) AS open_count
+        FROM `tabVECRM Lead`
+        WHERE company_name LIKE %(like)s
+        GROUP BY company_name
+        ORDER BY company_name
+        LIMIT %(limit)s
+        """,
+        {"like": f"%{q}%", "limit": limit},
+        as_dict=True,
+    )
+    results = [
+        {
+            "company_name": r.company_name,
+            "has_open_lead": bool(r.open_count),
+            "open_lead": r.open_lead,
+        }
+        for r in rows
+    ]
+    return {"results": results}
 
 
 def _timeline_sort_key(date_str: str) -> str:
