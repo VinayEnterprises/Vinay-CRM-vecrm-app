@@ -1889,7 +1889,53 @@ def request_pin_reset(phone: str = "") -> dict[str, Any]:
     # empty-string-on-NULL Frappe quirk so the BFF can do a clean
     # `if internal.delivery_email` check.
     response["_internal"]["delivery_email"] = employee_doc.vecrm_email or None
-    return response
+	if "employee" in response:
+		del response["employee"]
+	
+	return response
+
+@frappe.whitelist()
+def get_dashboard_summary() -> dict:
+	"""Return aggregated voucher counts/amounts for the portal dashboard."""
+	# Only fetch summary for vouchers the current user is allowed to see
+	user_phone = frappe.session.data.get("vecrm_employee_phone")
+	if not user_phone:
+		frappe.throw("Not authenticated", frappe.AuthenticationError)
+		
+	# Build TV summary
+	tv_pending = frappe.db.get_all("VECRM Travel Voucher", 
+		filters={"approval_status": "Pending"}, 
+		fields=["name", "total_amount_claimed"]
+	)
+	tv_paid = frappe.db.get_all("VECRM Travel Voucher", 
+		filters={"payment_status": "Paid"}, 
+		fields=["name", "total_amount_approved"]
+	)
+	
+	# Build EV summary 
+	ev_pending = frappe.db.get_all("VECRM Petrol Voucher", 
+		filters={"approval_status": "Pending"}, 
+		fields=["name", "total_amount_claimed"]
+	)
+	ev_paid = frappe.db.get_all("VECRM Petrol Voucher", 
+		filters={"payment_status": "Paid"}, 
+		fields=["name", "total_amount_approved"]
+	)
+	
+	return {
+		"tv": {
+			"pending_count": len(tv_pending),
+			"pending_amount": sum((v.total_amount_claimed or 0) for v in tv_pending),
+			"paid_count": len(tv_paid),
+			"paid_amount": sum((v.total_amount_approved or 0) for v in tv_paid)
+		},
+		"ev": {
+			"pending_count": len(ev_pending),
+			"pending_amount": sum((v.total_amount_claimed or 0) for v in ev_pending),
+			"paid_count": len(ev_paid),
+			"paid_amount": sum((v.total_amount_approved or 0) for v in ev_paid)
+		}
+	}
 
 
 def _consume_reset_token(token: str, expected_reset_for: str) -> Any:
