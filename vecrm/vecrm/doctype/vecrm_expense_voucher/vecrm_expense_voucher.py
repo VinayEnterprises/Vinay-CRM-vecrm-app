@@ -301,6 +301,12 @@ def approve_expense_voucher(
         "to_state": "approved",
     })
 
+    try:
+        from vecrm.notifications import notify_voucher_outcome
+        notify_voucher_outcome(voucher, "Approved")
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "approve_expense_voucher.notify")
+
     return voucher.name
 
 
@@ -357,6 +363,12 @@ def reject_expense_voucher(
         "from_state": "submitted",
         "to_state": "rejected",
     })
+
+    try:
+        from vecrm.notifications import notify_voucher_outcome
+        notify_voucher_outcome(voucher, "Rejected")
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "reject_expense_voucher.notify")
 
     return voucher.name
 

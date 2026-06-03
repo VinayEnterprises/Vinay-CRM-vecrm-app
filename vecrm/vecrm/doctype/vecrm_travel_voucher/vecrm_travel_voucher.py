@@ -338,6 +338,15 @@ def approve_travel_voucher(
         "to_state": "approved",
     })
 
+    # Notify the submitter (bell + push). db_set above bypasses the
+    # on_update_after_submit hook, so this direct call is the only path and
+    # carries no duplicate-notification risk. Never block approval on it.
+    try:
+        from vecrm.notifications import notify_voucher_outcome
+        notify_voucher_outcome(voucher, "Approved")
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "approve_travel_voucher.notify")
+
     return voucher.name
 
 
@@ -396,6 +405,12 @@ def reject_travel_voucher(
         "from_state": "submitted",
         "to_state": "rejected",
     })
+
+    try:
+        from vecrm.notifications import notify_voucher_outcome
+        notify_voucher_outcome(voucher, "Rejected")
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "reject_travel_voucher.notify")
 
     return voucher.name
 

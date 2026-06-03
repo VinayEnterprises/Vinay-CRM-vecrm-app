@@ -16,7 +16,14 @@ def _get_firebase_app():
 
 
 def send_push(tokens: list, title: str, body: str, data: dict = None):
-	"""Send FCM push to a list of device tokens."""
+	"""Send an FCM push to a list of device tokens.
+
+	Push ONLY. The in-app bell entry is created separately by
+	`_log_notification` / `_notify` so that web users without a registered
+	device token still get a notification they can read. (Previously this
+	function also wrote the bell row, gated on `frappe.db.exists("User", ...)`
+	— which never matched, because portal users are not Frappe User records.)
+	"""
 	if not tokens:
 		return {"sent": 0}
 	from firebase_admin import messaging
@@ -27,36 +34,86 @@ def send_push(tokens: list, title: str, body: str, data: dict = None):
 		tokens=tokens,
 	)
 	response = messaging.send_each_for_multicast(message)
-	
-	try:
-		users_to_notify = set()
-		for t in tokens:
-			rows = frappe.get_all("VECRM Device Token", filters={"fcm_token": t}, fields=["user_email"])
-			for r in rows:
-				if r.user_email:
-					users_to_notify.add(r.user_email)
-					
-		for user in users_to_notify:
-			if frappe.db.exists("User", user):
-				doc_type = data.get("doctype") if data else None
-				doc_name = (data.get("voucher") or data.get("lead") or data.get("inquiry")) if data else None
-				notif_log = frappe.get_doc({
-					"doctype": "Notification Log",
-					"subject": title,
-					"email_content": body,
-					"for_user": user,
-					"type": "Alert",
-					"document_type": doc_type,
-					"document_name": doc_name
-				})
-				notif_log.set_new_name()
-				notif_log.db_insert()
-	except Exception as e:
-		if hasattr(frappe.local, "message_log"):
-			frappe.local.message_log = []
-		frappe.log_error(f"Error logging notification: {e}", "Notification Log Error")
-
 	return {"sent": response.success_count, "failed": response.failure_count}
+
+
+def _log_notification(email: str, title: str, body: str, data: dict = None):
+	"""Persist a single in-app notification row (VECRM Notification).
+
+	Keyed by plain `email` (the employee's vecrm_email) because all portal
+	sessions share one Frappe user and individual employees are not User
+	records — so core Notification Log (for_user → User) is unusable here.
+	Best-effort: a logging failure must never propagate into the caller.
+	"""
+	if not email:
+		return
+	try:
+		doc_type = data.get("doctype") if data else None
+		doc_name = (
+			(data.get("voucher") or data.get("lead") or data.get("inquiry"))
+			if data
+			else None
+		)
+		frappe.get_doc({
+			"doctype": "VECRM Notification",
+			"for_email": email,
+			"subject": title,
+			"body": body,
+			"is_read": 0,
+			"document_type": doc_type,
+			"document_name": doc_name,
+		}).insert(ignore_permissions=True)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "notifications._log_notification")
+
+
+def _notify(emails, title: str, body: str, data: dict = None):
+	"""Single entry point for a TARGETED notification: write a bell row for
+	each recipient email AND push to whatever devices they have registered.
+
+	Logging is unconditional (works for web-only users); the push is
+	best-effort. Deduplicates emails so a recipient never gets two bell rows
+	for one event."""
+	seen = set()
+	all_tokens = []
+	for email in emails or []:
+		if not email or email in seen:
+			continue
+		seen.add(email)
+		_log_notification(email, title, body, data)
+		all_tokens.extend(_tokens_for_user(email))
+	if all_tokens:
+		send_push(all_tokens, title, body, data)
+
+
+def _all_token_emails():
+	"""Distinct user_emails across all registered devices — the audience for
+	broadcast reminders (was: every active token)."""
+	rows = frappe.get_all(
+		"VECRM Device Token", fields=["user_email"], ignore_permissions=True
+	)
+	return list({r.user_email for r in rows if r.user_email})
+
+
+def notify_voucher_outcome(doc, status_word: str):
+	"""Notify a voucher's submitter that it was Approved / Rejected / Paid.
+
+	Called DIRECTLY from approve/reject/mark-paid, which mutate via db_set()
+	and therefore never fire the on_update_after_submit hook — so
+	notify_voucher_status cannot fire for these transitions and there is no
+	duplicate-notification risk. Best-effort; never raises into the caller."""
+	try:
+		submitter_email = _employee_email(getattr(doc, "submitter", None))
+		if not submitter_email:
+			return
+		_notify(
+			[submitter_email],
+			f"Voucher {status_word}",
+			f"Your voucher {doc.name} was {status_word.lower()}",
+			{"screen": "vouchers", "voucher": doc.name, "doctype": doc.doctype},
+		)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "notifications.notify_voucher_outcome")
 
 
 def _all_active_tokens():
@@ -66,9 +123,8 @@ def _all_active_tokens():
 
 def daily_lead_reminder():
 	"""Daily nudge to log leads/meeting notes."""
-	tokens = _all_active_tokens()
-	send_push(
-		tokens,
+	_notify(
+		_all_token_emails(),
 		"Log today's meetings",
 		"Don't forget to add any leads or meeting notes in VECRM.",
 		{"screen": "leads"},
@@ -87,9 +143,8 @@ def voucher_period_reminder():
 		period = "second-half (16th-end)"
 	else:
 		return  # not a reminder day
-	tokens = _all_active_tokens()
-	send_push(
-		tokens,
+	_notify(
+		_all_token_emails(),
 		"Fill your vouchers",
 		f"Reminder: please submit your {period} petrol/travel/expense vouchers in VECRM.",
 		{"screen": "vouchers"},
@@ -144,11 +199,8 @@ def notify_lead_assigned(doc, method):
 		new_owner = doc.lead_owner
 		if not new_owner or new_owner == old_owner:
 			return
-		tokens = _tokens_for_user(new_owner)
-		if not tokens:
-			return
-		send_push(
-			tokens,
+		_notify(
+			[new_owner],
 			"New lead assigned",
 			f"New lead: {doc.company_name} assigned to you",
 			{"screen": "leads", "lead": doc.name},
@@ -167,16 +219,14 @@ def notify_lead_status(doc, method):
 		new_status = doc.status
 		if new_status == old_status:
 			return
-		# 1. Notify Lead Owner via Push
-		tokens = _tokens_for_user(doc.lead_owner)
-		if tokens:
-			send_push(
-				tokens,
-				f"Lead status: {doc.company_name}",
-				f"{doc.company_name}: {old_status or '-'} → {new_status or '-'}",
-				{"screen": "leads", "lead": doc.name},
-			)
-			
+		# 1. Notify Lead Owner (bell + push)
+		_notify(
+			[doc.lead_owner],
+			f"Lead status: {doc.company_name}",
+			f"{doc.company_name}: {old_status or '-'} → {new_status or '-'}",
+			{"screen": "leads", "lead": doc.name},
+		)
+
 		# 2. If status is Won or Lost, notify Sales Head and Admin via Push + Email
 		if new_status in ("Won", "Lost"):
 			sales_heads = frappe.get_all("VECRM Employee", filters={"role": "Sales Head"}, fields=["vecrm_email"])
@@ -192,15 +242,15 @@ def notify_lead_status(doc, method):
 				<p>Regards,<br>VECRM System</p>
 			"""
 			
+			# Bell + push to Sales Head / Admin recipients
+			_notify(
+				recipients,
+				subject,
+				f"Lead marked as {new_status} by {doc.lead_owner}",
+				{"screen": "leads", "lead": doc.name},
+			)
+			# Plus an email to each
 			for email in recipients:
-				head_tokens = _tokens_for_user(email)
-				if head_tokens:
-					send_push(
-						head_tokens,
-						subject,
-						f"Lead marked as {new_status} by {doc.lead_owner}",
-						{"screen": "leads", "lead": doc.name},
-					)
 				try:
 					frappe.sendmail(
 						recipients=email,
@@ -236,14 +286,13 @@ def notify_voucher_status(doc, method):
 			return
 
 		submitter_email = _employee_email(getattr(doc, "submitter", None))
-		tokens = _tokens_for_user(submitter_email)
-		if not tokens:
+		if not submitter_email:
 			return
 		for status_word in transitions:
-			send_push(
-				tokens,
+			_notify(
+				[submitter_email],
 				f"Voucher {status_word}",
-				f"Your voucher {doc.name} was {status_word}",
+				f"Your voucher {doc.name} was {status_word.lower()}",
 				{"screen": "vouchers", "voucher": doc.name, "doctype": doc.doctype},
 			)
 	except Exception:
@@ -256,11 +305,8 @@ def notify_lead_converted(doc, method):
 	try:
 		if not getattr(doc, "source_lead", None):
 			return
-		tokens = _all_active_tokens()
-		if not tokens:
-			return
-		send_push(
-			tokens,
+		_notify(
+			_all_token_emails(),
 			"Lead converted",
 			f"Lead converted: {doc.company_name} → new inquiry {doc.name}",
 			{"screen": "inquiries", "inquiry": doc.name},
@@ -283,11 +329,8 @@ def follow_up_due_reminder():
 			ignore_permissions=True,
 		)
 		for r in rows:
-			tokens = _tokens_for_user(r.lead_owner)
-			if not tokens:
-				continue
-			send_push(
-				tokens,
+			_notify(
+				[r.lead_owner],
 				"Follow-up due today",
 				f"Follow-up due today for {r.company_name}",
 				{"screen": "leads", "lead": r.name},
@@ -307,11 +350,8 @@ def follow_up_upcoming_reminder():
 			ignore_permissions=True,
 		)
 		for r in rows:
-			tokens = _tokens_for_user(r.lead_owner)
-			if not tokens:
-				continue
-			send_push(
-				tokens,
+			_notify(
+				[r.lead_owner],
 				"Follow-up due tomorrow",
 				f"Upcoming follow-up tomorrow for {r.company_name}",
 				{"screen": "leads", "lead": r.name},
@@ -330,11 +370,8 @@ def manager_overdue_alert():
 		)
 		if not count:
 			return
-		tokens = _tokens_for_user(MANAGER_EMAIL)
-		if not tokens:
-			return
-		send_push(
-			tokens,
+		_notify(
+			[MANAGER_EMAIL],
 			"Overdue follow-ups",
 			f"{count} leads overdue for follow-up",
 			{"screen": "leads", "filter": "overdue"},
@@ -349,21 +386,16 @@ def notify_admin_lead_created(doc, method):
 		return
 	try:
 		admin_email = "ajay@vinayenterprises.co.in"
-		tokens = _tokens_for_user(admin_email)
-		if tokens:
-			company = doc.get("company_name", "Unknown")
-			creator = doc.lead_owner or doc.owner
-			res = send_push(
-				tokens=tokens,
-				title="New Lead Created",
-				body=f"Lead: {company} - created by {creator}",
-				data={"screen": "leads", "lead": doc.name}
-			)
-			frappe.log_error(f"Tokens: {len(tokens)}, Result: {res}", "Push Notification Debug")
-		else:
-			frappe.log_error(f"No tokens found for {admin_email}", "Push Notification Debug")
-	except Exception as e:
-		frappe.log_error(f"notify_admin_lead_created failed: {str(e)}", "Push Notification Error")
+		company = doc.get("company_name", "Unknown")
+		creator = doc.lead_owner or doc.owner
+		_notify(
+			[admin_email],
+			"New Lead Created",
+			f"Lead: {company} - created by {creator}",
+			{"screen": "leads", "lead": doc.name},
+		)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "notifications.notify_admin_lead_created")
 
 
 def notify_voucher_submitted(doc, method):
@@ -395,16 +427,13 @@ def notify_voucher_submitted(doc, method):
 		)
 
 		approver_emails = [e.vecrm_email for e in approver_employees if e.vecrm_email]
-		
-		for email in approver_emails:
-			tokens = _tokens_for_user(email)
-			if tokens:
-				send_push(
-					tokens,
-					"New Voucher Submitted",
-					f"New {doc.doctype.replace('VECRM ', '')} submitted by {submitter_email}",
-					{"screen": "vouchers", "voucher": doc.name, "doctype": doc.doctype}
-				)
+
+		_notify(
+			approver_emails,
+			"New Voucher Submitted",
+			f"New {doc.doctype.replace('VECRM ', '')} submitted by {submitter_email}",
+			{"screen": "vouchers", "voucher": doc.name, "doctype": doc.doctype},
+		)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications.notify_voucher_submitted")
 
@@ -423,14 +452,12 @@ def stale_inquiry_reminder():
 		)
 
 		for r in stale_inquiries:
-			tokens = _tokens_for_user(r.inquiry_owner)
-			if tokens:
-				send_push(
-					tokens,
-					"Stale Inquiry",
-					f"Your inquiry for {r.company_name} hasn't been updated recently. Give them a call?",
-					{"screen": "inquiries", "inquiry": r.name}
-				)
+			_notify(
+				[r.inquiry_owner],
+				"Stale Inquiry",
+				f"Your inquiry for {r.company_name} hasn't been updated recently. Give them a call?",
+				{"screen": "inquiries", "inquiry": r.name},
+			)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications.stale_inquiry_reminder")
 
@@ -450,14 +477,12 @@ def manager_daily_digest():
 		if leads_created == 0 and vouchers_submitted == 0:
 			return
 
-		tokens = _tokens_for_user(MANAGER_EMAIL)
-		if tokens:
-			send_push(
-				tokens,
-				"Daily Digest",
-				f"Your team added {leads_created} leads and submitted {vouchers_submitted} vouchers today.",
-				{"screen": "dashboard"}
-			)
+		_notify(
+			[MANAGER_EMAIL],
+			"Daily Digest",
+			f"Your team added {leads_created} leads and submitted {vouchers_submitted} vouchers today.",
+			{"screen": "dashboard"},
+		)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications.manager_daily_digest")
 
@@ -490,16 +515,13 @@ def voucher_approver_payment_reminder():
 		)
 		
 		approver_emails = [e.vecrm_email for e in approver_employees if e.vecrm_email]
-		
-		for email in approver_emails:
-			tokens = _tokens_for_user(email)
-			if tokens:
-				for msg in messages:
-					send_push(
-						tokens,
-						"Voucher Action Required",
-						msg,
-						{"screen": "vouchers"}
-					)
+
+		for msg in messages:
+			_notify(
+				approver_emails,
+				"Voucher Action Required",
+				msg,
+				{"screen": "vouchers"},
+			)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications.voucher_approver_payment_reminder")
