@@ -545,9 +545,9 @@ def submit_travel_voucher_draft(voucher_name: str) -> dict:
 	# Submit-window gate (lower bound). A period's consolidated voucher can
 	# only be submitted once the period is essentially over:
 	#   H1: 15th 21:00 -> 17th 23:59,  H2: last-day 21:00 -> 2nd 23:59 (IST).
-	# Managers (Admin / Sales Head / HR) bypass — they may file on a rep's
-	# behalf anytime. (The existing _check_voucher_date_cutoff above already
-	# enforces the upper bound; this adds the lower bound.)
+	# Only Admin bypasses (WINDOW_BYPASS_ROLES) — Sales Head / HR are held to
+	# the window like everyone else. (The existing _check_voucher_date_cutoff
+	# above already enforces the upper bound; this adds the lower bound.)
 	from vecrm.vecrm.utils.voucher_period import (
 		WINDOW_BYPASS_ROLES,
 		is_submit_window_open,
