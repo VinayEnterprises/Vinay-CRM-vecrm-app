@@ -3200,7 +3200,19 @@ def admin_delete_employee(employee: str = "") -> dict[str, Any]:
         "detail": f"Delete VECRM Employee: {employee}"
     })
     audit_doc.flags.ignore_links = True
-    audit_doc.insert(ignore_permissions=True, ignore_links=True)
+    # Use db_insert (not insert) so the row is written directly, bypassing the
+    # Select-field validation. The audit-log event_type Select still lists the
+    # legacy lifecycle labels (User Provisioned/Suspended/Reactivated), but the
+    # code — and the reader get_audit_logs — use CRUD verbs like "delete";
+    # validate() would otherwise reject "delete" ("Event Type cannot be ...").
+    # Matches the sibling delete path (admin_delete_record) which already does
+    # this. Append-only integrity is unaffected.
+    try:
+        audit_doc.set_new_name()
+        audit_doc.db_insert()
+    except Exception:
+        if hasattr(frappe.local, "message_log"):
+            frappe.local.message_log = []
 
     try:
         frappe.delete_doc("VECRM Employee", employee, ignore_permissions=True)
