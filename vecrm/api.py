@@ -3262,6 +3262,91 @@ def admin_delete_employee(employee: str = "") -> dict[str, Any]:
 
     return {"success": True}
 
+
+@frappe.whitelist()
+def get_base_cities() -> dict[str, Any]:
+    """Valid base-city names (from the Rate Card) for the employee base-city
+    dropdown. Whitelisted so the portal can call it with a session; reads the
+    Single via get_single (no doctype read-perm needed — the portal service
+    account has no direct read perm on VECRM Rate Card, which is why the raw
+    /api/resource fetch returns a permission error)."""
+    rc = frappe.get_single("VECRM Rate Card")
+    cities = sorted(
+        {
+            (r.city or "").strip()
+            for r in (rc.city_rates or [])
+            if (r.city or "").strip()
+        }
+    )
+    return {"cities": cities}
+
+
+def _admin_issue_reset(employee_phone: str, kind: str) -> dict[str, Any]:
+    """Shared impl for admin_send_invite / admin_send_reset_password. Admin
+    creates a password reset token for `employee_phone` and returns the raw
+    token in _internal so the portal BFF can email the set-password link
+    (the BFF owns delivery + template choice, exactly like
+    request_password_reset)."""
+    _require_admin_session()
+    phone = (employee_phone or "").strip()
+    if not phone:
+        frappe.throw(frappe._("Employee phone is required."), frappe.ValidationError)
+    if not frappe.db.exists("VECRM Employee", phone):
+        frappe.throw(
+            frappe._("Employee '{0}' not found.").format(phone),
+            frappe.DoesNotExistError,
+        )
+
+    emp = frappe.get_doc("VECRM Employee", phone)
+    email = (emp.vecrm_email or "").strip()
+    if not email:
+        frappe.throw(
+            frappe._(
+                "This employee has no email address. Add one (Save changes) "
+                "before sending an invite or reset link."
+            ),
+            frappe.ValidationError,
+        )
+
+    raw_token = _create_reset_token_row(phone, "password")
+    try:
+        _audit_auth(
+            "auth.admin.invite" if kind == "invite" else "auth.admin.reset",
+            employee=phone,
+            identifier=email,
+            path="admin",
+            reason=f"Admin {kind}",
+        )
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "admin_issue_reset audit")
+    frappe.db.commit()
+
+    return {
+        "success": True,
+        "message": "Link generated.",
+        "_internal": {
+            "raw_token": raw_token,
+            "employee_name": emp.employee_name or phone,
+            "delivery_email": email,
+        },
+    }
+
+
+@frappe.whitelist()
+def admin_send_invite(employee_phone: str = "") -> dict[str, Any]:
+    """Admin-only: send a new user an invite to set their password. Returns
+    _internal{raw_token, employee_name, delivery_email}; the portal BFF emails
+    the /set-password link."""
+    return _admin_issue_reset(employee_phone, "invite")
+
+
+@frappe.whitelist()
+def admin_send_reset_password(employee_phone: str = "") -> dict[str, Any]:
+    """Admin-only: send an employee a password-reset link. Same token
+    mechanism as admin_send_invite; the BFF picks the reset email template."""
+    return _admin_issue_reset(employee_phone, "reset")
+
+
 # ============================================================================
 # PD-S30-LEAD-FOLLOWUP Phase 2 — Touchpoint API
 # ============================================================================
