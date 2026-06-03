@@ -3214,11 +3214,49 @@ def admin_delete_employee(employee: str = "") -> dict[str, Any]:
         if hasattr(frappe.local, "message_log"):
             frappe.local.message_log = []
 
+    # A user with real business records — or who is another employee's
+    # approver — must NOT be hard-deleted; suspend instead. Block explicitly
+    # with a clear message naming what's linked.
+    BUSINESS_LINKS = (
+        ("VECRM Travel Voucher", "submitter"),
+        ("VECRM Travel Voucher", "approved_by_employee"),
+        ("VECRM Expense Voucher", "submitter"),
+        ("VECRM Expense Voucher", "approved_by_employee"),
+        ("VECRM Lead", "creating_employee"),
+        ("VECRM Lead Touchpoint", "actor_employee"),
+        ("VECRM Employee", "reporting_approver"),
+    )
+    blocking = sorted({
+        dt for dt, field in BUSINESS_LINKS if frappe.db.exists(dt, {field: employee})
+    })
+    if blocking:
+        frappe.throw(
+            frappe._(
+                "Cannot delete '{0}' — they have existing records ({1}). "
+                "Suspend the account instead."
+            ).format(employee, ", ".join(blocking)),
+            frappe.ValidationError,
+        )
+
+    # No business records → a never-active / mistake account. Remove the
+    # infrastructure rows that exist purely because the account was
+    # provisioned: Auth Audit Log + Auth Reset Token both Link-with-Restrict to
+    # the employee AND are append-only via their controllers, so delete them at
+    # the DB layer (bypasses both the Restrict link check and on_trash). There
+    # are no business records to preserve here.
+    for dt in ("VECRM Auth Audit Log", "VECRM Auth Reset Token"):
+        frappe.db.delete(dt, {"employee": employee})
+    frappe.db.commit()
+
     try:
         frappe.delete_doc("VECRM Employee", employee, ignore_permissions=True)
     except frappe.LinkExistsError:
+        # A residual link we didn't anticipate — fail safe with guidance.
         frappe.throw(
-            frappe._("Cannot delete employee '{0}' because they are linked to existing records (e.g., Vouchers, Leads, or Logs). Suspend the account instead.").format(employee),
+            frappe._(
+                "Cannot delete '{0}' — it is still linked to other records. "
+                "Suspend the account instead."
+            ).format(employee),
             frappe.ValidationError,
         )
 
