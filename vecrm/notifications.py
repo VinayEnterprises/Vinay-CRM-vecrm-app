@@ -27,7 +27,13 @@ def send_push(tokens: list, title: str, body: str, data: dict = None):
 		tokens=tokens,
 	)
 	response = messaging.send_each_for_multicast(message)
-	
+
+	# Persist a readable in-app bell row per recipient. Previously this wrote
+	# core "Notification Log" gated on frappe.db.exists("User", ...), but portal
+	# users share ONE Frappe user and aren't User records, so that guard never
+	# matched and the bell stayed empty forever. We now write VECRM Notification
+	# keyed by the device token's user_email, which the portal reads via the
+	# whitelisted get_my_notifications.
 	try:
 		users_to_notify = set()
 		for t in tokens:
@@ -35,28 +41,78 @@ def send_push(tokens: list, title: str, body: str, data: dict = None):
 			for r in rows:
 				if r.user_email:
 					users_to_notify.add(r.user_email)
-					
 		for user in users_to_notify:
-			if frappe.db.exists("User", user):
-				doc_type = data.get("doctype") if data else None
-				doc_name = (data.get("voucher") or data.get("lead") or data.get("inquiry")) if data else None
-				notif_log = frappe.get_doc({
-					"doctype": "Notification Log",
-					"subject": title,
-					"email_content": body,
-					"for_user": user,
-					"type": "Alert",
-					"document_type": doc_type,
-					"document_name": doc_name
-				})
-				notif_log.set_new_name()
-				notif_log.db_insert()
-	except Exception as e:
-		if hasattr(frappe.local, "message_log"):
-			frappe.local.message_log = []
-		frappe.log_error(f"Error logging notification: {e}", "Notification Log Error")
+			_log_notification(user, title, body, data)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "notifications.send_push.log")
 
 	return {"sent": response.success_count, "failed": response.failure_count}
+
+
+def _log_notification(email, title, body, data=None):
+	"""Persist one VECRM Notification row — the readable in-app bell store.
+
+	Keyed by plain email: portal sessions share one Frappe user and employees
+	are not User records, so core Notification Log (for_user -> User) is
+	unusable. Best-effort; never raises into the caller."""
+	if not email:
+		return
+	try:
+		doc_type = data.get("doctype") if data else None
+		doc_name = (
+			(data.get("voucher") or data.get("lead") or data.get("inquiry"))
+			if data
+			else None
+		)
+		frappe.get_doc({
+			"doctype": "VECRM Notification",
+			"for_email": email,
+			"subject": title,
+			"body": body,
+			"is_read": 0,
+			"document_type": doc_type,
+			"document_name": doc_name,
+		}).insert(ignore_permissions=True)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "notifications._log_notification")
+
+
+def notify_voucher_outcome(doc, status_word):
+	"""Notify a voucher's submitter that it was Approved / Rejected / Paid.
+
+	Called DIRECTLY from approve/reject/mark-paid, which mutate via db_set() and
+	so never fire on_update_after_submit -> notify_voucher_status can't fire for
+	them, so there is no duplicate. If the submitter has device tokens, send_push
+	handles both the push and the bell row; otherwise we log the bell row
+	directly (web-only users). Best-effort; never raises into the caller."""
+	try:
+		submitter_email = _employee_email(getattr(doc, "submitter", None))
+		if not submitter_email:
+			return
+		title = f"Voucher {status_word}"
+		body = f"Your voucher {doc.name} was {status_word.lower()}"
+		payload = {"screen": "vouchers", "voucher": doc.name, "doctype": doc.doctype}
+		tokens = _tokens_for_user(submitter_email)
+		if tokens:
+			send_push(tokens, title, body, payload)
+		else:
+			_log_notification(submitter_email, title, body, payload)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "notifications.notify_voucher_outcome")
+
+
+def cleanup_old_notifications():
+	"""Prune VECRM Notification (scheduler, daily). send_push writes one row per
+	recipient per fire, so the table grows steadily; delete read rows older than
+	30 days and any row older than 90 days. Best-effort; never raises."""
+	try:
+		read_cutoff = frappe.utils.add_days(frappe.utils.today(), -30)
+		hard_cutoff = frappe.utils.add_days(frappe.utils.today(), -90)
+		frappe.db.delete("VECRM Notification", {"is_read": 1, "creation": ["<", read_cutoff]})
+		frappe.db.delete("VECRM Notification", {"creation": ["<", hard_cutoff]})
+		frappe.db.commit()
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "notifications.cleanup_old_notifications")
 
 
 def _all_active_tokens():

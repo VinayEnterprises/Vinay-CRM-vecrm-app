@@ -265,6 +265,12 @@ scheduler_events = {
 			"vecrm.notifications.stale_inquiry_reminder",
 			"vecrm.notifications.voucher_approver_payment_reminder",
 		],
+		# Bound VECRM Notification table growth — daily 03:30 IST. send_push
+		# writes one bell row per recipient per fire, so prune read rows after
+		# 30d and everything after 90d.
+		"30 3 * * *": [
+			"vecrm.notifications.cleanup_old_notifications",
+		],
 	},
 }
 
