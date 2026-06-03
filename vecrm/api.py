@@ -207,6 +207,12 @@ def mark_travel_voucher_paid(voucher_name: str) -> dict:
 		"to_state": "paid",
 	})
 
+	try:
+		from vecrm.notifications import notify_voucher_outcome
+		notify_voucher_outcome(doc, "Paid")
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "mark_travel_voucher_paid.notify")
+
 	return {"status": "ok", "voucher_name": voucher_name}
 
 
@@ -239,6 +245,12 @@ def mark_expense_voucher_paid(voucher_name: str) -> dict:
 		"from_state": "approved",
 		"to_state": "paid",
 	})
+
+	try:
+		from vecrm.notifications import notify_voucher_outcome
+		notify_voucher_outcome(doc, "Paid")
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "mark_expense_voucher_paid.notify")
 
 	return {"status": "ok", "voucher_name": voucher_name}
 
@@ -1793,6 +1805,83 @@ def get_session_employee() -> dict[str, Any]:
         "base_city": employee_doc.vecrm_base_city,
         "login_path": frappe.session.data.get("vecrm_login_path"),
     }
+
+
+@frappe.whitelist(methods=["GET"])
+def get_my_notifications(limit: int = 50) -> list[dict[str, Any]]:
+    """Return the current portal user's in-app notifications (newest first).
+
+    Scoped to the session's vecrm_email. All portal sessions share one Frappe
+    user (see _issue_session), so identity is resolved from session data and
+    rows are read with ignore_permissions — the shared user cannot be granted
+    per-row access via the normal permission model. Returns [] when the session
+    has no email rather than throwing, so the bell degrades quietly. Shaped to
+    what the portal NotificationBell expects (email_content / read), insulating
+    it from the doctype field names.
+    """
+    email = frappe.session.data.get("vecrm_email")
+    if not email:
+        return []
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 100))
+
+    rows = frappe.get_all(
+        "VECRM Notification",
+        filters={"for_email": email},
+        fields=[
+            "name",
+            "subject",
+            "body",
+            "is_read",
+            "document_type",
+            "document_name",
+            "creation",
+        ],
+        order_by="creation desc",
+        limit_page_length=limit,
+        ignore_permissions=True,
+    )
+    return [
+        {
+            "name": r.name,
+            "subject": r.subject,
+            "email_content": r.body,
+            "read": 1 if r.is_read else 0,
+            "document_type": r.document_type,
+            "document_name": r.document_name,
+            "creation": str(r.creation),
+        }
+        for r in rows
+    ]
+
+
+@frappe.whitelist(methods=["POST"])
+def mark_notification_read(name: str) -> dict[str, Any]:
+    """Mark one of the caller's notifications as read.
+
+    Ownership-guarded: the row's for_email must equal the session's vecrm_email,
+    so the shared portal user cannot mark another employee's notifications. The
+    write uses ignore_permissions after the guard passes.
+    """
+    email = frappe.session.data.get("vecrm_email")
+    if not email:
+        frappe.throw(_("Not authenticated as VECRM Employee"), frappe.PermissionError)
+    if not name:
+        frappe.throw(_("Missing notification name"), frappe.ValidationError)
+
+    owner = frappe.db.get_value("VECRM Notification", name, "for_email")
+    if owner is None:
+        frappe.throw(_("Notification not found"), frappe.DoesNotExistError)
+    if owner != email:
+        frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+    frappe.db.set_value(
+        "VECRM Notification", name, "is_read", 1, update_modified=False
+    )
+    return {"ok": True}
 
 
 # ============================================================
