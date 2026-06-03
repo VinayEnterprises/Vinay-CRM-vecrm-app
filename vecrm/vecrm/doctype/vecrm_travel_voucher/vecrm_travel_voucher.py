@@ -23,33 +23,15 @@ from frappe.model.naming import make_autoname
 
 from vecrm.vecrm.voucher_counter import fy_label, next_number
 
-# Approver-role-set mapping.
+# Approver-role-set mapping. Centralized in vecrm.vecrm.utils.roles as the
+# single source of truth (shared by Travel + Expense vouchers + push
+# routing). Kept under the local name APPROVER_SETS so the before_insert
+# eligibility gate and before_submit snapshot below read unchanged.
 #
-# PD-S32-TV-APPROVER-SETS-EXPAND: expanded from 2 to 5 submitter roles per
-# VECRM-LOCK-ROLE-CAPABILITY-MATRIX (S32) and Q-EV-6 self-service scope.
-# The original S22 dict only covered Sales Rep + Field Engineer because
-# Sub-A (S24) was Admin-only and Admin filed every voucher manually with
-# submitter=<rep>. After S32 self-service shipped (PR portal #29 + vecrm
-# #43), Sales Head / Head of Engineers / Admin can also submit on their
-# own behalf; before_insert's `if emp.role not in APPROVER_SETS` gate
-# rejected them with 417, blocking ALL voucher submits in production.
-#
-# Approver policy (operator-locked S32):
-#   Sales Rep         -> escalates to Sales Head, then HR / Admin
-#   Field Engineer    -> escalates to Head of Engineers, then HR / Admin
-#   Sales Head        -> HR or Admin (no peer-approval)
-#   Head of Engineers -> HR or Admin (no peer-approval)
-#   Admin             -> HR or Admin (self-approval permitted; single-
-#                        person-company edge case acknowledged)
-#
-# HR is NOT a submitter (approver-only role) per Q-EV-6 scope.
-APPROVER_SETS: dict[str, list[str]] = {
-    "Sales Rep":         ["Sales Head", "HR", "Admin"],
-    "Field Engineer":    ["Head of Engineers", "HR", "Admin"],
-    "Sales Head":        ["HR", "Admin"],
-    "Head of Engineers": ["HR", "Admin"],
-    "Admin":             ["HR", "Admin"],
-}
+# Routing: each submitter escalates to their functional head, then HR /
+# Admin; heads/managers self-escalate to HR / Admin. New roles (Network
+# Security Engineer, Store Executive, Head of Stores) are included there.
+from vecrm.vecrm.utils.roles import VOUCHER_APPROVER_SETS as APPROVER_SETS
 
 # Voucher series prefix for Travel Vouchers (Layer 2 - VECRM-L8 anchor).
 TRAVEL_VOUCHER_SERIES = "TV"
@@ -246,6 +228,11 @@ class VECRMTravelVoucher(Document):
         self.db_set("rejected_by_role", None, update_modified=False)
         self.db_set("rejected_at", None, update_modified=False)
         self.db_set("rejection_reason", None, update_modified=False)
+        # Clear reopen stamps on a successful resubmit (covers both the
+        # reject->resubmit and reopen->resubmit paths; harmless when unset).
+        self.db_set("reopened", 0, update_modified=False)
+        self.db_set("reopened_by", None, update_modified=False)
+        self.db_set("reopened_until", None, update_modified=False)
 
         self._audit("voucher.travel.resubmitted", {
             "actor_employee": self.submitter,
@@ -441,11 +428,18 @@ def voucher_resubmit_travel(
         re-rejects (shouldn't happen since the api.py wrapper already
         gated, but defense in depth).
     """
-    if voucher.approval_status != "Rejected":
+    # Two edit paths through this method:
+    #   1. Rejected (docstatus=1) — resubmit-in-place; on_update_after_submit
+    #      flips Rejected -> Pending.
+    #   2. Draft (docstatus=0) — edit a saved draft; doc.save() keeps it a
+    #      draft (Recommendation A: editing a draft does NOT submit it; the
+    #      submit window governs actual submission).
+    if voucher.approval_status != "Rejected" and voucher.docstatus != 0:
         frappe.throw(
-            f"Voucher {voucher.name} is not in Rejected state "
-            f"(approval_status={voucher.approval_status!r}); only Rejected "
-            f"vouchers can be resubmitted via edit.",
+            f"Voucher {voucher.name} cannot be edited here "
+            f"(approval_status={voucher.approval_status!r}, "
+            f"docstatus={voucher.docstatus}); only Rejected or draft vouchers "
+            f"are editable via this path.",
             frappe.ValidationError,
         )
 

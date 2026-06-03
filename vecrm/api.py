@@ -273,6 +273,19 @@ def voucher_resubmit_travel(
 	voucher = frappe.get_doc("VECRM Travel Voucher", voucher_name)
 	_require_voucher_submitter_self_or_admin(voucher.submitter)
 
+	# Reopen 24-hour deadline. A manager-reopened voucher must be resubmitted
+	# within reopened_until; after that it re-locks (relock scheduler returns
+	# it to the approval queue). Block a late resubmit attempt explicitly.
+	if voucher.get("reopened") and voucher.get("reopened_until"):
+		if frappe.utils.now_datetime() > frappe.utils.get_datetime(voucher.reopened_until):
+			frappe.throw(
+				frappe._(
+					"The 24-hour window to resubmit this reopened voucher has "
+					"closed. Ask your manager to reopen it again."
+				),
+				frappe.ValidationError,
+			)
+
 	# Bi-monthly cutoff check (PD-S29-BACKFILL-PREVENTION). Resubmit
 	# accepts edited visit_lines + optional business_date — without this
 	# check, a rejected voucher could be re-submitted with backfilled
@@ -398,9 +411,29 @@ def create_travel_voucher_draft(
 		if visit_date:
 			_check_voucher_date_cutoff(visit_date)
 
-	doc = frappe.new_doc("VECRM Travel Voucher")
-	doc.submitter = submitter
-	doc.business_date = business_date
+	# Single-draft-per-period dedup (TRAVEL). One consolidated draft per
+	# (submitter, half-month period). If an open draft already exists for
+	# this period, APPEND the new lines to it instead of creating a second
+	# voucher — mirrors the /leads company->touchpoint merge. A fresh
+	# voucher only begins once the current period's draft is submitted.
+	from vecrm.vecrm.utils.voucher_period import period_key
+
+	target_name = None
+	for row in frappe.get_all(
+		"VECRM Travel Voucher",
+		filters={"submitter": submitter, "docstatus": 0},
+		fields=["name", "business_date"],
+	):
+		if row.business_date and period_key(row.business_date) == period_key(business_date):
+			target_name = row.name
+			break
+
+	if target_name:
+		doc = frappe.get_doc("VECRM Travel Voucher", target_name)
+	else:
+		doc = frappe.new_doc("VECRM Travel Voucher")
+		doc.submitter = submitter
+		doc.business_date = business_date
 
 	for line in lines:
 		doc.append("visit_lines", {
@@ -411,9 +444,13 @@ def create_travel_voucher_draft(
 			"notes": line.get("notes", ""),
 		})
 
-	# insert() runs before_insert (snapshot rate/role/city), validate
-	# (compute totals via Rate Card lookup), and DB insert atomically.
-	doc.insert()
+	# New draft: insert() runs before_insert (snapshot rate/role/city) +
+	# validate (totals via Rate Card) + DB insert. Existing draft: save()
+	# re-runs validate to fold in the appended lines (stays docstatus=0).
+	if target_name:
+		doc.save()
+	else:
+		doc.insert()
 
 	return {
 		"name": doc.name,
@@ -493,6 +530,37 @@ def submit_travel_voucher_draft(voucher_name: str) -> dict:
 		if line.visit_date:
 			_check_voucher_date_cutoff(line.visit_date)
 
+	# Submit-window gate (lower bound). A period's consolidated voucher can
+	# only be submitted once the period is essentially over:
+	#   H1: 15th 21:00 -> 17th 23:59,  H2: last-day 21:00 -> 2nd 23:59 (IST).
+	# Managers (Admin / Sales Head / HR) bypass — they may file on a rep's
+	# behalf anytime. (The existing _check_voucher_date_cutoff above already
+	# enforces the upper bound; this adds the lower bound.)
+	from vecrm.vecrm.utils.voucher_period import (
+		WINDOW_BYPASS_ROLES,
+		is_submit_window_open,
+		lateness,
+		submit_window,
+	)
+
+	session_role = (frappe.session.data or {}).get("vecrm_employee_role")
+	if session_role not in WINDOW_BYPASS_ROLES and not is_submit_window_open(doc.business_date):
+		open_dt, close_dt = submit_window(doc.business_date)
+		frappe.throw(
+			frappe._(
+				"This voucher can only be submitted between {open} and {close}."
+			).format(
+				open=open_dt.strftime("%d %b %Y %H:%M"),
+				close=close_dt.strftime("%d %b %Y %H:%M"),
+			),
+			frappe.ValidationError,
+		)
+
+	# Late stamp (set before submit so it persists in the 0->1 save).
+	now_dt = frappe.utils.now_datetime()
+	doc.submitted_at = now_dt
+	doc.submission_timeliness = lateness(doc.business_date, now_dt)
+
 	# Submit — triggers on_submit -> _audit("voucher.travel.submitted", ...)
 	doc.submit()
 
@@ -500,8 +568,98 @@ def submit_travel_voucher_draft(voucher_name: str) -> dict:
 		"name": doc.name,
 		"docstatus": doc.docstatus,
 		"total_amount": doc.total_amount,
-		"submitted_at": str(frappe.utils.now_datetime()),
+		"submitted_at": str(now_dt),
+		"submission_timeliness": doc.submission_timeliness,
 	}
+
+
+def _require_voucher_reopener(submitter_role: str) -> None:
+	"""Gate for reopen_travel_voucher: Admin, HR, or the functional head who
+	oversees `submitter_role` (Head of Engineers for Field Engineer / NSE;
+	Head of Stores for Store Executive). Derived from VOUCHER_APPROVER_SETS
+	so it stays in lockstep with the approver mapping."""
+	role = (frappe.session.data or {}).get("vecrm_employee_role")
+	if role in ("Admin", "HR"):
+		return
+	from vecrm.vecrm.utils.roles import VOUCHER_APPROVER_SETS
+
+	if role and role in VOUCHER_APPROVER_SETS.get(submitter_role, []):
+		return
+	frappe.throw(
+		frappe._("You are not permitted to reopen this voucher."),
+		frappe.PermissionError,
+	)
+
+
+@frappe.whitelist()
+def reopen_travel_voucher(voucher_name: str, reason: str = "") -> dict:
+	"""Manager reopens a submitted Travel Voucher so the submitter can correct
+	and resubmit it within 24 hours, after which it re-locks. Gated to the
+	submitter's functional head (Head of Engineers / Head of Stores), HR, or
+	Admin.
+
+	Mechanism (max reuse): performs the same state transition as a rejection,
+	so the voucher becomes editable via the existing resubmit-via-edit flow,
+	and stamps reopened / reopened_by / reopened_until = now + 24h. The rep
+	edits and resubmits exactly like a rejected voucher;
+	voucher_resubmit_travel enforces the 24h deadline, and
+	relock_expired_reopened_vouchers (scheduled) returns any un-resubmitted
+	reopen to the approval queue so nothing is stranded.
+	"""
+	if not frappe.db.exists("VECRM Travel Voucher", voucher_name):
+		frappe.throw(
+			f"Travel Voucher {voucher_name!r} does not exist.",
+			frappe.ValidationError,
+		)
+
+	voucher = frappe.get_doc("VECRM Travel Voucher", voucher_name)
+	_require_voucher_reopener(voucher.submitter_role)
+
+	if voucher.docstatus != 1:
+		frappe.throw(
+			"Only a submitted voucher can be reopened.", frappe.ValidationError
+		)
+
+	actor = (frappe.session.data or {}).get("vecrm_employee_phone") or frappe.session.user
+	actor_role = (frappe.session.data or {}).get("vecrm_employee_role")
+	until = frappe.utils.add_to_date(frappe.utils.now_datetime(), hours=24)
+
+	# Transition to the editable (rejected-style) state + reopen stamps. db_set
+	# avoids the controller cycle (same pattern as approve/reject).
+	voucher.db_set("approval_status", "Rejected", update_modified=False)
+	voucher.db_set("approved_by_employee", None, update_modified=False)
+	voucher.db_set("approved_by_role", None, update_modified=False)
+	voucher.db_set("approved_at", None, update_modified=False)
+	voucher.db_set("rejected_by_employee", actor, update_modified=False)
+	voucher.db_set("rejected_by_role", actor_role, update_modified=False)
+	voucher.db_set("rejected_at", frappe.utils.now(), update_modified=False)
+	voucher.db_set(
+		"rejection_reason",
+		(reason or "").strip() or "Reopened for corrections.",
+		update_modified=False,
+	)
+	voucher.db_set("reopened", 1, update_modified=False)
+	voucher.db_set("reopened_by", actor, update_modified=False)
+	voucher.db_set("reopened_until", until, update_modified=False)
+
+	# Notify the submitter (best-effort).
+	try:
+		from vecrm.notifications import _employee_email, _tokens_for_user, send_push
+
+		email = _employee_email(voucher.submitter)
+		if email:
+			tokens = _tokens_for_user(email)
+			if tokens:
+				send_push(
+					tokens,
+					"Voucher reopened for edits",
+					f"{voucher.name} was reopened — edit & resubmit within 24 hours.",
+					{"screen": "vouchers", "voucher": voucher.name, "doctype": voucher.doctype},
+				)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "reopen_travel_voucher notify")
+
+	return {"name": voucher.name, "reopened_until": str(until)}
 
 
 # ============================================================================

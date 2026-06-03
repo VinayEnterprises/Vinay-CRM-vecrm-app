@@ -31,6 +31,7 @@ from frappe import _
 from frappe.model.document import Document
 
 from vecrm.vecrm.voucher_counter import fy_label, next_number
+from vecrm.vecrm.utils.roles import VOUCHER_APPROVER_SETS
 
 
 class VECRMExpenseVoucher(Document):
@@ -133,12 +134,19 @@ class VECRMExpenseVoucher(Document):
 
         Mirrors Travel Voucher's before_submit. The approver_set is a
         JSON-encoded list of role names eligible to approve this voucher.
-        For now (and per S23 spec): same as Travel Voucher — every Expense
-        Voucher can be approved by Sales Head, HR, or Admin regardless
-        of submitter role. Hardcoded; if amount-threshold logic is added
-        later (e.g. >₹X requires Admin), it goes here.
+        Unified with Travel Voucher: approval is now ROLE-AWARE, using the
+        shared VOUCHER_APPROVER_SETS (single source of truth in
+        vecrm.vecrm.utils.roles). So a Store Executive's expense voucher
+        routes to Head of Stores / HR / Admin, a Network Security Engineer's
+        to Head of Engineers / HR / Admin, etc. — matching how the same
+        submitter's travel voucher routes. (Previously hardcoded to
+        Sales Head / HR / Admin for every role.)
         """
-        approver_roles = ["Sales Head", "HR", "Admin"]
+        approver_roles = VOUCHER_APPROVER_SETS.get(self.submitter_role, [])
+        if not approver_roles:
+            frappe.throw(
+                f"submitter_role '{self.submitter_role}' has no approver mapping."
+            )
         self.approver_set = json.dumps(approver_roles)
 
     def on_submit(self) -> None:
@@ -375,11 +383,15 @@ def voucher_resubmit_expense(
       - Audit event: voucher.expense.resubmitted (vs travel)
     All hook + validate semantics are otherwise identical.
     """
-    if voucher.approval_status != "Rejected":
+    # Two edit paths (mirrors voucher_resubmit_travel):
+    #   1. Rejected (docstatus=1) — resubmit-in-place.
+    #   2. Draft (docstatus=0) — edit a saved draft; save keeps it a draft.
+    if voucher.approval_status != "Rejected" and voucher.docstatus != 0:
         frappe.throw(
-            f"Voucher {voucher.name} is not in Rejected state "
-            f"(approval_status={voucher.approval_status!r}); only Rejected "
-            f"vouchers can be resubmitted via edit.",
+            f"Voucher {voucher.name} cannot be edited here "
+            f"(approval_status={voucher.approval_status!r}, "
+            f"docstatus={voucher.docstatus}); only Rejected or draft vouchers "
+            f"are editable via this path.",
             frappe.ValidationError,
         )
 

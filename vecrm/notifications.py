@@ -418,11 +418,14 @@ def notify_voucher_submitted(doc, method):
 		)
 		submitter_role = submitter_employee[0].role if submitter_employee else None
 
-		target_roles = ["Admin", "HR"]
-		if submitter_role == "Field Engineer":
-			target_roles.append("Head of Engineers")
-		elif submitter_role == "Sales Rep":
-			target_roles.append("Sales Head")
+		# Recipients = the roles eligible to approve this submitter's voucher
+		# (their functional head + HR + Admin), from the single source of
+		# truth shared with the voucher controllers. Covers all roles incl.
+		# Network Security Engineer -> Head of Engineers, Store Executive ->
+		# Head of Stores. Falls back to Admin/HR for any unmapped role.
+		from vecrm.vecrm.utils.roles import VOUCHER_APPROVER_SETS
+
+		target_roles = VOUCHER_APPROVER_SETS.get(submitter_role, ["Admin", "HR"])
 
 		approver_employees = frappe.get_all(
 			"VECRM Employee",
@@ -540,3 +543,96 @@ def voucher_approver_payment_reminder():
 					)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications.voucher_approver_payment_reminder")
+
+
+def _notify_employee(submitter_phone, title, body):
+	"""Best-effort FCM push to a submitter (by VECRM Employee phone-id)."""
+	try:
+		email = _employee_email(submitter_phone)
+		if not email:
+			return
+		tokens = _tokens_for_user(email)
+		if tokens:
+			send_push(tokens, title, body, {"screen": "vouchers"})
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "notifications._notify_employee")
+
+
+def auto_submit_closed_period_vouchers():
+	"""Scheduled 18th & 3rd at 00:05 IST. Auto-submit the consolidated TRAVEL
+	draft for the period whose grace window just closed; stamp Auto-Submitted
+	and notify the rep. Empty drafts are skipped with a 'no voucher filed'
+	notice (an empty voucher is never pushed through)."""
+	from datetime import date, timedelta
+	from vecrm.vecrm.utils.voucher_period import period_key
+
+	today = frappe.utils.getdate(frappe.utils.today())
+	if today.day == 18:
+		anchor = date(today.year, today.month, 1)            # H1 this month
+	elif today.day == 3:
+		prev_last = today.replace(day=1) - timedelta(days=1)
+		anchor = date(prev_last.year, prev_last.month, 16)   # H2 previous month
+	else:
+		return
+	target = period_key(anchor)
+
+	for row in frappe.get_all(
+		"VECRM Travel Voucher",
+		filters={"docstatus": 0},
+		fields=["name", "submitter", "business_date"],
+	):
+		if not row.business_date or period_key(row.business_date) != target:
+			continue
+		try:
+			doc = frappe.get_doc("VECRM Travel Voucher", row.name)
+			if not doc.visit_lines:
+				_notify_employee(
+					doc.submitter,
+					"No voucher filed",
+					f"No travel voucher was filed for {target}. Nothing was submitted.",
+				)
+				continue
+			doc.submitted_at = frappe.utils.now_datetime()
+			doc.submission_timeliness = "Auto-Submitted"
+			doc.submit()
+			frappe.db.commit()
+			_notify_employee(
+				doc.submitter,
+				"Voucher auto-submitted",
+				f"Your {target} travel voucher {doc.name} was auto-submitted for approval.",
+			)
+		except Exception:
+			frappe.db.rollback()
+			frappe.log_error(frappe.get_traceback(), "auto_submit_closed_period_vouchers")
+
+
+def relock_expired_reopened_vouchers():
+	"""Scheduled daily. A voucher reopened by a manager but not resubmitted
+	within its 24h window is returned to the approval queue (Pending) so it is
+	never stranded in the editable 'Rejected' state."""
+	now = frappe.utils.now_datetime()
+	for row in frappe.get_all(
+		"VECRM Travel Voucher",
+		filters={"reopened": 1, "docstatus": 1, "approval_status": "Rejected"},
+		fields=["name", "submitter", "reopened_until"],
+	):
+		if not row.reopened_until or frappe.utils.get_datetime(row.reopened_until) >= now:
+			continue
+		try:
+			doc = frappe.get_doc("VECRM Travel Voucher", row.name)
+			doc.db_set("approval_status", "Pending", update_modified=False)
+			doc.db_set("rejected_by_employee", None, update_modified=False)
+			doc.db_set("rejected_by_role", None, update_modified=False)
+			doc.db_set("rejected_at", None, update_modified=False)
+			doc.db_set("rejection_reason", None, update_modified=False)
+			doc.db_set("reopened", 0, update_modified=False)
+			doc.db_set("reopened_until", None, update_modified=False)
+			frappe.db.commit()
+			_notify_employee(
+				doc.submitter,
+				"Reopen window closed",
+				f"The 24-hour edit window for {doc.name} closed; it's back in the approval queue.",
+			)
+		except Exception:
+			frappe.db.rollback()
+			frappe.log_error(frappe.get_traceback(), "relock_expired_reopened_vouchers")

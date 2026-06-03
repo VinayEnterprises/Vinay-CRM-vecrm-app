@@ -53,7 +53,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Role",
-   "options": "Admin\nSales Head\nHR\nSales Rep\nField Engineer\nHead of Engineers",
+   "options": "Admin\nSales Head\nHR\nSales Rep\nField Engineer\nHead of Engineers\nNetwork Security Engineer\nStore Executive\nHead of Stores",
    "reqd": 1
   },
   {

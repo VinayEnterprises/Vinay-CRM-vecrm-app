@@ -18,12 +18,37 @@ from typing import Final
 
 
 EMPLOYEE_ROLE_TO_FRAPPE_ROLES: Final[dict[str, list[str]]] = {
-    "Admin":             ["VECRM Admin", "VECRM Submitter", "VECRM Approver"],
-    "Sales Head":        ["VECRM Submitter", "VECRM Approver"],
-    "HR":                ["VECRM Approver"],
-    "Sales Rep":         ["VECRM Submitter"],
-    "Field Engineer":    ["VECRM Submitter"],
-    "Head of Engineers": ["VECRM Approver"],
+    "Admin":                     ["VECRM Admin", "VECRM Submitter", "VECRM Approver"],
+    "Sales Head":                ["VECRM Submitter", "VECRM Approver"],
+    "HR":                        ["VECRM Approver"],
+    "Sales Rep":                 ["VECRM Submitter"],
+    "Field Engineer":            ["VECRM Submitter"],
+    "Head of Engineers":         ["VECRM Approver"],
+    # Added per operator spec: new roles mirror existing ones' capabilities.
+    "Network Security Engineer": ["VECRM Submitter"],   # like Field Engineer
+    "Store Executive":           ["VECRM Submitter"],   # like Field Engineer
+    "Head of Stores":            ["VECRM Approver"],     # like Head of Engineers
+}
+
+
+# Who may approve a voucher submitted by each employee role. SINGLE SOURCE
+# OF TRUTH — shared by Travel Voucher (before_insert eligibility gate +
+# before_submit approver snapshot), Expense Voucher (before_submit
+# snapshot — expense approval was unified to be role-aware, matching
+# travel), and notify_voucher_submitted (push recipients). HR is an
+# approver-only role (never a submitter), so it has no entry here.
+#
+# Routing: each submitter escalates to their functional head, then HR /
+# Admin. Heads / managers self-escalate to HR / Admin (no peer-approval).
+VOUCHER_APPROVER_SETS: Final[dict[str, list[str]]] = {
+    "Sales Rep":                 ["Sales Head", "HR", "Admin"],
+    "Field Engineer":            ["Head of Engineers", "HR", "Admin"],
+    "Network Security Engineer": ["Head of Engineers", "HR", "Admin"],
+    "Store Executive":           ["Head of Stores", "HR", "Admin"],
+    "Sales Head":                ["HR", "Admin"],
+    "Head of Engineers":         ["HR", "Admin"],
+    "Head of Stores":            ["HR", "Admin"],
+    "Admin":                     ["HR", "Admin"],
 }
 
 

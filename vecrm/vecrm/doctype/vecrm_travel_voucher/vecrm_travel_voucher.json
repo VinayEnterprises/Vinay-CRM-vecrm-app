@@ -32,7 +32,12 @@
   "payment_status",
   "paid_at",
   "paid_by_employee",
-  "paid_by_role"
+  "paid_by_role",
+  "submitted_at",
+  "submission_timeliness",
+  "reopened",
+  "reopened_by",
+  "reopened_until"
  ],
  "fields": [
   {
@@ -210,6 +215,44 @@
    "fieldtype": "Data",
    "label": "Paid By Role",
    "read_only": 1
+  },
+  {
+   "fieldname": "submitted_at",
+   "fieldtype": "Datetime",
+   "label": "Submitted At",
+   "read_only": 1,
+   "allow_on_submit": 1
+  },
+  {
+   "fieldname": "submission_timeliness",
+   "fieldtype": "Select",
+   "label": "Submission Timeliness",
+   "options": "\nOn Time\nLate\nAuto-Submitted",
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "reopened",
+   "fieldtype": "Check",
+   "label": "Reopened",
+   "default": "0",
+   "read_only": 1,
+   "allow_on_submit": 1
+  },
+  {
+   "fieldname": "reopened_by",
+   "fieldtype": "Data",
+   "label": "Reopened By",
+   "read_only": 1,
+   "allow_on_submit": 1
+  },
+  {
+   "fieldname": "reopened_until",
+   "fieldtype": "Datetime",
+   "label": "Reopened Until",
+   "read_only": 1,
+   "allow_on_submit": 1
   }
  ],
  "idx": 0,

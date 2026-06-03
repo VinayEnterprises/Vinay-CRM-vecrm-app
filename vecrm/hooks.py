@@ -222,6 +222,20 @@ scheduler_events = {
 		"0 18 * * 5": [
 			"vecrm.api.generate_weekly_meeting_report",
 		],
+		# Auto-submit consolidated TRAVEL drafts whose grace window just
+		# closed — 18th (H1) & 3rd (H2) at 00:05 IST. Stamps Auto-Submitted +
+		# notifies; empty drafts skipped with a "no voucher filed" notice.
+		"5 0 18 * *": [
+			"vecrm.notifications.auto_submit_closed_period_vouchers",
+		],
+		"5 0 3 * *": [
+			"vecrm.notifications.auto_submit_closed_period_vouchers",
+		],
+		# Re-lock expired manager reopens — daily 00:30 IST. Any reopened
+		# voucher past its 24h window returns to the approval queue.
+		"30 0 * * *": [
+			"vecrm.notifications.relock_expired_reopened_vouchers",
+		],
 		# Manager Daily Digest — daily 18:00 IST.
 		"0 18 * * *": [
 			"vecrm.notifications.manager_daily_digest",
