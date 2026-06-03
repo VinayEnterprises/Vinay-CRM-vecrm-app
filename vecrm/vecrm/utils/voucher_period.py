@@ -25,9 +25,12 @@ from datetime import date, datetime, time
 
 import frappe
 
-# Roles that bypass the submit-window gate entirely (managers backfilling on
-# a rep's behalf). Mirrors _check_voucher_date_cutoff's bypass set.
-WINDOW_BYPASS_ROLES = ("Admin", "Sales Head", "HR")
+# Roles that bypass the petrol/travel submit-window gate entirely. Per policy
+# (Jun 2026): ONLY Admin may submit outside the window; Sales Head and HR are
+# held to the period window like every other role. (Distinct from
+# _check_voucher_date_cutoff's deadline/backfill bypass, which is unchanged and
+# still applies to expense vouchers too — expense submission is adhoc.)
+WINDOW_BYPASS_ROLES = ("Admin",)
 
 
 def _last_day(year: int, month: int) -> int:
