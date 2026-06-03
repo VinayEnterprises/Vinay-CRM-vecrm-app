@@ -524,7 +524,7 @@ def voucher_approver_payment_reminder():
 			
 		approver_employees = frappe.get_all(
 			"VECRM Employee",
-			filters={"role": ["in", ["Admin", "HR", "Sales Head", "Head of Engineers"]]},
+			filters={"role": ["in", ["Admin", "HR", "Sales Head", "Head of Engineers", "Head of Stores"]]},
 			fields=["vecrm_email"],
 			ignore_permissions=True
 		)
