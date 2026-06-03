@@ -86,6 +86,28 @@ def _notify(emails, title: str, body: str, data: dict = None):
 		send_push(all_tokens, title, body, data)
 
 
+def cleanup_old_notifications():
+	"""Prune the VECRM Notification table (scheduler, daily).
+
+	Reminders write one bell row per user per fire, so the table grows
+	steadily. Delete read rows older than 30 days and ANY row older than 90
+	days. Best-effort; never raises."""
+	try:
+		read_cutoff = frappe.utils.add_days(frappe.utils.today(), -30)
+		hard_cutoff = frappe.utils.add_days(frappe.utils.today(), -90)
+		frappe.db.delete(
+			"VECRM Notification",
+			{"is_read": 1, "creation": ["<", read_cutoff]},
+		)
+		frappe.db.delete(
+			"VECRM Notification",
+			{"creation": ["<", hard_cutoff]},
+		)
+		frappe.db.commit()
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "notifications.cleanup_old_notifications")
+
+
 def _all_token_emails():
 	"""Distinct user_emails across all registered devices — the audience for
 	broadcast reminders (was: every active token)."""
