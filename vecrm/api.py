@@ -887,6 +887,8 @@ def create_lead(
 	meeting_brief: str = None,
 	contact_person_name: str = None,
 	contact_person_designation: str = None,
+	mobile_unavailable: int = 0,
+	email_unavailable: int = 0,
 ) -> dict:
 	"""Create a VECRM Lead from the portal.
 
@@ -939,38 +941,52 @@ def create_lead(
 	# boundary. Column-level reqd stays 0 (nullable) so the pre-S30 rows
 	# stay readable as NULL; mandatory-ness is enforced ONLY at create-time
 	# via this block. Forward-only; no backfill.
+	# PD-S32-LEAD-NO-CONTACT — coerce the "unavailable" flags up front. When a
+	# flag is set the matching field is stored NULL and its required + format
+	# check is skipped; default (both 0) is the unchanged mandatory path.
+	mobile_unavailable = 1 if int(mobile_unavailable or 0) else 0
+	email_unavailable = 1 if int(email_unavailable or 0) else 0
+
 	contact_number = (contact_number or "").strip()
-	if not contact_number:
+	if mobile_unavailable:
+		contact_number = None
+	elif not contact_number:
 		frappe.throw("Contact number is required.", frappe.ValidationError)
-	# _normalize_phone returns input unchanged on failure (no-throw,
-	# caller-decides contract — see helper docstring). For the create-lead
-	# path we want loud rejection, so post-check the canonical shape
-	# (+91- + 10 digits = 14 chars).
-	contact_number_norm = _normalize_phone(contact_number)
-	if not (contact_number_norm.startswith("+91-") and len(contact_number_norm) == 14):
-		frappe.throw(
-			f"Contact number must be a 10-digit Indian phone (got: {contact_number!r}).",
-			frappe.ValidationError,
-		)
-	contact_number = contact_number_norm
+	else:
+		# _normalize_phone returns input unchanged on failure; for create-lead
+		# we want loud rejection, so post-check the canonical +91-+10-digit shape.
+		contact_number = _normalize_phone(contact_number)
+		if not (contact_number.startswith("+91-") and len(contact_number) == 14):
+			frappe.throw(
+				f"Contact number must be a 10-digit Indian phone (got: {contact_number!r}).",
+				frappe.ValidationError,
+			)
 
 	contact_email = (contact_email or "").strip()
-	if not contact_email:
+	if email_unavailable:
+		contact_email = None
+	elif not contact_email:
 		frappe.throw("Contact email is required.", frappe.ValidationError)
-	# validate_email_address raises frappe.InvalidEmailAddressError on
-	# malformed input; we wrap to surface a ValidationError consistent
-	# with the other fields here.
-	try:
-		validate_email_address(contact_email, throw=True)
-	except Exception:
-		frappe.throw(
-			f"Contact email is not a valid email address (got: {contact_email!r}).",
-			frappe.ValidationError,
-		)
+	else:
+		# validate_email_address raises on malformed input; wrap to a
+		# ValidationError consistent with the other create-lead fields.
+		try:
+			validate_email_address(contact_email, throw=True)
+		except Exception:
+			frappe.throw(
+				f"Contact email is not a valid email address (got: {contact_email!r}).",
+				frappe.ValidationError,
+			)
 
 	meeting_brief = (meeting_brief or "").strip()
 	if not meeting_brief:
 		frappe.throw("Meeting brief is required.", frappe.ValidationError)
+
+	# PD-S32-LEAD-NO-CONTACT — a lead with neither phone nor email can't be
+	# followed up remotely; pin it to Cold (1) so it doesn't clutter the live
+	# pipeline. autoclose_uncontactable_leads sweeps it after 60 idle days.
+	if mobile_unavailable and email_unavailable:
+		priority_int = 1
 
 	# Dedup (PD-S30, revised): only an OPEN lead blocks a brand-new lead.
 	# Converted / Closed-Won / Closed-Lost leads may each spawn a fresh lead
@@ -1006,6 +1022,8 @@ def create_lead(
 	doc.contact_number = contact_number
 	doc.contact_email = contact_email
 	doc.meeting_brief = meeting_brief
+	doc.mobile_unavailable = mobile_unavailable
+	doc.email_unavailable = email_unavailable
 	# PD-S30-LEAD-CONTACT-FIELDS: optional contact-person fields
 	if contact_person_name:
 		doc.contact_person_name = contact_person_name.strip()
@@ -1050,6 +1068,54 @@ def create_lead(
 		"contact_person_name": doc.contact_person_name or "",
 		"contact_person_designation": doc.contact_person_designation or "",
 	}
+
+
+def autoclose_uncontactable_leads():
+	"""Daily janitor: close Open leads with NO contact channel + 60d idle.
+
+	A lead qualifies ONLY when BOTH mobile_unavailable and email_unavailable
+	are set (an intentional rep skip — never a legacy NULL-contact row), it is
+	still Open, and its last activity (latest touchpoint, else the row's
+	last-modified date) is more than 60 days ago. Matches move to Closed-Lost
+	with an appended closure_notes line, via doc.save so the normal
+	audit-ledger + owner-notification path fires. The flag gate means legacy
+	pre-S32 NULL-contact leads are never swept. PD-S32-LEAD-NO-CONTACT.
+	"""
+	from frappe.utils import getdate, add_days, now_datetime
+
+	cutoff = add_days(getdate(now_datetime()), -60)
+	names = frappe.get_all(
+		"VECRM Lead",
+		filters={"status": "Open", "mobile_unavailable": 1, "email_unavailable": 1},
+		pluck="name",
+	)
+	closed = 0
+	for name in names:
+		last_tp = frappe.db.sql(
+			"SELECT MAX(touchpoint_date) FROM `tabVECRM Lead Touchpoint` "
+			"WHERE lead = %s",
+			(name,),
+		)[0][0]
+		last_activity = (
+			getdate(last_tp)
+			if last_tp
+			else getdate(frappe.db.get_value("VECRM Lead", name, "modified"))
+		)
+		if last_activity > cutoff:
+			continue
+		doc = frappe.get_doc("VECRM Lead", name)
+		note = "Auto-closed: no contact channel, no activity 60d."
+		doc.closure_notes = (
+			note if not doc.closure_notes else f"{doc.closure_notes}\n{note}"
+		)
+		doc.status = "Closed-Lost"
+		doc.save(ignore_permissions=True)
+		closed += 1
+	frappe.db.commit()
+	frappe.logger().info(
+		f"autoclose_uncontactable_leads: scanned={len(names)} closed={closed}"
+	)
+	return {"scanned": len(names), "closed": closed}
 
 
 @frappe.whitelist()

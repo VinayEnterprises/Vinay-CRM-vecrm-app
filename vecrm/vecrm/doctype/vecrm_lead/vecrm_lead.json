@@ -12,6 +12,8 @@
   "contact_date",
   "contact_number",
   "contact_email",
+  "mobile_unavailable",
+  "email_unavailable",
   "contact_person_name",
   "contact_person_designation",
   "meeting_brief",
@@ -60,6 +62,20 @@
    "fieldtype": "Data",
    "label": "Contact Email",
    "description": "Validated at API boundary via frappe.utils.validate_email_address. Mandatory at create-time; column nullable for pre-S30 backward compat."
+  },
+  {
+   "fieldname": "mobile_unavailable",
+   "fieldtype": "Check",
+   "label": "Mobile Unavailable",
+   "default": "0",
+   "description": "Rep marked 'No mobile' at create-time — contact_number is intentionally NULL (not legacy-missing). With email_unavailable also set, create_lead pins priority to 1 and the lead enters the 60-day no-activity auto-close. PD-S32-LEAD-NO-CONTACT."
+  },
+  {
+   "fieldname": "email_unavailable",
+   "fieldtype": "Check",
+   "label": "Email Unavailable",
+   "default": "0",
+   "description": "Rep marked 'No email' at create-time — contact_email is intentionally NULL (not legacy-missing). See mobile_unavailable. PD-S32-LEAD-NO-CONTACT."
   },
   {
    "fieldname": "contact_person_name",

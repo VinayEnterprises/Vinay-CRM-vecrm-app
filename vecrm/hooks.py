@@ -218,6 +218,11 @@ doc_events = {
 
 scheduler_events = {
 	"cron": {
+		# PD-S32-LEAD-NO-CONTACT — close uncontactable leads (both contact
+		# flags set) after 60 days of no activity. Daily 02:00 IST.
+		"0 2 * * *": [
+			"vecrm.api.autoclose_uncontactable_leads",
+		],
 		# PD-S29 weekly meeting report — Fri 18:00 IST.
 		"0 18 * * 5": [
 			"vecrm.api.generate_weekly_meeting_report",
