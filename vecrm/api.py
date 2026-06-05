@@ -2261,24 +2261,31 @@ def get_dashboard_summary() -> dict:
 	user_phone = frappe.session.data.get("vecrm_employee_phone")
 	if not user_phone:
 		frappe.throw("Not authenticated", frappe.AuthenticationError)
+
+	# Plain submitters see ONLY their own vouchers; approvers (HR / Admin /
+	# Sales Head / heads / Head of Accounts & HR) see the org-wide pending
+	# queue + payouts. Stops a field engineer seeing org-wide totals.
+	from vecrm.vecrm.utils.roles import is_employee_approver
+	_dash_role = frappe.session.data.get("vecrm_employee_role")
+	own = {} if is_employee_approver(_dash_role) else {"submitter": user_phone}
 		
 	# Build TV summary
 	tv_pending = frappe.db.get_all("VECRM Travel Voucher", 
-		filters={"approval_status": "Pending"}, 
+		filters={"approval_status": "Pending", **own}, 
 		fields=["name", "total_amount"]
 	)
 	tv_paid = frappe.db.get_all("VECRM Travel Voucher", 
-		filters={"payment_status": "Paid"}, 
+		filters={"payment_status": "Paid", **own}, 
 		fields=["name", "total_amount"]
 	)
 	
 	# Build EV summary 
 	ev_pending = frappe.db.get_all("VECRM Expense Voucher", 
-		filters={"approval_status": "Pending"}, 
+		filters={"approval_status": "Pending", **own}, 
 		fields=["name", "total_amount"]
 	)
 	ev_paid = frappe.db.get_all("VECRM Expense Voucher", 
-		filters={"payment_status": "Paid"}, 
+		filters={"payment_status": "Paid", **own}, 
 		fields=["name", "total_amount"]
 	)
 	
@@ -2732,6 +2739,29 @@ def _require_admin_session() -> None:
         )
 
 
+def _require_user_admin() -> None:
+    """Throw frappe.PermissionError unless the caller may manage users —
+    Admin OR Head of Accounts & HR. Gates create/update/list (NOT delete,
+    which stays Admin-only via _require_admin_session)."""
+    role = (frappe.session.data or {}).get("vecrm_employee_role")
+    if role not in ("Admin", "Head of Accounts & HR"):
+        frappe.throw(
+            frappe._("This action requires Admin or Head of Accounts & HR role."),
+            frappe.PermissionError,
+        )
+
+
+def _validate_assignable_role(role: str) -> None:
+    """Admin may assign any role; Head of Accounts & HR may assign
+    HR-and-below only (never Admin or its own tier)."""
+    caller = (frappe.session.data or {}).get("vecrm_employee_role")
+    if caller == "Head of Accounts & HR" and role in ("Admin", "Head of Accounts & HR"):
+        frappe.throw(
+            frappe._("Head of Accounts & HR cannot assign the '{0}' role.").format(role),
+            frappe.PermissionError,
+        )
+
+
 def _require_hr_or_admin() -> None:
     """Throw frappe.PermissionError if caller is not HR or Admin."""
     role = (frappe.session.data or {}).get("vecrm_employee_role")
@@ -3039,7 +3069,7 @@ def admin_list_employees(
     EXCLUDES auth credential fields (password_hash, pin_hash, etc.) —
     these are never sent to the portal.
     """
-    _require_admin_session()
+    _require_user_admin()
 
     page_int = int(page)
     limit_int = int(limit)
@@ -3055,7 +3085,7 @@ def admin_list_employees(
         filters["vecrm_account_status"] = status
     if role:
         valid_roles = (
-            "Admin", "Sales Head", "HR",
+            "Admin", "Sales Head", "HR", "Head of Accounts & HR",
             "Sales Rep", "Field Engineer", "Head of Engineers",
             "Network Security Engineer", "Store Executive", "Head of Stores",
         )
@@ -3159,7 +3189,7 @@ def admin_create_employee(
         controller throws), duplicate phone (unique constraint),
         duplicate email.
     """
-    _require_admin_session()
+    _require_user_admin()
 
     # Required-field shape narrowing (BFF should pre-validate, but
     # whitelist endpoints defend in depth).
@@ -3181,7 +3211,7 @@ def admin_create_employee(
             frappe.ValidationError,
         )
     valid_roles = (
-        "Admin", "Sales Head", "HR",
+        "Admin", "Sales Head", "HR", "Head of Accounts & HR",
         "Sales Rep", "Field Engineer", "Head of Engineers",
         "Network Security Engineer", "Store Executive", "Head of Stores",
     )
@@ -3190,6 +3220,7 @@ def admin_create_employee(
             frappe._("Invalid role '{0}'.").format(role),
             frappe.ValidationError,
         )
+    _validate_assignable_role(role)
     # Phone format defense-in-depth: enforce +91-XXXXXXXXXX shape.
     # Controller has set_only_once=1 + unique=1 but no format check;
     # without this, an admin could create an employee with malformed
@@ -3281,7 +3312,7 @@ def admin_update_employee(
         invalid base_city (controller throws), invalid email format.
       DoesNotExistError if employee doesn't exist.
     """
-    _require_admin_session()
+    _require_user_admin()
 
     employee = (employee or "").strip()
     if not employee:
@@ -3297,7 +3328,7 @@ def admin_update_employee(
         doc.employee_name = employee_name.strip()
     if role:
         valid_roles = (
-            "Admin", "Sales Head", "HR",
+            "Admin", "Sales Head", "HR", "Head of Accounts & HR",
             "Sales Rep", "Field Engineer", "Head of Engineers",
             "Network Security Engineer", "Store Executive", "Head of Stores",
         )
@@ -3306,6 +3337,7 @@ def admin_update_employee(
                 frappe._("Invalid role '{0}'.").format(role),
                 frappe.ValidationError,
             )
+        _validate_assignable_role(role)
         doc.role = role
     if vecrm_base_city:
         doc.vecrm_base_city = vecrm_base_city.strip()

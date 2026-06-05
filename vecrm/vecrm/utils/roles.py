@@ -28,6 +28,9 @@ EMPLOYEE_ROLE_TO_FRAPPE_ROLES: Final[dict[str, list[str]]] = {
     "Network Security Engineer": ["VECRM Submitter"],   # like Field Engineer
     "Store Executive":           ["VECRM Submitter"],   # like Field Engineer
     "Head of Stores":            ["VECRM Approver"],     # like Head of Engineers
+    # Head of Accounts & HR: HR-tier approver + raises own vouchers
+    # (submitter). NOT VECRM Admin — user-creation is gated separately.
+    "Head of Accounts & HR":     ["VECRM Submitter", "VECRM Approver"],
 }
 
 
@@ -41,14 +44,17 @@ EMPLOYEE_ROLE_TO_FRAPPE_ROLES: Final[dict[str, list[str]]] = {
 # Routing: each submitter escalates to their functional head, then HR /
 # Admin. Heads / managers self-escalate to HR / Admin (no peer-approval).
 VOUCHER_APPROVER_SETS: Final[dict[str, list[str]]] = {
-    "Sales Rep":                 ["Sales Head", "HR", "Admin"],
-    "Field Engineer":            ["Head of Engineers", "HR", "Admin"],
-    "Network Security Engineer": ["Head of Engineers", "HR", "Admin"],
-    "Store Executive":           ["Head of Stores", "HR", "Admin"],
-    "Sales Head":                ["HR", "Admin"],
-    "Head of Engineers":         ["HR", "Admin"],
-    "Head of Stores":            ["HR", "Admin"],
-    "Admin":                     ["HR", "Admin"],
+    "Sales Rep":                 ["Sales Head", "HR", "Head of Accounts & HR", "Admin"],
+    "Field Engineer":            ["Head of Engineers", "HR", "Head of Accounts & HR", "Admin"],
+    "Network Security Engineer": ["Head of Engineers", "HR", "Head of Accounts & HR", "Admin"],
+    "Store Executive":           ["Head of Stores", "HR", "Head of Accounts & HR", "Admin"],
+    "Sales Head":                ["HR", "Head of Accounts & HR", "Admin"],
+    "Head of Engineers":         ["HR", "Head of Accounts & HR", "Admin"],
+    "Head of Stores":            ["HR", "Head of Accounts & HR", "Admin"],
+    "Admin":                     ["HR", "Head of Accounts & HR", "Admin"],
+    # Its own vouchers escalate to Admin (sits just below Admin; no
+    # self/peer approval).
+    "Head of Accounts & HR":     ["Admin"],
 }
 
 
