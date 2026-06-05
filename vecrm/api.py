@@ -1950,6 +1950,29 @@ def mark_notification_read(name: str) -> dict[str, Any]:
     return {"ok": True}
 
 
+@frappe.whitelist(methods=["POST"])
+def mark_all_notifications_read() -> dict[str, Any]:
+    """Mark ALL of the caller's unread notifications as read.
+
+    Bulk companion to mark_notification_read. Scoped to the session's
+    vecrm_email; the shared portal user cannot write the rows directly, so
+    the update runs after resolving identity from session data.
+    """
+    email = frappe.session.data.get("vecrm_email")
+    if not email:
+        frappe.throw(_("Not authenticated as VECRM Employee"), frappe.PermissionError)
+
+    frappe.db.set_value(
+        "VECRM Notification",
+        {"for_email": email, "is_read": 0},
+        "is_read",
+        1,
+        update_modified=False,
+    )
+    frappe.db.commit()
+    return {"ok": True}
+
+
 # ============================================================
 # S28 PD-S28-AUTH-RESET-BACKEND-API — token mgmt + credential write
 #
