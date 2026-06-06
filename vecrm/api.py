@@ -5627,3 +5627,38 @@ def get_call_stats(from_date, to_date, employee=None):
         "unique_leads_touched": len(unique_leads),
     }
 
+
+@frappe.whitelist()
+def find_lead_by_number(contact_number):
+    """Find VECRM Leads matching a dialed number by its LAST 10 DIGITS.
+
+    Device call numbers arrive as "+919377918394"; leads store contact_number
+    in mixed forms ("+91-9377918394", bare 10-digit, NULL). Both sides are
+    reduced to their last 10 digits (RIGHT(REGEXP_REPLACE(...,'[^0-9]',''),10)
+    in SQL; re.sub on the input), so a dial auto-matches its Lead regardless of
+    +91 prefix / dash formatting. MariaDB 11.8 supports REGEXP_REPLACE.
+
+    Returns up to 10 matches, newest first, as a native list of dicts — the
+    same return convention as the other read methods (frappe.get_all / list
+    returns); Frappe serialises it. Empty list when there is no usable number.
+    """
+    import re
+
+    digits = re.sub(r"\D", "", contact_number or "")
+    last10 = digits[-10:] if len(digits) >= 10 else digits
+    if not last10:
+        return []
+
+    return frappe.db.sql(
+        """
+        SELECT name, company_name, contact_person_name, contact_number,
+               status, priority, lead_owner, creating_employee
+        FROM `tabVECRM Lead`
+        WHERE RIGHT(REGEXP_REPLACE(contact_number, '[^0-9]', ''), 10) = %s
+        ORDER BY modified DESC
+        LIMIT 10
+        """,
+        (last10,),
+        as_dict=True,
+    )
+
