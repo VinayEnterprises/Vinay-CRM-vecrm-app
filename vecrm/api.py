@@ -5662,3 +5662,59 @@ def find_lead_by_number(contact_number):
         as_dict=True,
     )
 
+
+@frappe.whitelist()
+def get_team_call_stats(from_date, to_date):
+    """Per-rep call stats for the manager leaderboard, over [from_date, to_date].
+
+    Same auth model as get_call_stats: a non-admin caller gets ONLY their own
+    row; an Admin gets every rep. North-star metric is conversations
+    (is_conversation = 1). Returns a native list of dicts, ordered by
+    conversations DESC then talk time — the house convention (no frappe.as_json).
+    """
+    from vecrm.vecrm.utils.roles import is_employee_admin
+
+    session = get_session_employee()
+    me = session["employee"]
+    admin = is_employee_admin(session["role"])
+
+    conditions = "DATE(cl.call_datetime) BETWEEN %(from_date)s AND %(to_date)s"
+    params = {"from_date": from_date, "to_date": to_date}
+    if not admin:
+        conditions += " AND cl.caller = %(me)s"
+        params["me"] = me
+
+    rows = frappe.db.sql(
+        f"""
+        SELECT cl.caller,
+               emp.employee_name,
+               COUNT(*)                                                    AS total_dials,
+               COALESCE(SUM(cl.is_conversation), 0)                        AS conversations,
+               COALESCE(SUM(cl.duration_seconds), 0)                       AS talk_time_seconds,
+               SUM(CASE WHEN cl.disposition = 'Interested/Demo' THEN 1 ELSE 0 END) AS demos,
+               COUNT(DISTINCT cl.lead)                                     AS unique_leads_touched
+        FROM `tabVECRM Call Log` cl
+        LEFT JOIN `tabVECRM Employee` emp ON emp.name = cl.caller
+        WHERE {conditions}
+        GROUP BY cl.caller, emp.employee_name
+        ORDER BY conversations DESC, talk_time_seconds DESC
+        """,
+        params,
+        as_dict=True,
+    )
+
+    for r in rows:
+        # SUM()/COUNT() come back as Decimal/int depending on the driver;
+        # normalise to int so the rate maths (and JSON) stay clean.
+        r["total_dials"] = int(r.get("total_dials") or 0)
+        r["conversations"] = int(r.get("conversations") or 0)
+        r["talk_time_seconds"] = int(r.get("talk_time_seconds") or 0)
+        r["demos"] = int(r.get("demos") or 0)
+        r["unique_leads_touched"] = int(r.get("unique_leads_touched") or 0)
+        r["conversation_rate"] = (
+            round(100.0 * r["conversations"] / r["total_dials"], 1)
+            if r["total_dials"]
+            else 0.0
+        )
+    return rows
+
