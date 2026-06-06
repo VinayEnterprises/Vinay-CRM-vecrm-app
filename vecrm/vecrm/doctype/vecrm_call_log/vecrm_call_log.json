@@ -1,0 +1,150 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-06-06 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "caller",
+  "lead",
+  "contact_number",
+  "direction",
+  "call_datetime",
+  "duration_seconds",
+  "is_conversation",
+  "disposition",
+  "notes",
+  "next_followup_date",
+  "source"
+ ],
+ "fields": [
+  {
+   "fieldname": "caller",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Caller",
+   "options": "VECRM Employee",
+   "reqd": 1,
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "VECRM Employee (rep) who placed/received the call. Set server-side from session.data.vecrm_employee_phone by vecrm.api.log_call — never client-supplied."
+  },
+  {
+   "fieldname": "lead",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Lead",
+   "options": "VECRM Lead",
+   "description": "Optional VECRM Lead this call relates to."
+  },
+  {
+   "fieldname": "contact_number",
+   "fieldtype": "Data",
+   "label": "Contact Number",
+   "description": "The number dialled/received. Free-form for now; canonicalised later from the device call log."
+  },
+  {
+   "default": "Outbound",
+   "fieldname": "direction",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Direction",
+   "options": "Outbound\nInbound"
+  },
+  {
+   "fieldname": "call_datetime",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Call Datetime",
+   "reqd": 1,
+   "description": "When the call occurred. Supplied by the device call log or set to now() at manual log time."
+  },
+  {
+   "default": "0",
+   "fieldname": "duration_seconds",
+   "fieldtype": "Int",
+   "label": "Duration (seconds)",
+   "description": "Connected-call duration in seconds. Stored as-is; the device call log supplies it later. Drives is_conversation with disposition."
+  },
+  {
+   "default": "0",
+   "fieldname": "is_conversation",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Conversation",
+   "read_only": 1,
+   "description": "Computed in the controller: 1 when the call connected (disposition not in No Answer/Busy/Switched Off/Wrong Number) AND duration_seconds >= CONVERSATION_MIN (30s)."
+  },
+  {
+   "fieldname": "disposition",
+   "fieldtype": "Select",
+   "label": "Disposition",
+   "options": "Connected\nNo Answer\nBusy\nSwitched Off\nWrong Number\nCallback Requested\nNot Interested\nInterested/Demo"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "next_followup_date",
+   "fieldtype": "Date",
+   "label": "Next Follow-Up Date"
+  },
+  {
+   "default": "Manual",
+   "fieldname": "source",
+   "fieldtype": "Select",
+   "label": "Source",
+   "options": "Device Call Log\nManual"
+  }
+ ],
+ "idx": 0,
+ "links": [],
+ "modified": "2026-06-06 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "VECRM",
+ "name": "VECRM Call Log",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "VECRM Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 0,
+   "print": 1,
+   "read": 1,
+   "role": "VECRM Submitter",
+   "write": 1
+  },
+  {
+   "delete": 0,
+   "print": 1,
+   "read": 1,
+   "role": "VECRM Approver"
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

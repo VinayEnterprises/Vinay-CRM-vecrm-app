@@ -5507,3 +5507,123 @@ def release_app_update_ci(
         frappe.throw("Invalid or missing release token.", frappe.PermissionError)
     return _publish_app_update(version, message, download_url)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Call tracking (VECRM Call Log) — inside-sales dial logging + stats.
+# caller is ALWAYS the session employee; never client-supplied.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@frappe.whitelist()
+def log_call(lead=None, contact_number=None, call_datetime=None,
+             duration_seconds=0, disposition=None, notes=None,
+             next_followup_date=None, direction="Outbound", source="Manual"):
+    """Create a VECRM Call Log for the session rep.
+
+    caller is resolved from the session employee (get_session_employee) — the
+    client cannot supply it. duration_seconds is stored as-is; the controller
+    derives is_conversation. Commits explicitly (bench/web write). Returns the
+    new log name + computed is_conversation flag.
+    """
+    from frappe.utils import now_datetime
+
+    caller = get_session_employee()["employee"]
+
+    doc = frappe.get_doc({
+        "doctype": "VECRM Call Log",
+        "caller": caller,
+        "lead": lead or None,
+        "contact_number": contact_number,
+        "direction": direction or "Outbound",
+        "call_datetime": call_datetime or now_datetime(),
+        "duration_seconds": int(duration_seconds or 0),
+        "disposition": disposition or None,
+        "notes": notes,
+        "next_followup_date": next_followup_date or None,
+        "source": source or "Manual",
+    })
+    doc.insert(ignore_permissions=True)
+    frappe.db.commit()
+    return {"name": doc.name, "is_conversation": int(doc.is_conversation)}
+
+
+@frappe.whitelist()
+def get_today_calls(date=None):
+    """Return the session rep's call logs for `date` (default today, site tz =
+    Asia/Kolkata), newest first.
+    """
+    from frappe.utils import today
+
+    caller = get_session_employee()["employee"]
+    target = date or today()
+
+    return frappe.get_all(
+        "VECRM Call Log",
+        filters=[
+            ["caller", "=", caller],
+            ["call_datetime", ">=", f"{target} 00:00:00"],
+            ["call_datetime", "<=", f"{target} 23:59:59"],
+        ],
+        fields=[
+            "name", "lead", "contact_number", "call_datetime",
+            "duration_seconds", "disposition", "is_conversation",
+        ],
+        order_by="call_datetime desc",
+    )
+
+
+@frappe.whitelist()
+def get_call_stats(from_date, to_date, employee=None):
+    """Aggregate call stats for a date range.
+
+    Scope: a non-admin rep is always scoped to their own logs (the `employee`
+    arg is ignored for them — no peeking at peers). An Admin may pass
+    employee=<phone> to scope to one rep, or employee=None to aggregate across
+    ALL reps. Returns a plain (as_json-safe) dict.
+    """
+    from vecrm.vecrm.utils.roles import is_employee_admin
+
+    session = get_session_employee()
+    if is_employee_admin(session["role"]):
+        scope_employee = employee or None  # None → all reps
+    else:
+        scope_employee = session["employee"]
+
+    filters = [
+        ["call_datetime", ">=", f"{from_date} 00:00:00"],
+        ["call_datetime", "<=", f"{to_date} 23:59:59"],
+    ]
+    if scope_employee:
+        filters.append(["caller", "=", scope_employee])
+
+    rows = frappe.get_all(
+        "VECRM Call Log",
+        filters=filters,
+        fields=["lead", "duration_seconds", "is_conversation", "disposition"],
+    )
+
+    total_dials = len(rows)
+    conversations = sum(1 for r in rows if r.is_conversation)
+    talk_time_seconds = sum(int(r.duration_seconds or 0) for r in rows)
+    connect_rate = round(conversations / total_dials, 4) if total_dials else 0.0
+
+    disposition_breakdown: dict[str, int] = {}
+    unique_leads: set[str] = set()
+    for r in rows:
+        key = r.disposition or "Unspecified"
+        disposition_breakdown[key] = disposition_breakdown.get(key, 0) + 1
+        if r.lead:
+            unique_leads.add(r.lead)
+
+    return {
+        "from_date": str(from_date),
+        "to_date": str(to_date),
+        "employee": scope_employee,  # None = all reps (admin aggregate)
+        "total_dials": total_dials,
+        "conversations": conversations,
+        "talk_time_seconds": talk_time_seconds,
+        "connect_rate": connect_rate,
+        "disposition_breakdown": disposition_breakdown,
+        "unique_leads_touched": len(unique_leads),
+    }
+
