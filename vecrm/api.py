@@ -5526,8 +5526,26 @@ def log_call(lead=None, contact_number=None, call_datetime=None,
     new log name + computed is_conversation flag.
     """
     from frappe.utils import now_datetime
+    import re
 
     caller = get_session_employee()["employee"]
+
+    # STEP 3: Auto-resolve lead by number (last-10 match) when not supplied.
+    if not lead and contact_number:
+        digits = re.sub(r"\D", "", contact_number)
+        last10 = digits[-10:] if len(digits) >= 10 else digits
+        if last10:
+            matching_leads = frappe.db.sql(
+                """
+                SELECT name
+                FROM `tabVECRM Lead`
+                WHERE RIGHT(REGEXP_REPLACE(contact_number, '[^0-9]', ''), 10) = %s
+                """,
+                (last10,),
+                as_dict=True
+            )
+            if len(matching_leads) == 1:
+                lead = matching_leads[0]["name"]
 
     doc = frappe.get_doc({
         "doctype": "VECRM Call Log",
@@ -5723,11 +5741,22 @@ def get_team_call_stats(from_date, to_date):
 def get_calls_for_lead(lead: str) -> list:
     """Call history for a single lead, for the portal lead-detail page.
 
-    Newest-first, capped at 100. Caller is joined to VECRM Employee (emp.name =
-    cl.caller, same key as get_team_call_stats) so the UI can show the rep's
-    display name alongside the raw caller key. Native list-of-dicts return — the
-    house convention (no frappe.as_json).
+    Look up this lead's contact_number, take last-10 digits, and return all
+    Call Logs whose contact_number last-10 matches — NOT the stored `lead` field.
+    Keep the employee_name join, newest-first, LIMIT 200. If the lead has no number,
+    return [].
     """
+    import re
+
+    contact_number = frappe.db.get_value("VECRM Lead", lead, "contact_number")
+    if not contact_number:
+        return []
+
+    digits = re.sub(r"\D", "", contact_number)
+    last10 = digits[-10:] if len(digits) >= 10 else digits
+    if not last10:
+        return []
+
     return frappe.db.sql(
         """
         SELECT cl.name, cl.contact_number, cl.call_datetime, cl.duration_seconds,
@@ -5735,11 +5764,11 @@ def get_calls_for_lead(lead: str) -> list:
                cl.caller, emp.employee_name
         FROM `tabVECRM Call Log` cl
         LEFT JOIN `tabVECRM Employee` emp ON emp.name = cl.caller
-        WHERE cl.lead = %s
+        WHERE RIGHT(REGEXP_REPLACE(cl.contact_number, '[^0-9]', ''), 10) = %s
         ORDER BY cl.call_datetime DESC
-        LIMIT 100
+        LIMIT 200
         """,
-        (lead,),
+        (last10,),
         as_dict=True,
     )
 
