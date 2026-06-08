@@ -5799,3 +5799,32 @@ def find_leads_by_company(query: str) -> list:
         as_dict=True,
     )
 
+
+@frappe.whitelist()
+def set_call_disposition(call_name: str, disposition: str, notes: str = None) -> dict:
+    """Update a call log's disposition and notes.
+
+    Authorize: only the caller (session employee) or an admin may set it.
+    """
+    from vecrm.vecrm.utils.roles import is_employee_admin
+
+    session = get_session_employee()
+    doc = frappe.get_doc("VECRM Call Log", call_name)
+
+    if doc.caller != session["employee"] and not is_employee_admin(session["role"]):
+        frappe.throw(frappe._("Not authorized to modify this call log"), frappe.PermissionError)
+
+    doc.disposition = disposition
+    if notes is not None:
+        doc.notes = notes
+    doc.flags.skip_notification = True
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
+
+    return {
+        "name": doc.name,
+        "disposition": doc.disposition,
+        "is_conversation": int(doc.is_conversation),
+    }
+
+

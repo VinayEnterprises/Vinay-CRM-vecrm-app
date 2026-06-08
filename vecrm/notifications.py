@@ -692,3 +692,24 @@ def relock_expired_reopened_vouchers():
 		except Exception:
 			frappe.db.rollback()
 			frappe.log_error(frappe.get_traceback(), "relock_expired_reopened_vouchers")
+
+
+def notify_intent_pending(doc, method):
+	"""On a Call Log with NO disposition set, push to the CALLER (the rep)."""
+	if getattr(doc.flags, "skip_notification", False):
+		return
+	if doc.get("disposition"):
+		return
+	try:
+		email = _employee_email(doc.caller)
+		tokens = _tokens_for_user(email)
+		if tokens:
+			send_push(
+				tokens,
+				"Set call intent",
+				f"Update the intent for your call to {doc.get('contact_number') or 'a lead'}",
+				data={"screen": "lead", "lead": doc.get("lead") or "", "call": doc.name},
+			)
+	except Exception as e:
+		frappe.log_error(frappe.get_traceback(), "Push Notification Error")
+
