@@ -191,6 +191,9 @@ doc_events = {
 	"VECRM Inquiry": {
 		"after_insert": "vecrm.notifications.notify_lead_converted",
 	},
+	"VECRM Call Log": {
+		"after_insert": "vecrm.notifications.notify_intent_pending",
+	},
 	"VECRM Petrol Voucher": {
 		"on_submit": "vecrm.notifications.notify_voucher_submitted",
 		"on_update_after_submit": "vecrm.notifications.notify_voucher_status",
