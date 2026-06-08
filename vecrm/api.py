@@ -5718,3 +5718,55 @@ def get_team_call_stats(from_date, to_date):
         )
     return rows
 
+
+@frappe.whitelist()
+def get_calls_for_lead(lead: str) -> list:
+    """Call history for a single lead, for the portal lead-detail page.
+
+    Newest-first, capped at 100. Caller is joined to VECRM Employee (emp.name =
+    cl.caller, same key as get_team_call_stats) so the UI can show the rep's
+    display name alongside the raw caller key. Native list-of-dicts return — the
+    house convention (no frappe.as_json).
+    """
+    return frappe.db.sql(
+        """
+        SELECT cl.name, cl.contact_number, cl.call_datetime, cl.duration_seconds,
+               cl.disposition, cl.is_conversation, cl.notes,
+               cl.caller, emp.employee_name
+        FROM `tabVECRM Call Log` cl
+        LEFT JOIN `tabVECRM Employee` emp ON emp.name = cl.caller
+        WHERE cl.lead = %s
+        ORDER BY cl.call_datetime DESC
+        LIMIT 100
+        """,
+        (lead,),
+        as_dict=True,
+    )
+
+
+@frappe.whitelist()
+def find_leads_by_company(query: str) -> list:
+    """Dedup typeahead: leads whose company_name contains `query`.
+
+    Complements find_lead_by_number (number dedup) so a rep typing a company
+    name gets nudged about shared-name dupes before creating a new lead.
+    Substring (LIKE) match for v1 — fuzzy/core match can be layered later.
+    Requires >= 3 chars; returns up to 10, newest first, as a native list of
+    dicts (no frappe.as_json).
+    """
+    q = (query or "").strip()
+    if len(q) < 3:
+        return []
+    return frappe.db.sql(
+        """
+        SELECT name, company_name, contact_person_name, status,
+               lead_owner, creating_employee
+        FROM `tabVECRM Lead`
+        WHERE company_name LIKE %s
+        ORDER BY modified DESC
+        LIMIT 10
+        """,
+        (f"%{q}%",),
+        as_dict=True,
+    )
+
