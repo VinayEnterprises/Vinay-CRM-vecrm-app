@@ -8,7 +8,7 @@ def render_email_layout(preheader: str, body_html: str) -> str:
     """Renders the Vinay Enterprises branded email layout.
     Mirrors the logic from vecrm-portal's lib/email-templates/shared.ts.
     """
-    logo_src = "https://app.vinayenterprises.co.in/logo.png"
+    logo_src = "cid:logo"
     
     preheader_html = f'<div style="display:none;max-height:0;overflow:hidden;color:transparent;">{frappe.utils.escape_html(preheader)}</div>' if preheader else ""
 
