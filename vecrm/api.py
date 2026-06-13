@@ -1973,6 +1973,80 @@ def mark_all_notifications_read() -> dict[str, Any]:
     return {"ok": True}
 
 
+@frappe.whitelist(methods=["POST"])
+def broadcast_notification(subject: str, body: str) -> dict[str, Any]:
+    """Admin broadcast to all active employee emails and registered devices.
+
+    `send_push` already writes VECRM Notification rows for token owners. This
+    method only logs direct bell rows for employees who have no device token, so
+    each active recipient gets one bell notification and app users also get FCM.
+    """
+    _require_admin_session()
+
+    subject = (subject or "").strip()
+    body = (body or "").strip()
+    if not subject:
+        frappe.throw(frappe._("Subject is required"), frappe.ValidationError)
+    if len(subject) > 140:
+        frappe.throw(
+            frappe._("Subject must be 140 characters or fewer"),
+            frappe.ValidationError,
+        )
+    if not body:
+        frappe.throw(frappe._("Message is required"), frappe.ValidationError)
+
+    from vecrm.notifications import _log_notification, send_push
+
+    employees = frappe.get_all(
+        "VECRM Employee",
+        filters={"vecrm_account_status": "Active"},
+        fields=["vecrm_email"],
+        ignore_permissions=True,
+    )
+    recipients = {
+        (employee.vecrm_email or "").strip()
+        for employee in employees
+        if getattr(employee, "vecrm_email", None)
+    }
+
+    token_rows = []
+    if recipients:
+        token_rows = frappe.get_all(
+            "VECRM Device Token",
+            filters={"user_email": ["in", list(recipients)]},
+            fields=["user_email", "fcm_token"],
+            ignore_permissions=True,
+        )
+
+    tokens = []
+    token_owner_emails = set()
+    seen_tokens = set()
+    for row in token_rows:
+        token = (row.fcm_token or "").strip()
+        if not token or token in seen_tokens:
+            continue
+        seen_tokens.add(token)
+        tokens.append(token)
+        if row.user_email:
+            token_owner_emails.add(row.user_email)
+
+    push_result = send_push(
+        tokens,
+        subject,
+        body,
+        {"screen": "notifications"},
+    ) if tokens else {"sent": 0}
+
+    for email in recipients - token_owner_emails:
+        _log_notification(email, subject, body, {"screen": "notifications"})
+
+    frappe.db.commit()
+    return {
+        "bell_sent": len(recipients),
+        "push_sent": push_result.get("sent", 0),
+    }
+
+
 # ============================================================
 # S28 PD-S28-AUTH-RESET-BACKEND-API — token mgmt + credential write
 #
@@ -5826,7 +5900,6 @@ def set_call_disposition(call_name: str, disposition: str, notes: str = None) ->
         "disposition": doc.disposition,
         "is_conversation": int(doc.is_conversation),
     }
-
 
 
 
