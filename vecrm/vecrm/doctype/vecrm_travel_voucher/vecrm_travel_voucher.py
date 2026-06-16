@@ -174,15 +174,18 @@ class VECRMTravelVoucher(Document):
             start_date = date(y, m, 16)
             end_date = date(y, m, last_d)
 
-        other_half = "H2" if half == "H1" else "H1"
-
         for line in self.visit_lines:
             if line.visit_date:
                 visit_date = frappe.utils.getdate(line.visit_date)
                 if not (start_date <= visit_date <= end_date):
+                    v_y, v_m, v_half = period_of(visit_date)
+                    if v_half == "H1":
+                        period_start_date = date(v_y, v_m, 1)
+                    else:
+                        period_start_date = date(v_y, v_m, 16)
                     frappe.throw(
                         f"Visit date {line.visit_date} is outside this voucher's period ({start_date} to {end_date}). "
-                        f"Add it to your {other_half} voucher instead."
+                        f"Change the Voucher Date to {period_start_date} to add this visit."
                     )
 
         if not self.rate_per_km_applied:
