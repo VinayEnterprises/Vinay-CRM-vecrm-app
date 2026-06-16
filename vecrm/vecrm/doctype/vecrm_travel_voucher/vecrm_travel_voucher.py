@@ -72,6 +72,38 @@ class VECRMTravelVoucher(Document):
         if not self.submitter:
             frappe.throw("Submitter (VECRM Employee) is required.")
 
+        # Duplicate voucher check per half-period (S40)
+        from vecrm.vecrm.utils.voucher_period import period_of
+        import calendar
+        from datetime import date
+
+        y, m, half = period_of(self.business_date)
+        if half == "H1":
+            start_date = date(y, m, 1)
+            end_date = date(y, m, 15)
+        else:
+            last_d = calendar.monthrange(y, m)[1]
+            start_date = date(y, m, 16)
+            end_date = date(y, m, last_d)
+
+        existing = frappe.db.get_value(
+            "VECRM Travel Voucher",
+            {
+                "submitter": self.submitter,
+                "business_date": ["between", [start_date, end_date]],
+                "docstatus": ["!=", 2],
+            },
+            ["name"],
+            as_dict=True,
+        )
+
+        if existing:
+            frappe.throw(
+                f"You already have a petrol voucher for this period ({existing.name}). "
+                "Please edit your existing voucher instead of creating a new one.",
+                title="Duplicate Voucher"
+            )
+
         emp = frappe.get_doc("VECRM Employee", self.submitter)
 
         if emp.vecrm_account_status != "Active":
