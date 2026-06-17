@@ -712,15 +712,16 @@ def create_expense_voucher_draft(
 	    number_of_persons (number, optional for Food Allowance, defaults to 1)
 	    amount     (number, > 0)
 	    description (str, non-empty)
-	    attachment (str, optional Frappe file URL)
+	    attachment (str, Frappe file URL; required for Hotel/Supplies,
+	      optional otherwise)
 
 	Returns:
 	  Dict with name, submitter, expense_date, fy_label, total_amount,
 	  submitter_role, docstatus, expense_lines (computed children).
 
 	Raises:
-	  frappe.ValidationError: invalid JSON, empty lines, unrecognized
-	    attachment URL when supplied, employee not
+	  frappe.ValidationError: invalid JSON, empty lines, missing required
+	    attachment for Hotel/Supplies, unrecognized attachment URL when supplied, employee not
 	    found/inactive, etc.
 	  frappe.PermissionError (via _require_voucher_submitter_self_or_admin):
 	    non-admin caller attempting to file for someone else.
@@ -761,10 +762,16 @@ def create_expense_voucher_draft(
 	# check covers the whole voucher. Admin/Sales Head/HR bypass.
 	_check_voucher_date_cutoff(expense_date)
 
-	# Per-line validation. Receipts are optional for all categories, but any
-	# supplied receipt URL must resolve to a File row.
+	# Per-line validation. Receipts are required for Hotel/Supplies and
+	# optional otherwise; any supplied receipt URL must resolve to a File row.
 	for idx, line in enumerate(lines, start=1):
+		category = line.get("category")
 		attachment = line.get("attachment")
+		if category in ("Hotel", "Supply", "Supplies") and not (attachment and str(attachment).strip()):
+			frappe.throw(
+				f"Receipt is required for {category} expenses.",
+				frappe.ValidationError,
+			)
 		if attachment and str(attachment).strip():
 			if not frappe.db.exists("File", {"file_url": attachment}):
 				frappe.throw(
@@ -5894,7 +5901,6 @@ def set_call_disposition(call_name: str, disposition: str, notes: str = None) ->
         "disposition": doc.disposition,
         "is_conversation": int(doc.is_conversation),
     }
-
 
 
 

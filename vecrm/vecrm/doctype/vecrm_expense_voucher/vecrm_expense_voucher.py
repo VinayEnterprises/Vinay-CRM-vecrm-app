@@ -33,6 +33,8 @@ from frappe.model.document import Document
 from vecrm.vecrm.voucher_counter import fy_label, next_number
 from vecrm.vecrm.utils.roles import VOUCHER_APPROVER_SETS
 
+RECEIPT_REQUIRED_CATEGORIES = {"Hotel", "Supply", "Supplies"}
+
 
 class VECRMExpenseVoucher(Document):
     """Submittable expense reimbursement voucher.
@@ -107,6 +109,12 @@ class VECRMExpenseVoucher(Document):
 
         # Per-line amount validation
         for idx, line in enumerate(self.expense_lines, start=1):
+            if line.category in RECEIPT_REQUIRED_CATEGORIES and not (line.attachment or "").strip():
+                frappe.throw(
+                    f"Receipt is required for {line.category} expenses.",
+                    frappe.ValidationError,
+                )
+
             if line.category == "Food Allowance":
                 if not line.days or int(line.days) <= 0:
                     frappe.throw(
