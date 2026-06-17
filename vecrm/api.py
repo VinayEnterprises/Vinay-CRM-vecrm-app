@@ -2838,11 +2838,11 @@ def _validate_assignable_role(role: str) -> None:
 
 
 def _require_hr_or_admin() -> None:
-    """Throw frappe.PermissionError if caller is not HR or Admin."""
+    """Throw if caller is not in the HR/accounts/admin approval tier."""
     role = (frappe.session.data or {}).get("vecrm_employee_role")
-    if role not in ("HR", "Admin"):
+    if role not in ("HR", "Head of Accounts & HR", "Admin"):
         frappe.throw(
-            frappe._("Only HR or Admin can mark vouchers as paid."),
+            frappe._("Only HR, Head of Accounts & HR, or Admin can perform this action."),
             frappe.PermissionError,
         )
 
@@ -3874,7 +3874,7 @@ def _compute_lead_touchpoint_stats(lead_name: str) -> tuple:
 def get_voucher_period_summary(month, year, period):
     """
     Get aggregated voucher summary for a bi-monthly period.
-    HR + Admin only.
+    HR/accounts/admin approval tier only.
     """
     _require_hr_or_admin()
     
@@ -3939,7 +3939,7 @@ def get_voucher_period_summary(month, year, period):
 
 @frappe.whitelist()
 def get_voucher_period_detail(month, year, period, submitter=None, voucher_type="travel"):
-    """Return individual voucher rows for a period, optionally filtered by submitter. HR + Admin only."""
+    """Return individual voucher rows for a period, optionally filtered by submitter. HR/accounts/admin tier only."""
     _require_hr_or_admin()
     
     month = int(month)
@@ -5901,7 +5901,6 @@ def set_call_disposition(call_name: str, disposition: str, notes: str = None) ->
         "disposition": doc.disposition,
         "is_conversation": int(doc.is_conversation),
     }
-
 
 
 
