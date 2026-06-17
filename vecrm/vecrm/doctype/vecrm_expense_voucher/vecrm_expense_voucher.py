@@ -113,10 +113,16 @@ class VECRMExpenseVoucher(Document):
                         f"Expense line {idx}: Food Allowance requires a valid number of days (> 0).",
                         frappe.ValidationError,
                     )
-                expected_amount = int(line.days) * 380
+                number_of_persons = int(line.number_of_persons or 1)
+                if number_of_persons <= 0:
+                    frappe.throw(
+                        f"Expense line {idx}: Food Allowance requires a valid number of persons (> 0).",
+                        frappe.ValidationError,
+                    )
+                expected_amount = int(line.days) * number_of_persons * 380
                 if float(line.amount or 0) != expected_amount:
                     frappe.throw(
-                        f"Expense line {idx}: Food Allowance amount must be ₹{expected_amount} ({line.days} days @ ₹380/day). Got ₹{line.amount or 0}.",
+                        f"Expense line {idx}: Food Allowance amount must be ₹{expected_amount} ({line.days} days × {number_of_persons} persons @ ₹380/day). Got ₹{line.amount or 0}.",
                         frappe.ValidationError,
                     )
             else:

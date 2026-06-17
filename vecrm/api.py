@@ -706,18 +706,21 @@ def create_expense_voucher_draft(
 	  submitter: VECRM Employee name (phone-id, e.g. "+91-9998583596").
 	  expense_date: Date of expenses (YYYY-MM-DD). Drives FY allocation.
 	  expense_lines: JSON-encoded array of line objects with fields:
-	    category   (str, one of: Hotel/Food/Supplies/Communication/Misc)
+	    category   (str, one of: Hotel/Food Allowance/Travel/Supplies/Communication/Misc)
+	    expense_date (str, optional per-line date)
+	    days      (number, required for Food Allowance)
+	    number_of_persons (number, optional for Food Allowance, defaults to 1)
 	    amount     (number, > 0)
 	    description (str, non-empty)
-	    attachment (str, Frappe file URL, REQUIRED per Q-EV-CONFIRM-ATTACH=b)
+	    attachment (str, optional Frappe file URL)
 
 	Returns:
 	  Dict with name, submitter, expense_date, fy_label, total_amount,
 	  submitter_role, docstatus, expense_lines (computed children).
 
 	Raises:
-	  frappe.ValidationError: invalid JSON, empty lines, missing
-	    attachment, attachment URL not in File doctype, employee not
+	  frappe.ValidationError: invalid JSON, empty lines, unrecognized
+	    attachment URL when supplied, employee not
 	    found/inactive, etc.
 	  frappe.PermissionError (via _require_voucher_submitter_self_or_admin):
 	    non-admin caller attempting to file for someone else.
@@ -758,30 +761,11 @@ def create_expense_voucher_draft(
 	# check covers the whole voucher. Admin/Sales Head/HR bypass.
 	_check_voucher_date_cutoff(expense_date)
 
-	# Per-line validation (Q-EV-CONFIRM-ATTACH=b + Q-EV-RECEIPT-VERIFY=on).
-	# Doctype's attachment field is reqd=0 to preserve Desk admin flexibility
-	# for corrective EVs; portal-originated submissions MUST include a
-	# receipt and the receipt URL MUST exist in the File doctype.
+	# Per-line validation. Receipts are optional for all categories, but any
+	# supplied receipt URL must resolve to a File row.
 	for idx, line in enumerate(lines, start=1):
 		attachment = line.get("attachment")
-		if line.get("category") == "Food Allowance":
-			# Food Allowance does not strictly require a receipt.
-			if attachment and str(attachment).strip():
-				if not frappe.db.exists("File", {"file_url": attachment}):
-					frappe.throw(
-						f"Expense line {idx}: receipt URL {attachment!r} is not a "
-						f"recognized upload. Re-upload the receipt and try again.",
-						frappe.ValidationError,
-					)
-		else:
-			if not attachment or not str(attachment).strip():
-				frappe.throw(
-					f"Expense line {idx}: receipt attachment is required. "
-					f"Upload a receipt (jpg/png/pdf, max 5MB) before submitting.",
-					frappe.ValidationError,
-				)
-			# Defense-in-depth: confirm the URL refers to a real File row.
-			# Prevents spoofed/fabricated URLs from being attached to a voucher.
+		if attachment and str(attachment).strip():
 			if not frappe.db.exists("File", {"file_url": attachment}):
 				frappe.throw(
 					f"Expense line {idx}: receipt URL {attachment!r} is not a "
@@ -796,7 +780,9 @@ def create_expense_voucher_draft(
 	for line in lines:
 		doc.append("expense_lines", {
 			"category": line.get("category"),
+			"expense_date": line.get("expense_date"),
 			"days": line.get("days") or 0,
+			"number_of_persons": line.get("number_of_persons") or 1,
 			"amount": line.get("amount"),
 			"description": line.get("description"),
 			"attachment": line.get("attachment"),
@@ -818,7 +804,9 @@ def create_expense_voucher_draft(
 		"expense_lines": [
 			{
 				"category": line.category,
+				"expense_date": line.expense_date,
 				"days": line.days,
+				"number_of_persons": line.number_of_persons,
 				"amount": line.amount,
 				"description": line.description,
 				"attachment": line.attachment,
@@ -887,6 +875,7 @@ def create_lead(
 	meeting_brief: str = None,
 	contact_person_name: str = None,
 	contact_person_designation: str = None,
+	company_vertical: str = None,
 	mobile_unavailable: int = 0,
 	email_unavailable: int = 0,
 ) -> dict:
@@ -919,10 +908,12 @@ def create_lead(
 	    PD-S29-LEAD-FORM-FIELDS.
 	  meeting_brief: Short text summary of the contact. Non-empty.
 	    PD-S29-LEAD-FORM-FIELDS.
+	  company_vertical: Optional company vertical select value.
 
 	Returns:
 	  Dict with name, company_name, territory, contact_date, priority,
-	  status, lead_owner, contact_number, contact_email, meeting_brief.
+	  status, lead_owner, contact_number, contact_email, meeting_brief,
+	  company_vertical.
 
 	Raises:
 	  frappe.ValidationError: priority outside 1-5, missing/malformed
@@ -996,6 +987,7 @@ def create_lead(
 	# action="touchpoint" so the portal can react. Server-authoritative: this
 	# is the safety net behind the form's typeahead-driven routing.
 	company_name = company_name.strip()
+	company_vertical = (company_vertical or "").strip()
 	open_lead = frappe.db.get_value(
 		"VECRM Lead",
 		{"company_name": company_name, "status": "Open"},
@@ -1016,6 +1008,7 @@ def create_lead(
 
 	doc = frappe.new_doc("VECRM Lead")
 	doc.company_name = company_name
+	doc.company_vertical = company_vertical
 	doc.territory = territory
 	doc.contact_date = contact_date
 	doc.priority = priority_int
@@ -1057,6 +1050,7 @@ def create_lead(
 		"action": "lead",
 		"name": doc.name,
 		"company_name": doc.company_name,
+		"company_vertical": doc.company_vertical,
 		"territory": doc.territory,
 		"contact_date": str(doc.contact_date),
 		"priority": doc.priority,
@@ -5900,8 +5894,6 @@ def set_call_disposition(call_name: str, disposition: str, notes: str = None) ->
         "disposition": doc.disposition,
         "is_conversation": int(doc.is_conversation),
     }
-
-
 
 
 

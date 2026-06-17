@@ -8,6 +8,7 @@
  "engine": "InnoDB",
  "field_order": [
   "company_name",
+  "company_vertical",
   "territory",
   "contact_date",
   "contact_number",
@@ -35,7 +36,18 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Company Name",
-   "reqd": 1
+   "read_only": 0,
+   "reqd": 1,
+   "set_only_once": 0
+  },
+  {
+   "fieldname": "company_vertical",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "insert_after": "company_name",
+   "label": "Company Vertical",
+   "options": "\nIT / Software\nManufacturing\nPharma / Healthcare\nFMCG\nTextiles\nChemicals\nEngineering\nAutomotive\nConstruction / Real Estate\nBanking / Finance\nEducation\nAgriculture\nEnergy / Power\nLogistics\nOther",
+   "reqd": 0
   },
   {
    "fieldname": "territory",
