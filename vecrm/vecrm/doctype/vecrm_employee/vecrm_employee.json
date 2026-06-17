@@ -11,6 +11,9 @@
   "vecrm_phone",
   "vecrm_email",
   "role",
+  "company",
+  "designation",
+  "hrms_employee_id",
   "vecrm_base_city",
   "reporting_approver",
   "vecrm_account_status",
@@ -55,6 +58,25 @@
    "label": "Role",
    "options": "Admin\nSales Head\nHR\nSales Rep\nField Engineer\nHead of Engineers\nNetwork Security Engineer\nStore Executive\nHead of Stores\nHead of Accounts & HR",
    "reqd": 1
+  },
+  {
+   "default": "Vinay Enterprises",
+   "fieldname": "company",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Company",
+   "options": "\nVinay Enterprises\nVECS"
+  },
+  {
+   "fieldname": "designation",
+   "fieldtype": "Data",
+   "label": "Designation"
+  },
+  {
+   "fieldname": "hrms_employee_id",
+   "fieldtype": "Data",
+   "label": "HRMS Employee ID",
+   "unique": 1
   },
   {
    "fieldname": "vecrm_base_city",
