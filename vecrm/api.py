@@ -2329,6 +2329,92 @@ def request_pin_reset(phone: str = "") -> dict[str, Any]:
     
     return response
 
+
+@frappe.whitelist()
+def get_2fa_delivery_email(phone: str = "") -> dict[str, Any]:
+    """Resolve an active employee's delivery email for portal 2FA Email OTP.
+
+    This endpoint is restricted to the portal service account because callers
+    receive the resolved address directly. The portal BFF owns OTP generation
+    and delivery; this method only performs the canonical phone-to-employee
+    lookup already used by ``request_pin_reset``.
+    """
+    service_account = "vecrm-portal@vinayenterprises.co.in"
+    if frappe.session.user != service_account:
+        frappe.throw(_("Not authorized"), frappe.PermissionError)
+
+    normalized_phone = _normalize_phone(phone or "")
+    if not normalized_phone:
+        return {
+            "ok": False,
+            "delivery_email": None,
+            "employee_name": None,
+        }
+
+    import time
+
+    rate_limit_key = f"2fa_email_lookup_rate:{normalized_phone}"
+    current_time = time.time()
+    lookup_history = frappe.cache().get_value(rate_limit_key) or []
+    lookup_history = [
+        timestamp
+        for timestamp in lookup_history
+        if current_time - timestamp < 3600
+    ]
+    if len(lookup_history) >= 5:
+        _audit_auth(
+            "auth.2fa_email.rate_limited",
+            identifier=normalized_phone,
+            path="2fa_email",
+        )
+        return {
+            "ok": False,
+            "delivery_email": None,
+            "employee_name": None,
+        }
+
+    lookup_history.append(current_time)
+    frappe.cache().set_value(
+        rate_limit_key,
+        lookup_history,
+        expires_in_sec=3600,
+    )
+
+    employee_name = frappe.db.get_value(
+        "VECRM Employee",
+        normalized_phone,
+        "name",
+    )
+    if not employee_name:
+        return {
+            "ok": False,
+            "delivery_email": None,
+            "employee_name": None,
+        }
+
+    employee_doc = frappe.get_doc("VECRM Employee", employee_name)
+    if employee_doc.vecrm_account_status != "Active":
+        return {
+            "ok": False,
+            "delivery_email": None,
+            "employee_name": None,
+        }
+
+    delivery_email = employee_doc.vecrm_email or None
+    _audit_auth(
+        "auth.2fa_email.resolved",
+        employee=employee_name,
+        identifier=normalized_phone,
+        path="2fa_email",
+    )
+
+    return {
+        "ok": bool(delivery_email),
+        "delivery_email": delivery_email,
+        "employee_name": employee_doc.employee_name or employee_doc.name,
+    }
+
+
 @frappe.whitelist()
 def get_dashboard_summary() -> dict:
 	"""Return aggregated voucher counts/amounts for the portal dashboard."""
@@ -5904,7 +5990,6 @@ def set_call_disposition(call_name: str, disposition: str, notes: str = None) ->
         "disposition": doc.disposition,
         "is_conversation": int(doc.is_conversation),
     }
-
 
 
 
