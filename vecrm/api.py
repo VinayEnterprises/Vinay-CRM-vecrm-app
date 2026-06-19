@@ -706,14 +706,14 @@ def create_expense_voucher_draft(
 	  submitter: VECRM Employee name (phone-id, e.g. "+91-9998583596").
 	  expense_date: Date of expenses (YYYY-MM-DD). Drives FY allocation.
 	  expense_lines: JSON-encoded array of line objects with fields:
-	    category   (str, one of: Hotel/Food Allowance/Travel/Supplies/Communication/Misc)
+	    category   (str, one of: Hotel/Food Allowance/Meal Reimbursement (Actuals)/Travel/Supplies/Communication/Misc)
 	    expense_date (str, optional per-line date)
 	    days      (number, required for Food Allowance)
 	    number_of_persons (number, optional for Food Allowance, defaults to 1)
 	    amount     (number, > 0)
 	    description (str, non-empty)
-	    attachment (str, Frappe file URL; required for Hotel/Supplies,
-	      optional otherwise)
+	    attachment (str, Frappe file URL; required for Hotel,
+	      Meal Reimbursement (Actuals), and Supplies; optional otherwise)
 
 	Returns:
 	  Dict with name, submitter, expense_date, fy_label, total_amount,
@@ -762,12 +762,18 @@ def create_expense_voucher_draft(
 	# check covers the whole voucher. Admin/Sales Head/HR bypass.
 	_check_voucher_date_cutoff(expense_date)
 
-	# Per-line validation. Receipts are required for Hotel/Supplies and
-	# optional otherwise; any supplied receipt URL must resolve to a File row.
+	# Per-line validation. Receipts are required for Hotel, actual meal
+	# reimbursement, and Supplies; optional otherwise. Any supplied receipt
+	# URL must resolve to a File row.
 	for idx, line in enumerate(lines, start=1):
 		category = line.get("category")
 		attachment = line.get("attachment")
-		if category in ("Hotel", "Supply", "Supplies") and not (attachment and str(attachment).strip()):
+		if category in (
+			"Hotel",
+			"Meal Reimbursement (Actuals)",
+			"Supply",
+			"Supplies",
+		) and not (attachment and str(attachment).strip()):
 			frappe.throw(
 				f"Receipt is required for {category} expenses.",
 				frappe.ValidationError,
@@ -5904,7 +5910,6 @@ def set_call_disposition(call_name: str, disposition: str, notes: str = None) ->
         "disposition": doc.disposition,
         "is_conversation": int(doc.is_conversation),
     }
-
 
 
 

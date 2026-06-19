@@ -33,7 +33,12 @@ from frappe.model.document import Document
 from vecrm.vecrm.voucher_counter import fy_label, next_number
 from vecrm.vecrm.utils.roles import VOUCHER_APPROVER_SETS
 
-RECEIPT_REQUIRED_CATEGORIES = {"Hotel", "Supply", "Supplies"}
+RECEIPT_REQUIRED_CATEGORIES = {
+    "Hotel",
+    "Meal Reimbursement (Actuals)",
+    "Supply",
+    "Supplies",
+}
 
 
 class VECRMExpenseVoucher(Document):

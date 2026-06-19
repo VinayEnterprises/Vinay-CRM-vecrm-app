@@ -22,8 +22,8 @@
       "in_list_view": 1,
       "label": "Category",
       "reqd": 1,
-      "options": "Hotel\nFood Allowance\nTravel\nSupplies\nCommunication\nMisc",
-      "description": "Expense category. Locked Select; no free-text. PD-S38 Fix #5 added 'Travel'; Fix #7 renamed 'Food' → 'Food Allowance' (portal auto-fills ₹380/day on selection)."
+      "options": "Hotel\nFood Allowance\nMeal Reimbursement (Actuals)\nTravel\nSupplies\nCommunication\nMisc",
+      "description": "Expense category. Food Allowance is the fixed ₹380/day policy; Meal Reimbursement (Actuals) is a variable partial-day meal claim that requires a receipt."
     },
     {
       "fieldname": "expense_date",
