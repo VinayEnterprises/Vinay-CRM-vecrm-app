@@ -309,15 +309,20 @@ def voucher_resubmit_travel(
 		frappe.throw(
 			f"visit_lines is not valid JSON: {exc}", frappe.ValidationError
 		)
-	if business_date:
-		_check_voucher_date_cutoff(business_date)
-	else:
-		_check_voucher_date_cutoff(voucher.business_date)
-	if isinstance(resubmit_lines, list):
-		for line in resubmit_lines:
-			vd = line.get("visit_date") if isinstance(line, dict) else None
-			if vd:
-				_check_voucher_date_cutoff(vd)
+	# S41: a Rejected voucher being resubmitted bypasses the bi-monthly cutoff
+	# entirely — the rejection itself authorizes editing/resubmitting past the
+	# deadline. The backfill-prevention check still applies to reopened/draft
+	# resubmits.
+	if voucher.approval_status != "Rejected":
+		if business_date:
+			_check_voucher_date_cutoff(business_date)
+		else:
+			_check_voucher_date_cutoff(voucher.business_date)
+		if isinstance(resubmit_lines, list):
+			for line in resubmit_lines:
+				vd = line.get("visit_date") if isinstance(line, dict) else None
+				if vd:
+					_check_voucher_date_cutoff(vd)
 
 	from vecrm.vecrm.doctype.vecrm_travel_voucher.vecrm_travel_voucher import (
 		voucher_resubmit_travel as _resubmit,
@@ -341,7 +346,10 @@ def voucher_resubmit_expense(
 	# Bi-monthly cutoff check (PD-S29-BACKFILL-PREVENTION). Use the
 	# new expense_date if provided in the resubmit payload, else the
 	# voucher's current date.
-	_check_voucher_date_cutoff(expense_date or voucher.expense_date)
+	# S41: a Rejected voucher's resubmit bypasses the cutoff — the rejection
+	# authorizes editing past the deadline.
+	if voucher.approval_status != "Rejected":
+		_check_voucher_date_cutoff(expense_date or voucher.expense_date)
 
 	from vecrm.vecrm.doctype.vecrm_expense_voucher.vecrm_expense_voucher import (
 		voucher_resubmit_expense as _resubmit,
