@@ -1660,6 +1660,229 @@ def _on_pin_success(employee_doc: Any) -> None:
     frappe.db.commit()
 
 
+def _pending_payload_from_cache(raw):
+    """Parse a cached pending value into the canonical dict, tolerating a
+    legacy build that stored just the bare phone string."""
+    if not raw:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
+    except (TypeError, ValueError):
+        pass
+    # Legacy: token stored only the phone employee name.
+    return {"employee": raw, "login_path": "password", "device_id": "", "device_label": ""}
+
+
+def _create_2fa_pending(
+    employee_name: str,
+    login_path: str = "password",
+    device_id: str = "",
+    device_label: str = "",
+) -> str:
+    """Create a temporary 2FA pending token in Redis cache, valid for 5 minutes.
+
+    Build 2: the token now carries the full login context (phone employee,
+    login_path, device_id, device_label) so the pre-session challenge
+    endpoints can issue the session + write device trust WITHOUT a session and
+    WITHOUT trusting client-supplied device data at verify time.
+    """
+    token = secrets.token_hex(32)
+    cache_key = f"vecrm_2fa_pending:{token}"
+    payload = json.dumps({
+        "employee": employee_name,
+        "login_path": login_path or "password",
+        "device_id": device_id or "",
+        "device_label": device_label or "",
+    })
+    frappe.cache().set_value(cache_key, payload, expires_in_sec=300)
+    return token
+
+
+def _read_2fa_pending(token: str):
+    """Read the pending login context (dict) for a token, or None. Does NOT
+    refresh the 300s TTL -- that TTL is the security window."""
+    if not token:
+        return None
+    return _pending_payload_from_cache(frappe.cache().get_value(f"vecrm_2fa_pending:{token}"))
+
+
+def _consume_2fa_pending(token: str):
+    """Read and delete the pending token (one-time use). Returns the dict."""
+    if not token:
+        return None
+    cache_key = f"vecrm_2fa_pending:{token}"
+    raw = frappe.cache().get_value(cache_key)
+    if raw:
+        frappe.cache().delete_value(cache_key)
+    return _pending_payload_from_cache(raw)
+
+
+def _bump_2fa_attempts(token: str) -> int:
+    """Increment + return the failed-attempt count for a pending token, on a
+    SEPARATE key so the main token's TTL (the security window) is never
+    extended by a failing attacker; bounded to the token's 5-minute lifetime."""
+    key = f"vecrm_2fa_attempts:{token}"
+    count = int(frappe.cache().get_value(key) or 0) + 1
+    frappe.cache().set_value(key, count, expires_in_sec=300)
+    return count
+
+
+def _clear_2fa_attempts(token: str) -> None:
+    frappe.cache().delete_value(f"vecrm_2fa_attempts:{token}")
+
+
+def _user_has_2fa(employee_doc: Any) -> bool:
+    """Check if the user has 2FA enabled in the VEHRMS backend.
+    If VEHRMS is unreachable OR anything unexpected happens, fail-open
+    (return False) so VECRM login is never blocked by the 2FA check.
+    """
+    import requests
+    if not employee_doc.vecrm_phone:
+        return False
+
+    try:
+        headers = _get_vehrms_auth_header()
+        if not headers:
+            # Config missing (helper already logged) -> fail-open-on-check.
+            return False
+
+        url = f"{_get_vehrms_base_url()}/api/method/frappe.client.get_value"
+        payload = {
+            "doctype": "Employee",
+            "filters": {"vecrm_employee": employee_doc.vecrm_phone},
+            "fieldname": "custom_2fa_enabled",
+        }
+        resp = requests.post(url, json=payload, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            res = resp.json()
+            if isinstance(res, dict) and "message" in res:
+                msg = res["message"]
+                if isinstance(msg, dict):
+                    # Legitimate "user has no 2FA": False, NO audit row.
+                    return bool(msg.get("custom_2fa_enabled"))
+        return False
+    except Exception as e:
+        # ANY failure (unreachable, config bug, malformed response, NameError)
+        # -> audit + fail-open. The user already passed their primary credential.
+        _audit_auth(
+            "auth.2fa_check.unavailable",
+            employee=employee_doc.name,
+            reason=str(e)[:200],
+        )
+        return False
+
+
+def _is_device_trusted(employee_name: str, device_id: str) -> bool:
+    """Check if the device is trusted and not expired for the given employee."""
+    if not device_id:
+        return False
+    if len(device_id) > 128:
+        return False
+    
+    trusted_device = frappe.db.get_value(
+        "VECRM Trusted Device",
+        {"employee": employee_name, "device_id": device_id},
+        ["name", "expires_at"],
+        as_dict=True
+    )
+    if not trusted_device:
+        return False
+        
+    if trusted_device.expires_at and get_datetime(trusted_device.expires_at) > now_datetime():
+        return True
+        
+    return False
+
+
+def _refresh_device_trust(employee_name: str, device_id: str, login_path: str, device_label: str = None) -> None:
+    """Create or update a VECRM Trusted Device record, setting a rolling 60-day expiry."""
+    if not device_id:
+        return
+    if len(device_id) > 128:
+        device_id = device_id[:128]
+        
+    expires_at = now_datetime() + timedelta(days=60)
+    
+    trusted_device_name = frappe.db.get_value(
+        "VECRM Trusted Device",
+        {"employee": employee_name, "device_id": device_id},
+        "name"
+    )
+    
+    if trusted_device_name:
+        doc = frappe.get_doc("VECRM Trusted Device", trusted_device_name)
+        doc.expires_at = expires_at
+        doc.last_seen_at = now_datetime()
+        doc.login_path = login_path
+        if device_label:
+            doc.device_label = device_label
+        doc.save(ignore_permissions=True)
+    else:
+        doc = frappe.get_doc({
+            "doctype": "VECRM Trusted Device",
+            "employee": employee_name,
+            "device_id": device_id,
+            "device_label": device_label,
+            "expires_at": expires_at,
+            "last_seen_at": now_datetime(),
+            "login_path": login_path
+        })
+        doc.insert(ignore_permissions=True)
+    
+    frappe.db.commit()
+
+
+def _finalize_or_challenge(employee_doc: Any, login_path: str, device_id: str = None, device_label: str = None) -> dict[str, Any]:
+    """Helper to finalize the login (issue session) or return a 2FA challenge.
+    
+    If 2FA is enabled and the device is not trusted:
+        Returns: {"success": True, "stage": "2fa_required", "pending_token": "<token>"}
+    Otherwise:
+        Issues a Frappe session, refreshes/registers device trust (if device_id is provided), and
+        Returns: {"success": True, "stage": "complete", "employee": "<phone>", "name": "<full_name>", "role": "<role>"}
+    """
+    has_2fa = _user_has_2fa(employee_doc)
+    
+    device_trusted = False
+    if device_id:
+        device_trusted = _is_device_trusted(employee_doc.name, device_id)
+        
+    if has_2fa and not device_trusted:
+        pending_token = _create_2fa_pending(employee_doc.name, login_path, device_id or "", device_label or "")
+        _audit_auth("auth.login.2fa_required", employee=employee_doc.name, path=login_path)
+        # Tell the portal which 2FA methods this user actually enrolled so the
+        # challenge UI only offers those (best-effort; [] on VEHRMS failure).
+        vehrms_emp = _resolve_vehrms_employee(employee_doc.name)
+        return {
+            "success": True,
+            "stage": "2fa_required",
+            "pending_token": pending_token,
+            "employee": employee_doc.name,
+            "name": employee_doc.employee_name,
+            "role": employee_doc.role,
+            "methods": _vehrms_enrolled_methods(employee_doc.name, vehrms_emp, employee_doc.role),
+        }
+        
+    _issue_session(employee_doc, login_path)
+    if device_id:
+        _refresh_device_trust(employee_doc.name, device_id, login_path, device_label)
+        
+    _audit_auth("auth.login.success", employee=employee_doc.name, path=login_path)
+    
+    return {
+        "success": True,
+        "stage": "complete",
+        "employee": employee_doc.name,
+        "name": employee_doc.employee_name,
+        "role": employee_doc.role,
+    }
+
+
+
 def _issue_session(employee_doc: Any, login_path: str) -> None:
     """Issue a Frappe session as the shared VECRM Portal User; stash employee
     identity in session data per D8.
@@ -1697,12 +1920,11 @@ def _issue_session(employee_doc: Any, login_path: str) -> None:
 
 
 @frappe.whitelist(allow_guest=True, methods=["POST"])
-def login_with_password(email: str = "", password: str = "") -> dict[str, Any]:
+def login_with_password(email: str = "", password: str = "", device_id: str = "", device_label: str = "") -> dict[str, Any]:
     """Authenticate VECRM Employee via email + password.
 
     Returns:
-        {"success": True, "employee": "<phone>", "name": "<full_name>",
-         "role": "<role>"}
+        {"success": True, "stage": "complete"|"2fa_required", ...}
 
     Raises:
         frappe.AuthenticationError with generic "Invalid credentials" for
@@ -1754,26 +1976,21 @@ def login_with_password(email: str = "", password: str = "") -> dict[str, Any]:
         frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
 
     _on_success(employee_doc)
-    _issue_session(employee_doc, "password")
-    _audit_auth("auth.login.success", employee=employee_doc.name, path="password")
 
-    return {
-        "success": True,
-        "employee": employee_doc.name,
-        "name": employee_doc.employee_name,
-        "role": employee_doc.role,
-    }
+    if device_id and len(device_id) > 128:
+        device_id = device_id[:128]
+
+    return _finalize_or_challenge(employee_doc, "password", device_id, device_label)
 
 
 @frappe.whitelist(allow_guest=True, methods=["POST"])
-def login_with_pin(phone: str = "", pin: str = "") -> dict[str, Any]:
+def login_with_pin(phone: str = "", pin: str = "", device_id: str = "", device_label: str = "") -> dict[str, Any]:
     """Authenticate VECRM Employee via phone + PIN.
 
     Companion to login_with_password (S25). Independent lockout state per R6.
 
     Returns:
-        {"success": True, "employee": "<phone>", "name": "<full_name>",
-         "role": "<role>"}
+        {"success": True, "stage": "complete"|"2fa_required", ...}
 
     Raises:
         frappe.AuthenticationError with generic "Invalid credentials" for
@@ -1837,12 +2054,233 @@ def login_with_pin(phone: str = "", pin: str = "") -> dict[str, Any]:
         frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
 
     _on_pin_success(employee_doc)
-    _issue_session(employee_doc, "pin")
-    _audit_auth("auth.login.success", employee=employee_doc.name, path="pin")
+
+    if device_id and len(device_id) > 128:
+        device_id = device_id[:128]
+
+    return _finalize_or_challenge(employee_doc, "pin", device_id, device_label)
+
+
+# ---------------------------------------------------------------------------
+# Build 2: pre-session 2FA challenge (server-to-server to VEHRMS).
+#
+# challenge_options / challenge_verify are allow_guest -- they authenticate via
+# the single-use pending_token from the two-stage login gate (Build 1), NOT a
+# session. challenge_verify is the ONLY place a session is issued for a
+# 2FA-enabled login on an untrusted device.
+# ---------------------------------------------------------------------------
+
+def _get_vehrms_base_url() -> str:
+    """VEHRMS bench base URL, overridable via site_config (vehrms_base_url).
+    The URL is not a secret, so a sane default is fine."""
+    return frappe.conf.get("vehrms_base_url") or "https://erp.vinayenterprises.co.in"
+
+
+def _get_vehrms_auth_header():
+    """Authorization header dict for server-to-server VEHRMS calls (authenticated
+    as the bff_service_account, which VEHRMS' _validate_bff_caller requires).
+
+    The api-key:secret lives ONLY in site_config (vehrms_api_key /
+    vehrms_api_secret) -- never in source or git. Returns None when either is
+    missing; callers treat that as "VEHRMS auth unavailable" and fail-open-on-
+    check (the user already passed their primary credential). Centralized so the
+    credential is read in exactly ONE place."""
+    key = frappe.conf.get("vehrms_api_key")
+    secret = frappe.conf.get("vehrms_api_secret")
+    if not key or not secret:
+        frappe.log_error(
+            "VEHRMS API credentials missing from site_config (vehrms_api_key / vehrms_api_secret)",
+            "2FA cross-backend auth",
+        )
+        return None
+    return {"Authorization": f"token {key}:{secret}", "Content-Type": "application/json"}
+
+
+def _vehrms_call(method: str, payload: dict) -> dict:
+    """Call vehrms.api_mobile.<method> server-to-server. Returns
+    {"ok": bool, "status": int, "data": <message|error>}. `ok` is True only on
+    HTTP 200 with a parseable `message`. NOTE: the VEHRMS verify methods
+    frappe.throw on failure (=> non-200) and return {"ok": True} on success, so
+    callers gate on res["ok"] AND res["data"].get("ok")."""
+    import requests
+    headers = _get_vehrms_auth_header()
+    if not headers:
+        return {"ok": False, "status": 0, "data": {"error": "VEHRMS credentials not configured"}}
+    url = f"{_get_vehrms_base_url()}/api/method/vehrms.api_mobile.{method}"
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+    except Exception as e:
+        frappe.log_error(f"VEHRMS call {method} failed: {e}", "VECRM _vehrms_call")
+        return {"ok": False, "status": 0, "data": {"error": str(e)}}
+    try:
+        body = resp.json()
+    except Exception:
+        body = {}
+    message = body.get("message") if isinstance(body, dict) else None
+    if resp.status_code == 200 and message is not None:
+        return {"ok": True, "status": 200, "data": message}
+    return {"ok": False, "status": resp.status_code, "data": message if message is not None else body}
+
+
+def _resolve_vehrms_employee(phone: str):
+    """Pre-session phone -> VEHRMS Employee id (e.g. HR-EMP-00002) via a
+    server-to-server frappe.client.get_value as the bff_service_account (same
+    auth as _user_has_2fa). Returns None if unresolvable."""
+    import requests
+    if not phone:
+        return None
+    headers = _get_vehrms_auth_header()
+    if not headers:
+        return None
+    url = f"{_get_vehrms_base_url()}/api/method/frappe.client.get_value"
+    payload = {"doctype": "Employee", "filters": {"vecrm_employee": phone}, "fieldname": "name"}
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            msg = resp.json().get("message")
+            if isinstance(msg, dict):
+                return msg.get("name")
+    except Exception as e:
+        frappe.log_error(f"VEHRMS employee resolve failed for {phone}: {e}", "VECRM _resolve_vehrms_employee")
+    return None
+
+
+def _vehrms_enrolled_methods(phone: str, vehrms_emp, role: str) -> list:
+    """Which 2FA methods the user actually enrolled in VEHRMS, as a subset of
+    ["passkey", "totp", "email_otp"]. Best-effort: returns [] on any failure so
+    the login gate never breaks -- the portal falls back to its policy default
+    (web = totp/email_otp; app = whatever the device supports)."""
+    if not vehrms_emp:
+        return []
+    res = _vehrms_call("get_2fa_status", {"employee_id": vehrms_emp, "phone_key": phone, "role": role})
+    if not res["ok"] or not isinstance(res["data"], dict):
+        return []
+    data = res["data"]
+    methods = []
+    if (data.get("webauthn") or {}).get("enabled"):
+        methods.append("passkey")
+    if (data.get("totp") or {}).get("enabled"):
+        methods.append("totp")
+    if (data.get("email_otp") or {}).get("enabled"):
+        methods.append("email_otp")
+    return methods
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def challenge_options(pending_token: str = "", method: str = "") -> dict[str, Any]:
+    """Start a 2FA challenge for a pending (pre-session) login. Authenticated by
+    the single-use pending_token, NOT a session. Never issues a session."""
+    pend = _read_2fa_pending(pending_token)
+    if not pend:
+        frappe.throw(_("Session expired. Please log in again."), frappe.AuthenticationError)
+
+    phone = pend["employee"]
+    employee_doc = frappe.get_doc("VECRM Employee", phone)
+    vehrms_emp = _resolve_vehrms_employee(phone)
+    if not vehrms_emp:
+        frappe.throw(_("Could not resolve your HR profile. Contact IT."), frappe.ValidationError)
+    role = employee_doc.role
+
+    if method == "passkey":
+        res = _vehrms_call("webauthn_login_options", {
+            "employee_id": vehrms_emp, "phone_key": phone, "role": role,
+        })
+        if not res["ok"]:
+            frappe.throw(_("Could not start the passkey challenge."), frappe.ValidationError)
+        return {"ok": True, "method": "passkey", "options": res["data"]}
+
+    if method == "email_otp":
+        # VEHRMS generates + caches the code and returns it in _internal; VECRM
+        # has no mail transport, so the portal BFF (build 3) delivers the email
+        # via Graph and MUST strip _internal before responding to the browser.
+        res = _vehrms_call("email_otp_send", {
+            "employee_id": vehrms_emp, "phone_key": phone, "role": role,
+        })
+        if not res["ok"]:
+            frappe.throw(_("Could not send the verification code."), frappe.ValidationError)
+        internal = (res["data"] or {}).get("_internal") or {}
+        return {
+            "ok": True,
+            "method": "email_otp",
+            "_internal": {
+                "code": internal.get("code"),
+                "employee_name": internal.get("employee_name"),
+                "delivery_email": employee_doc.vecrm_email,
+            },
+        }
+
+    if method == "totp":
+        # The authenticator app already holds the secret; nothing to issue.
+        return {"ok": True, "method": "totp"}
+
+    frappe.throw(_("Unsupported method"), frappe.ValidationError)
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def challenge_verify(pending_token: str = "", method: str = "", response: str = "") -> dict[str, Any]:
+    """Verify the 2FA `response` against VEHRMS and, ONLY on success, issue the
+    Frappe session + refresh the 60-day device trust + burn the single-use
+    pending_token. Authenticated by the pending_token, NOT a session.
+
+    `response`: passkey -> WebAuthn assertion JSON; email_otp/totp -> 6-digit code.
+    """
+    pend = _read_2fa_pending(pending_token)
+    if not pend:
+        frappe.throw(_("Session expired. Please log in again."), frappe.AuthenticationError)
+
+    phone = pend["employee"]
+    device_id = pend.get("device_id") or ""
+    device_label = pend.get("device_label") or ""
+    login_path = pend.get("login_path") or "password"
+
+    employee_doc = frappe.get_doc("VECRM Employee", phone)
+    vehrms_emp = _resolve_vehrms_employee(phone)
+    if not vehrms_emp:
+        frappe.throw(_("Could not resolve your HR profile. Contact IT."), frappe.ValidationError)
+    role = employee_doc.role
+
+    if method == "passkey":
+        res = _vehrms_call("webauthn_login_verify", {
+            "employee_id": vehrms_emp, "assertion_json": response,
+            "phone_key": phone, "role": role,
+        })
+    elif method == "email_otp":
+        res = _vehrms_call("email_otp_verify", {
+            "employee_id": vehrms_emp, "code": response, "phone_key": phone, "role": role,
+        })
+    elif method == "totp":
+        res = _vehrms_call("totp_verify", {
+            "employee_id": vehrms_emp, "code": response, "phone_key": phone, "role": role,
+        })
+    else:
+        frappe.throw(_("Unsupported method"), frappe.ValidationError)
+
+    # VEHRMS verify methods return {"ok": True} (HTTP 200) on success and
+    # frappe.throw (=> non-200) on failure. Success == 200 AND message.ok.
+    ok = bool(res["ok"] and isinstance(res["data"], dict) and res["data"].get("ok"))
+
+    if not ok:
+        attempts = _bump_2fa_attempts(pending_token)
+        _audit_auth("auth.2fa.failed", employee=phone, path=login_path)
+        if attempts >= 5:
+            # Brute-force guard: burn the token after 5 failed attempts.
+            _consume_2fa_pending(pending_token)
+            _clear_2fa_attempts(pending_token)
+            frappe.throw(_("Too many failed attempts. Please log in again."), frappe.AuthenticationError)
+        frappe.throw(_("Verification failed"), frappe.AuthenticationError)
+
+    # 2FA verified server-side -> issue the session + trust this device.
+    _issue_session(employee_doc, login_path)
+    if device_id:
+        _refresh_device_trust(phone, device_id, login_path, device_label or None)
+    _consume_2fa_pending(pending_token)   # single-use
+    _clear_2fa_attempts(pending_token)
+    _audit_auth("auth.2fa.success", employee=phone, path=login_path)
 
     return {
         "success": True,
-        "employee": employee_doc.name,
+        "stage": "complete",
+        "employee": phone,
         "name": employee_doc.employee_name,
         "role": employee_doc.role,
     }
