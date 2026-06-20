@@ -646,6 +646,10 @@ def reopen_travel_voucher(voucher_name: str, reason: str = "") -> dict:
 
 	# Transition to the editable (rejected-style) state + reopen stamps. db_set
 	# avoids the controller cycle (same pattern as approve/reject).
+	# S41: the reopen stamps below are set unconditionally, so a voucher that
+	# was reopened before (and then relocked/resubmitted, possibly with stale
+	# reopened_* values) can always be reopened again — only docstatus==1 and
+	# the reopener role gate above bound this; the prior field values do not.
 	voucher.db_set("approval_status", "Rejected", update_modified=False)
 	voucher.db_set("approved_by_employee", None, update_modified=False)
 	voucher.db_set("approved_by_role", None, update_modified=False)

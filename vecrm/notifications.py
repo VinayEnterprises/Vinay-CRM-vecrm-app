@@ -681,7 +681,10 @@ def relock_expired_reopened_vouchers():
 			doc.db_set("rejected_by_role", None, update_modified=False)
 			doc.db_set("rejected_at", None, update_modified=False)
 			doc.db_set("rejection_reason", None, update_modified=False)
+			# S41: clear ALL reopen stamps (incl. reopened_by) so the voucher
+			# returns to a clean state and an admin can reopen it again later.
 			doc.db_set("reopened", 0, update_modified=False)
+			doc.db_set("reopened_by", None, update_modified=False)
 			doc.db_set("reopened_until", None, update_modified=False)
 			frappe.db.commit()
 			_notify_employee(
