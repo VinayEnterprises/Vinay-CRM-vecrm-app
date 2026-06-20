@@ -3231,6 +3231,80 @@ def change_password(current_password: str = "", new_password: str = "") -> dict[
 
 
 @frappe.whitelist(methods=["POST"])
+def verify_pin(pin: str = "") -> dict[str, Any]:
+    """Verify the CURRENT session user's app PIN — for the local app-lock
+    gate (S41 App-Lock). VERIFY-ONLY: confirms identity to unlock the UI; it
+    does NOT mint a session, rotate cookies, or touch device-trust. The
+    caller is already authenticated (a valid session is required).
+
+    Distinct from login_with_pin (which authenticates phone+PIN and issues a
+    session). This is a lightweight re-assert of an already-logged-in user.
+
+    Behaviour notes:
+      - Resolves the employee from the session (no phone arg → no
+        enumeration surface, and the app-lock can only ever check the
+        logged-in user's own PIN).
+      - Does NOT mutate failed_pin_attempts / pin_locked_until. The login
+        lockout counter must not be corrupted by a local UI gate; the
+        client caps attempts and offers a logout escape. An EXISTING login
+        lock is still honoured (a locked account cannot unlock the gate).
+      - Returns {"ok": True} on match. Raises AuthenticationError
+        ("Invalid credentials") on any failure, mirroring the rest of the
+        auth surface (the BFF maps this to {ok:false}).
+
+    Returns:
+        {"ok": True}
+
+    Raises:
+        frappe.PermissionError if no authenticated VECRM Employee session.
+        frappe.AuthenticationError ("Invalid credentials") on PIN mismatch,
+            missing/locked/inactive account, or no PIN configured.
+    """
+    employee_phone = frappe.session.data.get("vecrm_employee_phone")
+    if not employee_phone:
+        frappe.throw(
+            _("Not authenticated as VECRM Employee"), frappe.PermissionError
+        )
+
+    if not pin or not pin.isdigit() or len(pin) != 6:
+        _audit_auth(
+            "auth.applock.verify.failed",
+            employee=employee_phone, path="pin", reason="invalid_pin_format",
+        )
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    employee_doc = frappe.get_doc("VECRM Employee", employee_phone)
+
+    if employee_doc.vecrm_account_status != "Active":
+        _audit_auth(
+            "auth.applock.verify.failed",
+            employee=employee_doc.name, path="pin", reason="account_inactive",
+        )
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    # Honour an existing login lock, but never CREATE one here.
+    if _is_pin_locked(employee_doc):
+        _audit_auth(
+            "auth.applock.verify.failed",
+            employee=employee_doc.name, path="pin", reason="account_locked",
+        )
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    if not employee_doc.pin_hash or not passlibctx.verify(pin, employee_doc.pin_hash):
+        _audit_auth(
+            "auth.applock.verify.failed",
+            employee=employee_doc.name, path="pin", reason="invalid_credentials",
+        )
+        frappe.throw(_("Invalid credentials"), frappe.AuthenticationError)
+
+    _audit_auth(
+        "auth.applock.verify.success",
+        employee=employee_doc.name, path="pin",
+    )
+    return {"ok": True}
+
+
+@frappe.whitelist(methods=["POST"])
 def change_pin(current_pin: str = "", new_pin: str = "") -> dict[str, Any]:
     """Authenticated portal user changes own PIN.
 
