@@ -72,37 +72,44 @@ class VECRMTravelVoucher(Document):
         if not self.submitter:
             frappe.throw("Submitter (VECRM Employee) is required.")
 
-        # Duplicate voucher check per half-period (S40)
-        from vecrm.vecrm.utils.voucher_period import period_of
-        import calendar
-        from datetime import date
+        # S41 two-tier bypass: when global or this submitter's user-level
+        # bypass is active, skip the duplicate-per-period business rule.
+        # Snapshot setup below (role/base_city/rate) is structural integrity
+        # and is NEVER skipped — a bypassed voucher must still compute.
+        from vecrm.vecrm.utils.bypass import validations_bypassed
 
-        y, m, half = period_of(self.business_date)
-        if half == "H1":
-            start_date = date(y, m, 1)
-            end_date = date(y, m, 15)
-        else:
-            last_d = calendar.monthrange(y, m)[1]
-            start_date = date(y, m, 16)
-            end_date = date(y, m, last_d)
+        if not validations_bypassed(self.submitter):
+            # Duplicate voucher check per half-period (S40)
+            from vecrm.vecrm.utils.voucher_period import period_of
+            import calendar
+            from datetime import date
 
-        existing = frappe.db.get_value(
-            "VECRM Travel Voucher",
-            {
-                "submitter": self.submitter,
-                "business_date": ["between", [start_date, end_date]],
-                "docstatus": ["!=", 2],
-            },
-            ["name"],
-            as_dict=True,
-        )
+            y, m, half = period_of(self.business_date)
+            if half == "H1":
+                start_date = date(y, m, 1)
+                end_date = date(y, m, 15)
+            else:
+                last_d = calendar.monthrange(y, m)[1]
+                start_date = date(y, m, 16)
+                end_date = date(y, m, last_d)
 
-        if existing:
-            frappe.throw(
-                f"You already have a petrol voucher for this period ({existing.name}). "
-                "Please edit your existing voucher instead of creating a new one.",
-                title="Duplicate Voucher"
+            existing = frappe.db.get_value(
+                "VECRM Travel Voucher",
+                {
+                    "submitter": self.submitter,
+                    "business_date": ["between", [start_date, end_date]],
+                    "docstatus": ["!=", 2],
+                },
+                ["name"],
+                as_dict=True,
             )
+
+            if existing:
+                frappe.throw(
+                    f"You already have a petrol voucher for this period ({existing.name}). "
+                    "Please edit your existing voucher instead of creating a new one.",
+                    title="Duplicate Voucher"
+                )
 
         emp = frappe.get_doc("VECRM Employee", self.submitter)
 
@@ -160,33 +167,40 @@ class VECRMTravelVoucher(Document):
         if not self.visit_lines:
             frappe.throw("At least one visit line is required.")
 
-        # Validate visit line dates fall within the voucher's half-period (S40)
-        from vecrm.vecrm.utils.voucher_period import period_of
-        import calendar
-        from datetime import date
+        # S41 two-tier bypass: skip the visit-date period business rule when
+        # global or this submitter's user-level bypass is active. Total
+        # recomputation + approver-set snapshot below are structural and
+        # always run.
+        from vecrm.vecrm.utils.bypass import validations_bypassed
 
-        y, m, half = period_of(self.business_date)
-        if half == "H1":
-            start_date = date(y, m, 1)
-            end_date = date(y, m, 15)
-        else:
-            last_d = calendar.monthrange(y, m)[1]
-            start_date = date(y, m, 16)
-            end_date = date(y, m, last_d)
+        if not validations_bypassed(self.submitter):
+            # Validate visit line dates fall within the voucher's half-period (S40)
+            from vecrm.vecrm.utils.voucher_period import period_of
+            import calendar
+            from datetime import date
 
-        for line in self.visit_lines:
-            if line.visit_date:
-                visit_date = frappe.utils.getdate(line.visit_date)
-                if not (start_date <= visit_date <= end_date):
-                    v_y, v_m, v_half = period_of(visit_date)
-                    if v_half == "H1":
-                        period_start_date = date(v_y, v_m, 1)
-                    else:
-                        period_start_date = date(v_y, v_m, 16)
-                    frappe.throw(
-                        f"Visit date {line.visit_date} is outside this voucher's period ({start_date} to {end_date}). "
-                        f"Change the Voucher Date to {period_start_date} to add this visit."
-                    )
+            y, m, half = period_of(self.business_date)
+            if half == "H1":
+                start_date = date(y, m, 1)
+                end_date = date(y, m, 15)
+            else:
+                last_d = calendar.monthrange(y, m)[1]
+                start_date = date(y, m, 16)
+                end_date = date(y, m, last_d)
+
+            for line in self.visit_lines:
+                if line.visit_date:
+                    visit_date = frappe.utils.getdate(line.visit_date)
+                    if not (start_date <= visit_date <= end_date):
+                        v_y, v_m, v_half = period_of(visit_date)
+                        if v_half == "H1":
+                            period_start_date = date(v_y, v_m, 1)
+                        else:
+                            period_start_date = date(v_y, v_m, 16)
+                        frappe.throw(
+                            f"Visit date {line.visit_date} is outside this voucher's period ({start_date} to {end_date}). "
+                            f"Change the Voucher Date to {period_start_date} to add this visit."
+                        )
 
         if not self.rate_per_km_applied:
             frappe.throw("rate_per_km_applied is unset (snapshot failure).")

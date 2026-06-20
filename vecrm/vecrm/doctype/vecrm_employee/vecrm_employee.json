@@ -17,6 +17,7 @@
   "vecrm_base_city",
   "reporting_approver",
   "vecrm_account_status",
+  "validation_bypass",
   "auth_section",
   "password_hash",
   "failed_password_attempts",
@@ -98,6 +99,13 @@
    "label": "Account Status",
    "options": "Active\nSuspended",
    "reqd": 1
+  },
+  {
+   "default": "0",
+   "description": "S41: when checked, this employee's vouchers skip the duplicate, period, and submission-window validations. Admin-set; use for data correction only.",
+   "fieldname": "validation_bypass",
+   "fieldtype": "Check",
+   "label": "Validation Bypass"
   },
   {
    "fieldname": "auth_section",

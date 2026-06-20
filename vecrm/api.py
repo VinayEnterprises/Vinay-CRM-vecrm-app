@@ -315,14 +315,14 @@ def voucher_resubmit_travel(
 	# resubmits.
 	if voucher.approval_status != "Rejected":
 		if business_date:
-			_check_voucher_date_cutoff(business_date)
+			_check_voucher_date_cutoff(business_date, submitter=voucher.submitter)
 		else:
-			_check_voucher_date_cutoff(voucher.business_date)
+			_check_voucher_date_cutoff(voucher.business_date, submitter=voucher.submitter)
 		if isinstance(resubmit_lines, list):
 			for line in resubmit_lines:
 				vd = line.get("visit_date") if isinstance(line, dict) else None
 				if vd:
-					_check_voucher_date_cutoff(vd)
+					_check_voucher_date_cutoff(vd, submitter=voucher.submitter)
 
 	from vecrm.vecrm.doctype.vecrm_travel_voucher.vecrm_travel_voucher import (
 		voucher_resubmit_travel as _resubmit,
@@ -349,7 +349,7 @@ def voucher_resubmit_expense(
 	# S41: a Rejected voucher's resubmit bypasses the cutoff — the rejection
 	# authorizes editing past the deadline.
 	if voucher.approval_status != "Rejected":
-		_check_voucher_date_cutoff(expense_date or voucher.expense_date)
+		_check_voucher_date_cutoff(expense_date or voucher.expense_date, submitter=voucher.submitter)
 
 	from vecrm.vecrm.doctype.vecrm_expense_voucher.vecrm_expense_voucher import (
 		voucher_resubmit_expense as _resubmit,
@@ -425,11 +425,11 @@ def create_travel_voucher_draft(
 	# 16th are H1 + H2 respectively). business_date is checked too as
 	# defense-in-depth since it drives FY allocation. Admin/Sales
 	# Head/HR bypass; see _check_voucher_date_cutoff.
-	_check_voucher_date_cutoff(business_date)
+	_check_voucher_date_cutoff(business_date, submitter=submitter)
 	for line in lines:
 		visit_date = line.get("visit_date")
 		if visit_date:
-			_check_voucher_date_cutoff(visit_date)
+			_check_voucher_date_cutoff(visit_date, submitter=submitter)
 
 	# Single-draft-per-period dedup (TRAVEL). One consolidated draft per
 	# (submitter, half-month period). If an open draft already exists for
@@ -545,10 +545,10 @@ def submit_travel_voucher_draft(voucher_name: str) -> dict:
 	# the deadline. Block the submit attempt with the same gate that
 	# guards create. Per visit_date (line-level) + business_date
 	# defense-in-depth.
-	_check_voucher_date_cutoff(doc.business_date)
+	_check_voucher_date_cutoff(doc.business_date, submitter=doc.submitter)
 	for line in doc.visit_lines:
 		if line.visit_date:
-			_check_voucher_date_cutoff(line.visit_date)
+			_check_voucher_date_cutoff(line.visit_date, submitter=doc.submitter)
 
 	# Submit-window gate (lower bound). A period's consolidated voucher can
 	# only be submitted once the period is essentially over:
@@ -772,7 +772,7 @@ def create_expense_voucher_draft(
 	# Bi-monthly submission cutoff (PD-S29-BACKFILL-PREVENTION). EV
 	# has a single voucher-level expense_date (no per-line dates); one
 	# check covers the whole voucher. Admin/Sales Head/HR bypass.
-	_check_voucher_date_cutoff(expense_date)
+	_check_voucher_date_cutoff(expense_date, submitter=submitter)
 
 	# Per-line validation. Receipts are required for Hotel/Supplies and
 	# optional otherwise; any supplied receipt URL must resolve to a File row.
@@ -870,7 +870,7 @@ def submit_expense_voucher_draft(voucher_name: str) -> dict:
 
 	# Bi-monthly cutoff re-check (PD-S29-BACKFILL-PREVENTION). Draft may
 	# have been created during an open window and now sit past deadline.
-	_check_voucher_date_cutoff(doc.expense_date)
+	_check_voucher_date_cutoff(doc.expense_date, submitter=doc.submitter)
 
 	# doc.submit() triggers on_submit -> _audit("voucher.expense.submitted")
 	doc.submit()
@@ -3019,7 +3019,75 @@ def _require_inquiry_owner_or_admin(inquiry_name: str) -> None:
     )
 
 
-def _check_voucher_date_cutoff(voucher_date, session_role: str | None = None) -> None:
+def _coerce_bool(value: Any) -> bool:
+	"""Parse a truthy flag from an HTTP arg (str/bool/int) — frappe.whitelist
+	delivers form params as strings, so 'false'/'0'/'' must read as False."""
+	if isinstance(value, bool):
+		return value
+	if isinstance(value, (int, float)):
+		return bool(value)
+	return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+@frappe.whitelist(methods=["POST"])
+def set_global_bypass(enabled: Any = False) -> dict[str, Any]:
+	"""Admin-only Tier-1 toggle: enable/disable ALL voucher validations
+	site-wide (S41). Stores 1/0 in frappe.cache under vecrm_global_bypass.
+
+	Use during data correction only — while ON, every user's voucher skips
+	the duplicate, period, and submission-window checks. Emits an audit row
+	so the toggle is traceable.
+	"""
+	_require_admin_session()
+	from vecrm.vecrm.utils.bypass import GLOBAL_BYPASS_KEY
+
+	flag = 1 if _coerce_bool(enabled) else 0
+	frappe.cache().set_value(GLOBAL_BYPASS_KEY, flag)
+
+	# Traceability: who flipped the global escape hatch, and when.
+	try:
+		frappe.get_doc({
+			"doctype": "VECRM Voucher Audit Log",
+			"event": "voucher.bypass.global_set",
+			"event_timestamp": frappe.utils.now_datetime(),
+			"payload": json.dumps({
+				"enabled": bool(flag),
+				"actor_user": frappe.session.data.get("vecrm_email") or frappe.session.user,
+			}, default=str),
+		}).insert(ignore_permissions=True)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "set_global_bypass.audit")
+
+	return {"enabled": bool(flag)}
+
+
+@frappe.whitelist(methods=["GET"])
+def get_global_bypass() -> dict[str, Any]:
+	"""Return the current Tier-1 global-bypass state. Readable by any
+	authenticated session (the voucher pages render a banner for everyone
+	when it is ON); only set_global_bypass is Admin-gated."""
+	from vecrm.vecrm.utils.bypass import global_bypass_active
+
+	return {"enabled": global_bypass_active()}
+
+
+@frappe.whitelist(methods=["GET"])
+def get_my_bypass_state() -> dict[str, Any]:
+	"""Return both bypass tiers as they apply to the CURRENT session's
+	employee — powers the voucher-page banners (red global / amber self)
+	without leaking other employees' flags."""
+	from vecrm.vecrm.utils.bypass import global_bypass_active, employee_bypass_active
+
+	phone = (frappe.session.data or {}).get("vecrm_employee_phone")
+	return {
+		"global_bypass": global_bypass_active(),
+		"self_bypass": employee_bypass_active(phone),
+	}
+
+
+def _check_voucher_date_cutoff(
+    voucher_date, session_role: str | None = None, submitter: str | None = None
+) -> None:
     """Enforce the bi-monthly voucher submission cutoff with 2-day grace.
 
     The payment cycle splits each month into two periods:
@@ -3054,6 +3122,18 @@ def _check_voucher_date_cutoff(voucher_date, session_role: str | None = None) ->
       frappe.ValidationError if voucher_date is in a closed period and
         the caller is not in the bypass set.
     """
+    # S41 two-tier validation bypass. Global (Tier 1, cache flag) overrides
+    # everything for everyone; user-level (Tier 2, VECRM Employee field) is
+    # scoped to the voucher's submitter. Both skip the submission-window
+    # cutoff entirely. Checked before the role-based approver bypass so a
+    # data-correction toggle works regardless of who is filing.
+    from vecrm.vecrm.utils.bypass import global_bypass_active, employee_bypass_active
+
+    if global_bypass_active():
+        return
+    if submitter and employee_bypass_active(submitter):
+        return
+
     if session_role is None:
         session_role = (frappe.session.data or {}).get("vecrm_employee_role")
 
@@ -3290,6 +3370,7 @@ def admin_list_employees(
             "reporting_approver",
             "last_login_at",
             "creation",
+            "validation_bypass",
         ],
         order_by="employee_name asc",
         limit_start=limit_start,
@@ -3471,6 +3552,7 @@ def admin_update_employee(
     vecrm_email: str = "",
     reporting_approver: str = "",
     vecrm_account_status: str = "",
+    validation_bypass: str = "",
 ) -> dict[str, Any]:
     """Admin-only: update editable fields on an existing VECRM Employee.
 
@@ -3528,6 +3610,11 @@ def admin_update_employee(
                 frappe.ValidationError,
             )
         doc.vecrm_account_status = vecrm_account_status
+    # S41 Tier-2 user-level validation bypass. Sentinel "" = leave unchanged;
+    # "0"/"1" (or any truthy string) sets it explicitly. Distinct handling
+    # because 0 is a meaningful value here, not "field omitted".
+    if validation_bypass != "":
+        doc.validation_bypass = 1 if _coerce_bool(validation_bypass) else 0
 
     doc.save(ignore_permissions=True)
     frappe.db.commit()

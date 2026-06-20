@@ -107,41 +107,49 @@ class VECRMExpenseVoucher(Document):
                 frappe.ValidationError,
             )
 
-        # Per-line amount validation
-        for idx, line in enumerate(self.expense_lines, start=1):
-            if line.category in RECEIPT_REQUIRED_CATEGORIES and not (line.attachment or "").strip():
-                frappe.throw(
-                    f"Receipt is required for {line.category} expenses.",
-                    frappe.ValidationError,
-                )
+        # S41 two-tier bypass: skip the per-line business rules (receipt
+        # required, Food Allowance math, amount > 0) when global or this
+        # submitter's user-level bypass is active. The name guard above and
+        # the total recompute below are structural and always run.
+        from vecrm.vecrm.utils.bypass import validations_bypassed
 
-            if line.category == "Food Allowance":
-                if not line.days or int(line.days) <= 0:
+        if not validations_bypassed(self.submitter):
+            # Per-line amount validation
+            for idx, line in enumerate(self.expense_lines, start=1):
+                if line.category in RECEIPT_REQUIRED_CATEGORIES and not (line.attachment or "").strip():
                     frappe.throw(
-                        f"Expense line {idx}: Food Allowance requires a valid number of days (> 0).",
-                        frappe.ValidationError,
-                    )
-                number_of_persons = int(line.number_of_persons or 1)
-                if number_of_persons <= 0:
-                    frappe.throw(
-                        f"Expense line {idx}: Food Allowance requires a valid number of persons (> 0).",
-                        frappe.ValidationError,
-                    )
-                expected_amount = int(line.days) * number_of_persons * 380
-                if float(line.amount or 0) != expected_amount:
-                    frappe.throw(
-                        f"Expense line {idx}: Food Allowance amount must be ₹{expected_amount} ({line.days} days × {number_of_persons} persons @ ₹380/day). Got ₹{line.amount or 0}.",
-                        frappe.ValidationError,
-                    )
-            else:
-                if line.amount is None or float(line.amount) <= 0:
-                    frappe.throw(
-                        f"Expense line {idx}: amount must be > 0. Got {line.amount!r}.",
+                        f"Receipt is required for {line.category} expenses.",
                         frappe.ValidationError,
                     )
 
-        # Recompute total_amount (defense against client-side tampering)
-        self.total_amount = sum(float(line.amount) for line in self.expense_lines)
+                if line.category == "Food Allowance":
+                    if not line.days or int(line.days) <= 0:
+                        frappe.throw(
+                            f"Expense line {idx}: Food Allowance requires a valid number of days (> 0).",
+                            frappe.ValidationError,
+                        )
+                    number_of_persons = int(line.number_of_persons or 1)
+                    if number_of_persons <= 0:
+                        frappe.throw(
+                            f"Expense line {idx}: Food Allowance requires a valid number of persons (> 0).",
+                            frappe.ValidationError,
+                        )
+                    expected_amount = int(line.days) * number_of_persons * 380
+                    if float(line.amount or 0) != expected_amount:
+                        frappe.throw(
+                            f"Expense line {idx}: Food Allowance amount must be ₹{expected_amount} ({line.days} days × {number_of_persons} persons @ ₹380/day). Got ₹{line.amount or 0}.",
+                            frappe.ValidationError,
+                        )
+                else:
+                    if line.amount is None or float(line.amount) <= 0:
+                        frappe.throw(
+                            f"Expense line {idx}: amount must be > 0. Got {line.amount!r}.",
+                            frappe.ValidationError,
+                        )
+
+        # Recompute total_amount (defense against client-side tampering).
+        # Coerce None → 0 so a bypassed line with a blank amount still totals.
+        self.total_amount = sum(float(line.amount or 0) for line in self.expense_lines)
 
     def before_submit(self) -> None:
         """Pre-submit checks: derive approver_set from submitter_role.
