@@ -5,11 +5,9 @@ import frappe
 from typing import Any
 
 def render_email_layout(preheader: str, body_html: str) -> str:
-    """Renders the Vinay Enterprises branded email layout.
-    Mirrors the logic from vecrm-portal's lib/email-templates/shared.ts.
-    """
-    logo_src = "cid:logo"
-    
+    """Renders the Anusuya Workspace branded email layout (shared shell, mirrors VEHRMS email_utils.render_email_layout)."""
+    logo_src = "https://app.anusuya.ai/anusuya/raster/anusuya-symbol-primary.png"
+
     preheader_html = f'<div style="display:none;max-height:0;overflow:hidden;color:transparent;">{frappe.utils.escape_html(preheader)}</div>' if preheader else ""
 
     return f"""
@@ -18,18 +16,19 @@ def render_email_layout(preheader: str, body_html: str) -> str:
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Vinay Enterprises CRM</title>
+  <title>Anusuya Workspace</title>
 </head>
-<body style="margin:0;padding:0;background:#F5F1EB;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#3A2E2A;">
+<body style="margin:0;padding:0;background:#F8FAFC;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#0F172A;">
   {preheader_html}
-  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#F5F1EB;padding:32px 16px;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#F8FAFC;padding:32px 16px;">
     <tr>
       <td align="center">
         <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="max-width:600px;background:#FFFFFF;border-radius:12px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.06);">
           <tr>
-            <td style="padding:32px 40px 16px;text-align:center;border-bottom:3px solid #FF8C00;">
-              <img src="{logo_src}" alt="Vinay Enterprises" width="300" style="display:block;margin:0 auto;max-width:300px;height:auto;border:0;outline:none;text-decoration:none;" />
-              <p style="margin:12px 0 0;font-size:12px;color:#9C8074;letter-spacing:1.5px;">CRM</p>
+            <td style="padding:32px 40px 16px;text-align:center;border-bottom:3px solid #F97316;">
+              <img src="{logo_src}" alt="" width="72" height="72" style="display:block;margin:0 auto;width:72px;height:72px;border:0;outline:none;text-decoration:none;" />
+              <p style="margin:10px 0 0;font-size:22px;font-weight:700;color:#0F172A;">Anusuya</p>
+              <p style="margin:3px 0 0;font-size:11px;color:#64748B;letter-spacing:2px;text-transform:uppercase;">Workspace</p>
             </td>
           </tr>
           <tr>
@@ -38,7 +37,7 @@ def render_email_layout(preheader: str, body_html: str) -> str:
             </td>
           </tr>
           <tr>
-            <td style="padding:24px 40px;background:#F5F1EB;text-align:center;color:#9C8074;font-size:12px;">
+            <td style="padding:24px 40px;background:#F8FAFC;text-align:center;color:#64748B;font-size:12px;">
               <p style="margin:0 0 4px;">This is an automated message. Do not reply.</p>
               <p style="margin:0;">Vinay Enterprises · Est. 1993 · Ahmedabad, India</p>
             </td>

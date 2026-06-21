@@ -4696,7 +4696,10 @@ def test_email_pipeline(recipient):
     send_email(
         to=recipient,
         subject="VECRM Email Pipeline Test",
-        html_body="<p>If you see this, the VECRM email pipeline is operational.</p>"
+        html_body=render_email_layout(
+            "",
+            "<p>If you see this, the VECRM email pipeline is operational.</p>",
+        ),
     )
     return {"status": "ok", "sent_to": recipient}
 
@@ -5030,7 +5033,7 @@ def _render_weekly_report_html(data: dict) -> str:
 
     # Branded Vinay Enterprises layout (logo header + footer) around the digest.
     return render_email_layout(
-        preheader="Vinay Enterprises CRM",
+        preheader="Anusuya Workspace",
         body_html="".join(sections),
     )
 
@@ -5369,7 +5372,7 @@ def _render_admin_followup_html(
     )
     # Branded Vinay Enterprises layout (logo header + footer) around the digest.
     return render_email_layout(
-        preheader="Vinay Enterprises CRM",
+        preheader="Anusuya Workspace",
         body_html="".join(sections),
     )
 
