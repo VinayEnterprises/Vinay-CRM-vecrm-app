@@ -1,24 +1,23 @@
 [pre_model_sync]
-# Patches added in this section will be executed before doctypes are migrated
-# Read docs to understand patches: https://frappeframework.com/docs/v14/user/en/database-migrations
+vecrm.patches.v0_1.create_vecrm_employee_records
+vecrm.patches.v0_2.populate_vecrm_employee_phone
+vecrm.patches.v0_3.remove_orphan_employee_records
+vecrm.patches.v0_3.link_employees_to_api_users
+vecrm.patches.v0_4.backfill_vecrm_employee_fields
 
 [post_model_sync]
-# Patches added in this section will be executed after doctypes are migrated
-vecrm.patches.v1_1.add_auth_fields
-vecrm.patches.v1_1.create_vecrm_portal_user
-vecrm.patches.v1_1.create_auth_doctypes
-vecrm.patches.v1_1.fix_portal_user_type
-vecrm.patches.v1_1.convert_password_hash_to_data
-vecrm.patches.v1_1.extend_lead_inquiry_perms
-vecrm.patches.v1_1.add_pin_auth_fields
-vecrm.patches.v1_1.add_lead_creating_employee
-vecrm.patches.v1_2.add_auth_reset_token_doctype
-vecrm.patches.v1_3.add_lead_required_fields
-vecrm.patches.v1_4.migrate_lead_owner_attribution
-vecrm.patches.v1_5.add_lead_expansion_and_closure_fields
-vecrm.patches.v1_6.add_lead_next_followup_date
-vecrm.patches.v1_7.create_vecrm_lead_touchpoint
+vecrm.patches.v1_0.remove_test_employees
+vecrm.patches.v1_1.add_product_category_field
+vecrm.patches.v1_2.add_lead_pipeline_tracking_fields
+vecrm.patches.v1_2.add_existing_lead_priority
+vecrm.patches.v1_3.add_deal_value_and_product_category
+vecrm.patches.v1_3.migrate_lead_pipeline_to_deals
+vecrm.patches.v1_4.add_lead_activity_tracking
+vecrm.patches.v1_5.populate_vecrm_deals
+vecrm.patches.v1_6.create_vecrm_lead_total_calls
+vecrm.patches.v1_7.create_vecrm_lead_total_interactions
 vecrm.patches.v1_8.add_voucher_approval_status
 vecrm.patches.v1_9.set_voucher_allow_on_submit
 vecrm.patches.v1_10.sync_hrms_employee_data
 vecrm.patches.v1_11.migrate_sales_head_to_sbae
+vecrm.patches.v1_11.add_expense_voucher_advance_fields

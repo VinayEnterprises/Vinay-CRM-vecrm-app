@@ -333,7 +333,8 @@ def voucher_resubmit_travel(
 
 @frappe.whitelist()
 def voucher_resubmit_expense(
-	voucher_name: str, expense_lines: str, expense_date: str = ""
+	voucher_name: str, expense_lines: str, expense_date: str = "",
+	advance_received: str = "", advance_amount: str = ""
 ) -> str:
 	"""Submitter or admin edits a Rejected Expense Voucher in place and resubmits.
 
@@ -355,7 +356,10 @@ def voucher_resubmit_expense(
 		voucher_resubmit_expense as _resubmit,
 	)
 
-	return _resubmit(voucher, expense_lines, expense_date or None)
+	return _resubmit(
+		voucher, expense_lines, expense_date or None,
+		advance_received or None, advance_amount or None,
+	)
 
 
 @frappe.whitelist()
@@ -711,6 +715,8 @@ def create_expense_voucher_draft(
 	submitter: str,
 	expense_date: str,
 	expense_lines: str,
+	advance_received: str = "",
+	advance_amount: str = "",
 ) -> dict:
 	"""Create a VECRM Expense Voucher in DRAFT state (docstatus=0).
 
@@ -796,6 +802,12 @@ def create_expense_voucher_draft(
 	doc.submitter = submitter
 	doc.expense_date = expense_date
 
+	# S42 advance payment (submitter-declared, editable while Draft). The
+	# controller's validate() enforces advance_amount <= total_amount and
+	# computes net_payable; here we only set the raw declaration.
+	doc.advance_received = 1 if str(advance_received) in ("1", "true", "True", "on") else 0
+	doc.advance_amount = float(advance_amount or 0) if doc.advance_received else 0
+
 	for line in lines:
 		doc.append("expense_lines", {
 			"category": line.get("category"),
@@ -819,6 +831,9 @@ def create_expense_voucher_draft(
 		"expense_date": str(doc.expense_date),
 		"fy_label": doc.fy_label,
 		"total_amount": doc.total_amount,
+		"advance_received": doc.advance_received,
+		"advance_amount": doc.advance_amount,
+		"net_payable": doc.net_payable,
 		"docstatus": doc.docstatus,
 		"expense_lines": [
 			{

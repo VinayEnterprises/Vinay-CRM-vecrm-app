@@ -6,6 +6,8 @@ from datetime import datetime
 import frappe
 from frappe.utils import flt, getdate
 
+from vecrm.vecrm.utils.voucher_period import period_label, period_key
+
 # --- Kotak CMS format (mirrors VEHRMS payroll kotak_cms.py) ---
 CLIENT_CODE = "ENTERPRISE"
 PRODUCT_CODE = "VPAY"
@@ -30,6 +32,14 @@ VOUCHER_TYPES = (
     ("VECRM Expense Voucher", "expense_date"),
     ("VECRM Travel Voucher", "business_date"),
 )
+
+# Human label shown in the split payout breakdown. VECRM Travel Voucher IS the
+# petrol voucher in portal/business language.
+_TYPE_LABEL = {
+    "VECRM Expense Voucher": "Expense Voucher",
+    "VECRM Travel Voucher": "Petrol Voucher",
+}
+ADJUSTMENT_DOCTYPE = "VECRM Payout Adjustment"
 
 
 def _payment_type(ifsc_code):
@@ -63,12 +73,41 @@ def _build_row(payment_date, amount, beneficiary_name, beneficiary_bank, ifsc_co
     return row
 
 
+def _load_overrides(voucher_doctype, names):
+    """{voucher_name: advance_override(float)} for the given vouchers.
+
+    Presence of a row IS the override (an explicit 0 means 'pay full, ignore
+    the submitter's advance'); absence means fall back to the submitter's
+    declared advance_amount. So a 0.0 in this map is meaningful, not 'unset'."""
+    if not names:
+        return {}
+    rows = frappe.get_all(
+        ADJUSTMENT_DOCTYPE,
+        filters={"voucher_doctype": voucher_doctype, "voucher_name": ["in", list(names)]},
+        fields=["voucher_name", "advance_override"],
+    )
+    return {r["voucher_name"]: flt(r["advance_override"]) for r in rows}
+
+
 def _collect_vouchers(from_date, to_date):
     """Source of truth for payable vouchers. Returns
-    {employee_docname: {'amount': float, 'vouchers': [{'type','name','amount'}]}}.
-    Isolated so a future ERPNext source can replace just this function."""
+    {employee_docname: {'amount': float, 'vouchers': [voucher_dict]}}, where
+    'amount' is the sum of NET payables (what actually gets paid) and each
+    voucher_dict carries:
+      type, name, amount (gross total), net_payable (override-aware), period,
+      and for Expense vouchers advance_submitted / advance_override.
+    Isolated so a future ERPNext source can replace just this function.
+
+    S42: the payable amount is net_payable, not the gross total. For Expense
+    vouchers an Accounts payout-page override (VECRM Payout Adjustment), when
+    present, supersedes the submitter's advance. Travel (petrol) vouchers have
+    no advance, so net == total."""
     per_emp = {}
     for dt, date_field in VOUCHER_TYPES:
+        is_expense = dt == "VECRM Expense Voucher"
+        fields = ["name", "submitter", "total_amount", date_field]
+        if is_expense:
+            fields += ["advance_received", "advance_amount"]
         rows = frappe.get_all(
             dt,
             filters={
@@ -76,16 +115,86 @@ def _collect_vouchers(from_date, to_date):
                 "payment_status": "Unpaid",
                 date_field: ["between", [from_date, to_date]],
             },
-            fields=["name", "submitter", "total_amount"],
+            fields=fields,
         )
+        overrides = _load_overrides(dt, [r["name"] for r in rows]) if is_expense else {}
         for r in rows:
             emp = r["submitter"]
             if not emp:
                 continue
+            total = flt(r["total_amount"])
+            if is_expense:
+                advance_submitted = flt(r.get("advance_amount")) if r.get("advance_received") else 0.0
+                override = overrides.get(r["name"])  # None when no override row
+                effective_advance = override if override is not None else advance_submitted
+                net = total - effective_advance
+            else:
+                advance_submitted = None
+                override = None
+                net = total
+            if net < 0:
+                net = 0.0
             slot = per_emp.setdefault(emp, {"amount": 0.0, "vouchers": []})
-            slot["amount"] += flt(r["total_amount"])
-            slot["vouchers"].append({"type": dt, "name": r["name"], "amount": flt(r["total_amount"])})
+            slot["amount"] += net
+            slot["vouchers"].append({
+                "type": dt,
+                "name": r["name"],
+                "amount": total,
+                "net_payable": net,
+                "period": period_label(r.get(date_field)),
+                "advance_submitted": advance_submitted,
+                "advance_override": override,
+            })
     return per_emp
+
+
+def _employee_label(emp):
+    """(employee_name, employee_id, company) for a VECRM Employee docname."""
+    try:
+        edoc = frappe.get_doc("VECRM Employee", emp)
+        return edoc.employee_name, edoc.name, (edoc.company or "").strip()
+    except Exception:
+        return emp, emp, None
+
+
+def _shape_people(per_emp, only_emps=None):
+    """Shape _collect_vouchers output into the per-person split payout view:
+    [{employee, employee_id, name, company, vouchers:[...], total_payable}].
+    Each EV voucher carries advance_submitted + advance_override so Accounts
+    can see and edit the override. total_payable = Σ net_payable (S42)."""
+    people = []
+    for emp in sorted(per_emp.keys()):
+        if only_emps is not None and emp not in only_emps:
+            continue
+        slot = per_emp[emp]
+        name, emp_id, company = _employee_label(emp)
+        vouchers = []
+        total_payable = 0.0
+        for v in slot["vouchers"]:
+            entry = {
+                "type": _TYPE_LABEL.get(v["type"], v["type"]),
+                "doctype": v["type"],
+                "name": v["name"],
+                "period": v["period"],
+                "amount": v["amount"],
+                "net_payable": v["net_payable"],
+            }
+            if v["type"] == "VECRM Expense Voucher":
+                entry["advance_submitted"] = v["advance_submitted"]
+                entry["advance_override"] = v["advance_override"]
+            vouchers.append(entry)
+            total_payable += v["net_payable"]
+        # Stable order — petrol then expense (by label), then voucher name.
+        vouchers.sort(key=lambda e: (e["type"], e["name"]))
+        people.append({
+            "employee": emp,
+            "employee_id": emp_id,
+            "name": name,
+            "company": company,
+            "vouchers": vouchers,
+            "total_payable": total_payable,
+        })
+    return people
 
 
 # --- Authorization -------------------------------------------------------
@@ -210,7 +319,9 @@ def generate_voucher_payment_file(from_date=None, to_date=None, payment_date=Non
         vouchers = per_emp.get(emp, {}).get("vouchers", [])
         for v in vouchers:
             by_type[v["type"]]["count"] += 1
-        raw_total = sum(v["amount"] for v in vouchers)
+        # Compose on NET payable (S42) — the file line pays net, so the per-type
+        # split must reconcile to the same net per-emp amount, not the gross.
+        raw_total = sum(v["net_payable"] for v in vouchers)
         if raw_total <= 0:
             continue
         # attribute the SAME rounded amount that hits the file line, split by
@@ -218,7 +329,7 @@ def generate_voucher_payment_file(from_date=None, to_date=None, payment_date=Non
         emp_rounded = int(round(per_emp[emp]["amount"]))
         per_type_raw = {}
         for v in vouchers:
-            per_type_raw[v["type"]] = per_type_raw.get(v["type"], 0.0) + v["amount"]
+            per_type_raw[v["type"]] = per_type_raw.get(v["type"], 0.0) + v["net_payable"]
         types = list(per_type_raw)
         assigned = 0
         for i, t in enumerate(types):
@@ -240,6 +351,9 @@ def generate_voucher_payment_file(from_date=None, to_date=None, payment_date=Non
             "vecs_total_amount": int(round(vecs_total)),
             "total_amount": int(round(total_amount)),
             "lines": rows_written, "skipped": skipped, "by_type": by_type,
+            # Per-person Petrol/Expense split (S42) for the written employees,
+            # so the payout page can show the breakdown alongside the file.
+            "breakdown": _shape_people(per_emp, only_emps=written),
         },
         "paid_targets": paid_targets,
     }
@@ -299,4 +413,102 @@ def mark_voucher_targets_paid(targets):
         "already_paid": already_paid,
         "missing": missing,
         "not_eligible": not_eligible,
+    }
+
+
+@frappe.whitelist()
+def get_voucher_payout_breakdown(from_date=None, to_date=None):
+    """Per-person, per-type, per-period payout breakdown (S42).
+
+    The interactive payout-page source (no bank file generated). Splits Petrol
+    (Travel) vs Expense vouchers per person per half-month period, with each
+    Expense voucher's submitter advance + any Accounts override, and a
+    net-payable total per person. Same auth tier as the file generator —
+    exposes amounts but not bank account numbers."""
+    _require_payout_access()
+    if not (from_date and to_date):
+        frappe.throw("from_date and to_date are required")
+    from_date = getdate(from_date)
+    to_date = getdate(to_date)
+    if from_date > to_date:
+        frappe.throw("from_date cannot be after to_date")
+
+    per_emp = _collect_vouchers(from_date, to_date)
+    people = _shape_people(per_emp)
+    grand_total = sum(p["total_payable"] for p in people)
+    return {
+        "from_date": str(from_date),
+        "to_date": str(to_date),
+        "people": people,
+        "person_count": len(people),
+        "grand_total_payable": grand_total,
+    }
+
+
+@frappe.whitelist()
+def set_payout_advance_override(voucher_name, amount=None, voucher_doctype="VECRM Expense Voucher"):
+    """Upsert (or clear) the payout-time advance override for a voucher (S42).
+
+    Off-record: writes to VECRM Payout Adjustment, never to the voucher itself,
+    so the employee's submitted record stays clean. Single-row-per-voucher
+    upsert (no append log). A blank/null amount CLEARS the override (deletes the
+    row), reverting to the submitter's declared advance. An explicit 0 means
+    'pay full — ignore the submitter's advance'."""
+    _require_payout_access()
+    if not voucher_name:
+        frappe.throw("voucher_name is required")
+    if not frappe.db.exists(voucher_doctype, voucher_name):
+        frappe.throw(f"{voucher_doctype} {voucher_name!r} does not exist")
+
+    existing = frappe.db.get_value(
+        ADJUSTMENT_DOCTYPE,
+        {"voucher_doctype": voucher_doctype, "voucher_name": voucher_name},
+        "name",
+    )
+
+    # Blank / null clears the override (revert to the submitter's advance).
+    if amount is None or str(amount).strip() == "":
+        if existing:
+            frappe.delete_doc(ADJUSTMENT_DOCTYPE, existing, ignore_permissions=True)
+            frappe.db.commit()
+        return {"voucher_name": voucher_name, "advance_override": None, "cleared": True}
+
+    amt = flt(amount)
+    if amt < 0:
+        frappe.throw("Advance override cannot be negative")
+    total = flt(frappe.db.get_value(voucher_doctype, voucher_name, "total_amount"))
+    if amt > total:
+        frappe.throw(f"Advance override (₹{amt}) cannot exceed the voucher total (₹{total}).")
+
+    date_field = dict(VOUCHER_TYPES).get(voucher_doctype, "expense_date")
+    vdate = frappe.db.get_value(voucher_doctype, voucher_name, date_field)
+    pkey = period_key(vdate) if vdate else None
+    actor = (frappe.session.data or {}).get("vecrm_email") or frappe.session.user
+    now = frappe.utils.now_datetime()
+
+    if existing:
+        doc = frappe.get_doc(ADJUSTMENT_DOCTYPE, existing)
+        doc.advance_override = amt
+        doc.period_key = pkey
+        doc.set_by = actor
+        doc.set_at = now
+        doc.save(ignore_permissions=True)
+    else:
+        frappe.get_doc({
+            "doctype": ADJUSTMENT_DOCTYPE,
+            "voucher_doctype": voucher_doctype,
+            "voucher_name": voucher_name,
+            "advance_override": amt,
+            "period_key": pkey,
+            "set_by": actor,
+            "set_at": now,
+        }).insert(ignore_permissions=True)
+    frappe.db.commit()
+
+    net = max(0.0, total - amt)
+    return {
+        "voucher_name": voucher_name,
+        "advance_override": amt,
+        "net_payable": net,
+        "cleared": False,
     }
