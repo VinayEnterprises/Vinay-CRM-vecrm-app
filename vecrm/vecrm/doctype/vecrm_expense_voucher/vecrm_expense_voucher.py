@@ -166,6 +166,32 @@ class VECRMExpenseVoucher(Document):
         # Coerce None → 0 so a bypassed line with a blank amount still totals.
         self.total_amount = sum(float(line.amount or 0) for line in self.expense_lines)
 
+        # S42 advance payment: the submitter may declare an advance already
+        # received against this voucher. total_amount (cost to company) is
+        # UNCHANGED by the advance — only net_payable (what the payout pays)
+        # is reduced. net_payable is stored so the payout query is a cheap
+        # column read rather than a per-row recompute. These checks are
+        # structural invariants (a negative net payable is nonsensical), so
+        # they run even under the validations bypass.
+        total = float(self.total_amount or 0)
+        if self.advance_received:
+            advance = float(self.advance_amount or 0)
+            if advance <= 0:
+                frappe.throw(
+                    _("Advance Amount must be greater than 0 when 'Advance Payment Received' is ticked."),
+                    frappe.ValidationError,
+                )
+            if advance > total:
+                frappe.throw(
+                    _("Advance Amount (₹{0}) cannot exceed the voucher total (₹{1}).").format(advance, total),
+                    frappe.ValidationError,
+                )
+        else:
+            # Toggle off → keep the stored advance clean so net_payable == total.
+            advance = 0.0
+            self.advance_amount = 0
+        self.net_payable = total - advance
+
     def before_submit(self) -> None:
         """Pre-submit checks: derive approver_set from submitter_role.
 
@@ -422,6 +448,8 @@ def voucher_resubmit_expense(
     voucher,
     expense_lines: str,
     expense_date: str | None = None,
+    advance_received=None,
+    advance_amount=None,
 ) -> str:
     """Apply edits to a Rejected Expense Voucher and resubmit via doc.save().
 
@@ -477,6 +505,14 @@ def voucher_resubmit_expense(
 
     if expense_date is not None:
         voucher.expense_date = expense_date
+
+    # S42: optionally update the advance declaration on a draft/rejected edit.
+    # Only touched when the caller explicitly supplies it (None/"" = leave as
+    # submitted) so an edit surface that doesn't carry the advance fields can't
+    # silently wipe them. validate() (called below) recomputes net_payable.
+    if advance_received is not None and advance_received != "":
+        voucher.advance_received = 1 if str(advance_received) in ("1", "true", "True", "on") else 0
+        voucher.advance_amount = float(advance_amount or 0) if voucher.advance_received else 0
 
     # PD-S35 5.9: Frappe's update_after_submit save path does NOT fire
     # validate() automatically (only the per-field gate

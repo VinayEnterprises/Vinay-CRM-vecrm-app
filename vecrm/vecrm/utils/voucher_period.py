@@ -50,6 +50,20 @@ def period_key(d) -> str:
     return f"{y:04d}-{m:02d}-{half}"
 
 
+def period_label(d) -> str:
+    """Human-facing half-month label, e.g. '1-15 Jun 2026' / '16-30 Jun 2026'.
+
+    Derived from period_of() so a Travel (petrol) voucher dated by
+    business_date and an Expense voucher dated by expense_date that fall in
+    the SAME half-month render an identical label — which is what lets the
+    payout page group the two voucher types under one period (S42)."""
+    y, m, half = period_of(d)
+    mon = calendar.month_abbr[m]  # e.g. 'Jun'
+    if half == "H1":
+        return f"1-15 {mon} {y}"
+    return f"16-{_last_day(y, m)} {mon} {y}"
+
+
 def on_time_day(d) -> date:
     """The last 'on-time' calendar day of d's period (15th, or last day)."""
     d = frappe.utils.getdate(d)

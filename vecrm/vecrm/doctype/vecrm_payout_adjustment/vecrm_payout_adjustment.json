@@ -1,0 +1,93 @@
+{
+  "actions": [],
+  "allow_rename": 0,
+  "autoname": "hash",
+  "creation": "2026-06-22 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "voucher_doctype",
+    "voucher_name",
+    "period_key",
+    "advance_override",
+    "set_by",
+    "set_at"
+  ],
+  "fields": [
+    {
+      "fieldname": "voucher_doctype",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Voucher Doctype",
+      "reqd": 1,
+      "description": "The voucher type this override applies to, e.g. 'VECRM Expense Voucher'. Part of the composite unique key with voucher_name."
+    },
+    {
+      "fieldname": "voucher_name",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Voucher Name",
+      "reqd": 1,
+      "description": "The voucher this override applies to, e.g. 'VE/EV/00001/26-27'. Part of the composite unique key with voucher_doctype — one override row per voucher (single-row upsert, not an append log)."
+    },
+    {
+      "fieldname": "period_key",
+      "fieldtype": "Data",
+      "label": "Period Key",
+      "description": "Half-month key (e.g. '2026-06-H1') derived from the voucher's date at override time. Informational — not part of the unique key."
+    },
+    {
+      "fieldname": "advance_override",
+      "fieldtype": "Currency",
+      "in_list_view": 1,
+      "label": "Advance Override (₹)",
+      "description": "Accounts-set advance for payout. When present, supersedes the submitter's advance_amount for net payable. The presence of this row IS the override; deleting it reverts to the submitter's declared advance."
+    },
+    {
+      "fieldname": "set_by",
+      "fieldtype": "Data",
+      "label": "Set By",
+      "read_only": 1,
+      "description": "Email/user who last set this override (audit; modified/modified_by also record this)."
+    },
+    {
+      "fieldname": "set_at",
+      "fieldtype": "Datetime",
+      "label": "Set At",
+      "read_only": 1
+    }
+  ],
+  "idx": 0,
+  "links": [],
+  "modified": "2026-06-22 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "VECRM",
+  "name": "VECRM Payout Adjustment",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "print": 1,
+      "read": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+    },
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "print": 1,
+      "read": 1,
+      "role": "VECRM Admin",
+      "share": 1,
+      "write": 1
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": []
+}

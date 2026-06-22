@@ -15,6 +15,9 @@
     "fy_label",
     "expense_lines",
     "total_amount",
+    "advance_received",
+    "advance_amount",
+    "net_payable",
     "approver_set",
     "approved_by_employee",
     "approved_by_role",
@@ -80,6 +83,28 @@
       "read_only": 1,
       "description": "Sum of expense_lines.amount. Computed in validate().",
       "allow_on_submit": 1
+    },
+    {
+      "fieldname": "advance_received",
+      "fieldtype": "Check",
+      "label": "Advance Payment Received",
+      "default": "0",
+      "description": "Submitter declares an advance already received against this voucher. Editable while Draft. Does not change total_amount (cost to company) — only net_payable."
+    },
+    {
+      "fieldname": "advance_amount",
+      "fieldtype": "Currency",
+      "label": "Advance Amount (₹)",
+      "default": "0",
+      "depends_on": "eval:doc.advance_received",
+      "description": "Amount already received as advance. Must be <= total_amount. Editable while Draft."
+    },
+    {
+      "fieldname": "net_payable",
+      "fieldtype": "Currency",
+      "label": "Net Payable (₹)",
+      "read_only": 1,
+      "description": "total_amount - advance_amount. Computed in validate() and stored — the amount the payout actually pays before any payout-page override."
     },
     {
       "fieldname": "approver_set",
@@ -189,7 +214,7 @@
   ],
   "idx": 0,
   "links": [],
-  "modified": "2026-05-29 23:45:25.000000",
+  "modified": "2026-06-22 00:00:00.000000",
   "modified_by": "Administrator",
   "module": "VECRM",
   "name": "VECRM Expense Voucher",
