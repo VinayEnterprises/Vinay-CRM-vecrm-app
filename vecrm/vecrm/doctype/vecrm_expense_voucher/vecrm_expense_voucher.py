@@ -77,6 +77,21 @@ class VECRMExpenseVoucher(Document):
             )
 
         employee = frappe.get_doc("VECRM Employee", self.submitter)
+
+        # S41: voucher-raise eligibility gate (mirrors Travel Voucher's
+        # before_insert check). Roles omitted from VOUCHER_APPROVER_SETS
+        # (HR, Operations Executive) are voucher VIEW-ONLY and may not raise
+        # an Expense Voucher. Closes a latent gap — previously only Travel
+        # Voucher enforced submit eligibility server-side.
+        if employee.role not in VOUCHER_APPROVER_SETS:
+            frappe.throw(
+                _("Submitter role '{0}' is not eligible to submit Expense "
+                  "Vouchers. Eligible roles: {1}.").format(
+                    employee.role, ", ".join(VOUCHER_APPROVER_SETS.keys())
+                ),
+                frappe.ValidationError,
+            )
+
         self.submitter_role = employee.role
 
     def validate(self) -> None:

@@ -31,6 +31,14 @@ EMPLOYEE_ROLE_TO_FRAPPE_ROLES: Final[dict[str, list[str]]] = {
     # Head of Accounts & HR: HR-tier approver + raises own vouchers
     # (submitter). NOT VECRM Admin — user-creation is gated separately.
     "Head of Accounts & HR":     ["VECRM Submitter", "VECRM Approver"],
+    # S41 reconciliation: "Senior Business Acceleration Executive" is the
+    # canonical name for what VECRM called "Sales Head" — a FULL ALIAS (same
+    # capabilities). "Sales Head" is kept above (deprecated) for reversibility.
+    "Senior Business Acceleration Executive": ["VECRM Submitter", "VECRM Approver"],
+    # S41 new office-staff tier: engineer-like app access, but VOUCHER
+    # VIEW-ONLY — deliberately OMITTED from VOUCHER_APPROVER_SETS so the
+    # controller before_insert eligibility gate refuses any voucher it raises.
+    "Operations Executive":      ["VECRM Submitter"],
 }
 
 
@@ -44,11 +52,13 @@ EMPLOYEE_ROLE_TO_FRAPPE_ROLES: Final[dict[str, list[str]]] = {
 # Routing: each submitter escalates to their functional head, then HR /
 # Admin. Heads / managers self-escalate to HR / Admin (no peer-approval).
 VOUCHER_APPROVER_SETS: Final[dict[str, list[str]]] = {
-    "Sales Rep":                 ["Sales Head", "HR", "Head of Accounts & HR", "Admin"],
+    "Sales Rep":                 ["Sales Head", "Senior Business Acceleration Executive", "HR", "Head of Accounts & HR", "Admin"],
     "Field Engineer":            ["Head of Engineers", "HR", "Head of Accounts & HR", "Admin"],
     "Network Security Engineer": ["Head of Engineers", "HR", "Head of Accounts & HR", "Admin"],
     "Store Executive":           ["Head of Stores", "HR", "Head of Accounts & HR", "Admin"],
     "Sales Head":                ["HR", "Head of Accounts & HR", "Admin"],
+    # S41 alias of Sales Head (own vouchers escalate to HR / Admin).
+    "Senior Business Acceleration Executive": ["HR", "Head of Accounts & HR", "Admin"],
     "Head of Engineers":         ["HR", "Head of Accounts & HR", "Admin"],
     "Head of Stores":            ["HR", "Head of Accounts & HR", "Admin"],
     "Admin":                     ["HR", "Head of Accounts & HR", "Admin"],

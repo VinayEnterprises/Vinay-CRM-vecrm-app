@@ -21,3 +21,4 @@ vecrm.patches.v1_7.create_vecrm_lead_touchpoint
 vecrm.patches.v1_8.add_voucher_approval_status
 vecrm.patches.v1_9.set_voucher_allow_on_submit
 vecrm.patches.v1_10.sync_hrms_employee_data
+vecrm.patches.v1_11.migrate_sales_head_to_sbae
