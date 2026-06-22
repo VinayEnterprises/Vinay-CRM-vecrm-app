@@ -107,7 +107,7 @@ def _collect_vouchers(from_date, to_date):
         is_expense = dt == "VECRM Expense Voucher"
         fields = ["name", "submitter", "total_amount", date_field]
         if is_expense:
-            fields += ["advance_received", "advance_amount"]
+            fields += ["advance_received", "advance_amount", "site"]
         rows = frappe.get_all(
             dt,
             filters={
@@ -118,6 +118,23 @@ def _collect_vouchers(from_date, to_date):
             fields=fields,
         )
         overrides = _load_overrides(dt, [r["name"] for r in rows]) if is_expense else {}
+        travel_sites = {}
+        if not is_expense and rows:
+            v_lines = frappe.get_all(
+                "VECRM Visit Line",
+                filters={"parent": ["in", [r["name"] for r in rows]]},
+                fields=["parent", "customer_name"],
+                order_by="idx asc",
+            )
+            for line in v_lines:
+                parent = line["parent"]
+                cust = (line["customer_name"] or "").strip()
+                if cust:
+                    travel_sites.setdefault(parent, []).append(cust)
+            for parent, cust_list in list(travel_sites.items()):
+                unique_custs = list(dict.fromkeys(cust_list))
+                travel_sites[parent] = ", ".join(unique_custs)
+
         for r in rows:
             emp = r["submitter"]
             if not emp:
@@ -128,10 +145,12 @@ def _collect_vouchers(from_date, to_date):
                 override = overrides.get(r["name"])  # None when no override row
                 effective_advance = override if override is not None else advance_submitted
                 net = total - effective_advance
+                site_val = (r.get("site") or "").strip() or "—"
             else:
                 advance_submitted = None
                 override = None
                 net = total
+                site_val = travel_sites.get(r["name"]) or "—"
             if net < 0:
                 net = 0.0
             slot = per_emp.setdefault(emp, {"amount": 0.0, "vouchers": []})
@@ -144,6 +163,7 @@ def _collect_vouchers(from_date, to_date):
                 "period": period_label(r.get(date_field)),
                 "advance_submitted": advance_submitted,
                 "advance_override": override,
+                "site": site_val,
             })
     return per_emp
 
@@ -178,6 +198,7 @@ def _shape_people(per_emp, only_emps=None):
                 "period": v["period"],
                 "amount": v["amount"],
                 "net_payable": v["net_payable"],
+                "site": v["site"],
             }
             if v["type"] == "VECRM Expense Voucher":
                 entry["advance_submitted"] = v["advance_submitted"]

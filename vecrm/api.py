@@ -334,7 +334,8 @@ def voucher_resubmit_travel(
 @frappe.whitelist()
 def voucher_resubmit_expense(
 	voucher_name: str, expense_lines: str, expense_date: str = "",
-	advance_received: str = "", advance_amount: str = ""
+	advance_received: str = "", advance_amount: str = "",
+	site: str = ""
 ) -> str:
 	"""Submitter or admin edits a Rejected Expense Voucher in place and resubmits.
 
@@ -359,6 +360,7 @@ def voucher_resubmit_expense(
 	return _resubmit(
 		voucher, expense_lines, expense_date or None,
 		advance_received or None, advance_amount or None,
+		site=site if site != "" else None
 	)
 
 
@@ -717,6 +719,7 @@ def create_expense_voucher_draft(
 	expense_lines: str,
 	advance_received: str = "",
 	advance_amount: str = "",
+	site: str = "",
 ) -> dict:
 	"""Create a VECRM Expense Voucher in DRAFT state (docstatus=0).
 
@@ -801,6 +804,7 @@ def create_expense_voucher_draft(
 	doc = frappe.new_doc("VECRM Expense Voucher")
 	doc.submitter = submitter
 	doc.expense_date = expense_date
+	doc.site = site
 
 	# S42 advance payment (submitter-declared, editable while Draft). The
 	# controller's validate() enforces advance_amount <= total_amount and
@@ -829,6 +833,7 @@ def create_expense_voucher_draft(
 		"submitter": doc.submitter,
 		"submitter_role": doc.submitter_role,
 		"expense_date": str(doc.expense_date),
+		"site": doc.site,
 		"fy_label": doc.fy_label,
 		"total_amount": doc.total_amount,
 		"advance_received": doc.advance_received,

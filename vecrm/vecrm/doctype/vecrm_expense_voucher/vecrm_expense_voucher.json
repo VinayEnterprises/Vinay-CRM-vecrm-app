@@ -12,6 +12,7 @@
     "submitter",
     "submitter_role",
     "expense_date",
+    "site",
     "fy_label",
     "expense_lines",
     "total_amount",
@@ -58,6 +59,12 @@
       "label": "Expense Date",
       "reqd": 1,
       "description": "Business date \u2014 drives FY allocation."
+    },
+    {
+      "fieldname": "site",
+      "fieldtype": "Data",
+      "label": "Site / Customer",
+      "length": 140
     },
     {
       "fieldname": "fy_label",

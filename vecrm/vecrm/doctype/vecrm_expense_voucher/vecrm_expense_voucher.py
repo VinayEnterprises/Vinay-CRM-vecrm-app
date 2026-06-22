@@ -450,6 +450,7 @@ def voucher_resubmit_expense(
     expense_date: str | None = None,
     advance_received=None,
     advance_amount=None,
+    site=None,
 ) -> str:
     """Apply edits to a Rejected Expense Voucher and resubmit via doc.save().
 
@@ -505,6 +506,9 @@ def voucher_resubmit_expense(
 
     if expense_date is not None:
         voucher.expense_date = expense_date
+
+    if site is not None:
+        voucher.site = site
 
     # S42: optionally update the advance declaration on a draft/rejected edit.
     # Only touched when the caller explicitly supplies it (None/"" = leave as
