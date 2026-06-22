@@ -3856,6 +3856,7 @@ def admin_list_employees(
             "Admin", "Sales Head", "HR", "Head of Accounts & HR",
             "Sales Rep", "Field Engineer", "Head of Engineers",
             "Network Security Engineer", "Store Executive", "Head of Stores",
+            "Senior Business Acceleration Executive", "Operations Executive",
         )
         if role not in valid_roles:
             frappe.throw(
@@ -3983,6 +3984,7 @@ def admin_create_employee(
         "Admin", "Sales Head", "HR", "Head of Accounts & HR",
         "Sales Rep", "Field Engineer", "Head of Engineers",
         "Network Security Engineer", "Store Executive", "Head of Stores",
+        "Senior Business Acceleration Executive", "Operations Executive",
     )
     if role not in valid_roles:
         frappe.throw(
@@ -4101,6 +4103,7 @@ def admin_update_employee(
             "Admin", "Sales Head", "HR", "Head of Accounts & HR",
             "Sales Rep", "Field Engineer", "Head of Engineers",
             "Network Security Engineer", "Store Executive", "Head of Stores",
+            "Senior Business Acceleration Executive", "Operations Executive",
         )
         if role not in valid_roles:
             frappe.throw(
