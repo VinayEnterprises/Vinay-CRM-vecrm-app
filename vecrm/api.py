@@ -350,7 +350,7 @@ def voucher_resubmit_expense(
 	# voucher's current date.
 	# S41: a Rejected voucher's resubmit bypasses the cutoff — the rejection
 	# authorizes editing past the deadline.
-        if voucher.approval_status != "Rejected" and voucher.docstatus != 0:
+	if voucher.approval_status != "Rejected" and voucher.docstatus != 0:
 		_check_voucher_date_cutoff(expense_date or voucher.expense_date, submitter=voucher.submitter)
 
 	from vecrm.vecrm.doctype.vecrm_expense_voucher.vecrm_expense_voucher import (
