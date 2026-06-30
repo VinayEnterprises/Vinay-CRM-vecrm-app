@@ -152,7 +152,7 @@ def daily_lead_reminder():
 	send_push(
 		tokens,
 		"Log today's meetings",
-		"Don't forget to add any leads or meeting notes in VECRM.",
+		"Don't forget to add any leads or meeting notes in Anusuya Workspace.",
 		{"screen": "leads"},
 	)
 
@@ -173,7 +173,7 @@ def voucher_period_reminder():
 	send_push(
 		tokens,
 		"Fill your vouchers",
-		f"Reminder: please submit your {period} petrol/travel/expense vouchers in VECRM.",
+		f"Reminder: please submit your {period} petrol/travel/expense vouchers in Anusuya Workspace.",
 		{"screen": "vouchers"},
 	)
 
@@ -715,4 +715,3 @@ def notify_intent_pending(doc, method):
 			)
 	except Exception as e:
 		frappe.log_error(frappe.get_traceback(), "Push Notification Error")
-

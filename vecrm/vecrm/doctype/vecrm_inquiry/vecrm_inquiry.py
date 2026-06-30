@@ -101,7 +101,7 @@ class VECRMInquiry(Document):
 			"info@vinayenterprises.co.in",
 		]
 		subject = (
-			f"[VECRM Inquiry] {self.name} | {self.company_name} | {self.territory}"
+			f"[Anusuya Workspace Inquiry] {self.name} | {self.company_name} | {self.territory}"
 		)
 		priority_int = int(self.priority) if self.priority is not None else 0
 		priority_label = PRIORITY_LABELS.get(priority_int, "Unknown")
