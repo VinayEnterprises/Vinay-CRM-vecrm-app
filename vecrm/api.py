@@ -4159,6 +4159,260 @@ def admin_update_employee(
         "name": doc.name,
     }
 
+def _offboard_release_number_core(phone: str = "", actor: str = None, ignore_permissions: bool = False) -> dict[str, Any]:
+
+	phone = (phone or "").strip()
+	if not phone:
+		frappe.throw(
+			frappe._("phone (VECRM Employee login id) is required."),
+			frappe.ValidationError,
+		)
+
+	# G3 (early): a live login id normalizes to +91-XXXXXXXXXX; a tombstone
+	# carries the -OFFB- marker and must never be re-released.
+	if "-OFFB-" in phone:
+		frappe.throw(
+			frappe._("'{0}' is already a released (tombstoned) record.").format(phone),
+			frappe.ValidationError,
+		)
+
+	phone = _normalize_phone(phone)
+
+	# G1
+	if not frappe.db.exists("VECRM Employee", phone):
+		frappe.throw(
+			frappe._("VECRM Employee '{0}' not found.").format(phone),
+			frappe.DoesNotExistError,
+		)
+
+	status, hrms_id = frappe.db.get_value(
+		"VECRM Employee", phone,
+		["vecrm_account_status", "hrms_employee_id"],
+	)
+
+	# G2 — releasing an Active login is forbidden.
+	if status != "Suspended":
+		frappe.throw(
+			frappe._(
+				"Cannot release '{0}': status is '{1}', not 'Suspended'. "
+				"Suspend the account first."
+			).format(phone, status or "(unset)"),
+			frappe.ValidationError,
+		)
+
+	# G5 — need an HRMS id to form an attributable tombstone.
+	hrms_id = (hrms_id or "").strip()
+	if not hrms_id:
+		frappe.throw(
+			frappe._(
+				"Cannot release '{0}': hrms_employee_id is not set. "
+				"Set it on the record first, then re-run."
+			).format(phone),
+			frappe.ValidationError,
+		)
+
+	tombstone = f"{phone}-OFFB-{hrms_id}"
+
+	# G4
+	if frappe.db.exists("VECRM Employee", tombstone):
+		frappe.throw(
+			frappe._("Tombstone target '{0}' already exists.").format(tombstone),
+			frappe.ValidationError,
+		)
+
+	# Pre-count every cascading Link ref (recon-confirmed cascade family),
+	# to verify intactness after the rename.
+	CASCADE_LINKS = (
+		("VECRM Travel Voucher", "submitter"),
+		("VECRM Travel Voucher", "approved_by_employee"),
+		("VECRM Expense Voucher", "submitter"),
+		("VECRM Expense Voucher", "approved_by_employee"),
+		("VECRM Lead", "creating_employee"),
+		("VECRM Lead Touchpoint", "actor_employee"),
+		("VECRM Call Log", "caller"),
+		("VECRM Trusted Device", "employee"),
+		("VECRM Auth Audit Log", "employee"),
+		("VECRM Auth Reset Token", "employee"),
+		("VECRM Employee", "reporting_approver"),
+	)
+	pre_counts = {
+		f"{dt}.{field}": frappe.db.count(dt, {field: phone})
+		for dt, field in CASCADE_LINKS
+	}
+
+	# --- proven primitive: rename (cascades) -> re-mirror -> commit ---
+	# public frappe.rename_doc wrapper drops ignore_permissions (v16 signature);
+	# the module impl forwards it into validate_rename (the only gate that honors it).
+	from frappe.model.rename_doc import rename_doc as _rename_doc_impl
+	_rename_doc_impl("VECRM Employee", phone, tombstone, force=True, merge=False, ignore_permissions=ignore_permissions)
+	frappe.db.set_value(
+		"VECRM Employee", tombstone, "vecrm_phone", tombstone,
+		update_modified=False,
+	)
+	frappe.db.commit()
+
+	# --- read-back tripwire: old freed, tombstone holds, mirror holds,
+	#     every link followed (post on tombstone == pre on phone) ---
+	if frappe.db.exists("VECRM Employee", phone):
+		frappe.throw(
+			frappe._("Release anomaly: original '{0}' still exists.").format(phone),
+			frappe.ValidationError,
+		)
+	if not frappe.db.exists("VECRM Employee", tombstone):
+		frappe.throw(
+			frappe._("Release anomaly: tombstone '{0}' missing.").format(tombstone),
+			frappe.ValidationError,
+		)
+	if frappe.db.get_value("VECRM Employee", tombstone, "vecrm_phone") != tombstone:
+		frappe.throw(
+			frappe._("Release anomaly: vecrm_phone did not re-mirror on '{0}'.").format(tombstone),
+			frappe.ValidationError,
+		)
+	post_counts = {
+		f"{dt}.{field}": frappe.db.count(dt, {field: tombstone})
+		for dt, field in CASCADE_LINKS
+	}
+	history_intact = (post_counts == pre_counts)
+	links_moved = sum(post_counts.values())
+
+	# PD-S57 Piece 1b: clear the VEHRMS federation pointer for the old employee.
+	# Resolve by hrms_id (in hand), guard by the bare pre-rename `phone`, NULL
+	# not "". Best-effort: a VEHRMS hiccup must not undo the committed release.
+	try:
+		if hrms_id:
+			_vehrms_call("s2s_clear_federation_pointer",
+				{"hrms_employee_id": hrms_id, "phone": phone})
+	except Exception:
+		if hasattr(frappe.local, "message_log"):
+			frappe.local.message_log = []
+
+	# --- dual audit (mirrors admin_delete_employee). Best-effort: an audit
+	#     hiccup must never undo a committed release. ---
+	try:
+		_audit_auth(
+			"auth.admin.release_number",
+			employee=tombstone,
+			path="admin",
+			reason=f"Released number {phone} -> {tombstone}",
+		)
+	except Exception:
+		if hasattr(frappe.local, "message_log"):
+			frappe.local.message_log = []
+
+	audit_doc = frappe.get_doc({
+		"doctype": "VECRM User Audit Log",
+		"event_type": "release",
+		"actor": actor or frappe.session.user,
+		"target": tombstone,
+		"event_timestamp": frappe.utils.now_datetime(),
+		"detail": f"Released number {phone} -> {tombstone} ({links_moved} link refs cascaded)",
+	})
+	audit_doc.flags.ignore_links = True
+	try:
+		audit_doc.set_new_name()
+		audit_doc.db_insert()
+		frappe.db.commit()
+	except Exception:
+		if hasattr(frappe.local, "message_log"):
+			frappe.local.message_log = []
+
+	return {
+		"success": True,
+		"released": phone,
+		"tombstone": tombstone,
+		"history_intact": history_intact,
+		"links_moved": links_moved,
+	}
+
+@frappe.whitelist()
+def offboard_release_number(phone: str = "") -> dict[str, Any]:
+	"""HR/HOA&HR/Admin: release an offboarded employee's number so a new
+	hire can re-claim it, while preserving 100% of their history.
+
+	Guarded form of the live-proven release primitive
+	(PD-S54-NUMBER-LIFECYCLE). Renames the Suspended VECRM Employee record
+	to a tombstone (<phone>-OFFB-<hrms_employee_id>), which CASCADES every
+	Link reference (leads, vouchers, audit logs, reporting_approver, ...)
+	to the tombstone intact, then re-mirrors vecrm_phone so the
+	name==vecrm_phone invariant holds on the tombstone. The original number
+	is freed and immediately claimable.
+
+	Complements admin_delete_employee: an employee with business records can
+	never be hard-deleted (that path throws "suspend instead"); this is the
+	missing third option — suspend, then release the number without losing
+	the person's record. Forward-only: the read-back block is a tripwire,
+	not a rollback.
+
+	Gate: _require_hr_or_admin() (session vecrm_employee_role in
+	{HR, Head of Accounts & HR, Admin}). Backend-authoritative.
+
+	Guards (all-or-nothing):
+	  G1 record exists under <phone>
+	  G2 status is Suspended (NEVER release an Active login)
+	  G3 <phone> is not already a tombstone (double-release)
+	  G4 tombstone target name is free (no clobber)
+	  G5 record carries an hrms_employee_id (to form an attributable tombstone)
+
+	Returns:
+	  {"success": True, "released", "tombstone", "history_intact", "links_moved"}
+	"""
+	_require_hr_or_admin()
+	return _offboard_release_number_core(phone)
+
+INTEGRATION_USER = "vecrm-integration@vinayenterprises.co.in"
+
+def _require_integration() -> None:
+	"""Throw unless the caller is the dedicated cross-site integration
+	principal (api-key:secret from VEHRMS site_config). Mirrors the
+	service_account idiom (get_2fa_delivery_email)."""
+	if frappe.session.user != INTEGRATION_USER:
+		frappe.throw(frappe._("Not authorized"), frappe.PermissionError)
+
+
+@frappe.whitelist()
+def s2s_offboard_release_number(phone: str = "") -> dict[str, Any]:
+	"""S2S (VEHRMS conductor): release an offboarded number. Authorized by
+	integration principal, not session role. Idempotent on an already-
+	released number (returns already_released instead of throwing G3/G1) so
+	the offboarding conductor can re-run safely (e.g. Parth, tombstoned in
+	S55). Delegates to the proven core with ignore_permissions (zero-role
+	principal cannot pass rename_doc perms otherwise)."""
+	_require_integration()
+	raw = (phone or "").strip()
+	if not raw:
+		frappe.throw(frappe._("phone is required."), frappe.ValidationError)
+	# Idempotency 1: caller passed a tombstone id.
+	if "-OFFB-" in raw:
+		return {"success": True, "already_released": True, "tombstone": raw}
+	norm = _normalize_phone(raw)
+	# Idempotency 2: live record gone but a tombstone for it exists -> already released.
+	if not frappe.db.exists("VECRM Employee", norm):
+		hit = frappe.get_all("VECRM Employee", filters=[["name", "like", norm + "-OFFB-%"]], pluck="name", limit=1)
+		if hit:
+			return {"success": True, "already_released": True, "tombstone": hit[0]}
+		frappe.throw(frappe._("VECRM Employee {0} not found.").format(norm), frappe.DoesNotExistError)
+	return _offboard_release_number_core(norm, actor=frappe.session.user, ignore_permissions=True)
+
+
+@frappe.whitelist()
+def s2s_suspend_employee(vecrm_employee: str = "") -> dict[str, Any]:
+	"""S2S (VEHRMS conductor): suspend a VECRM Employee portal login by
+	EXPLICIT id only. No phone fallback (Gap-B: a cleared HRMS pointer must
+	never cause us to guess a number that now belongs to a new hire).
+	Idempotent: already-Suspended or tombstoned -> success no-op; unknown
+	id -> not_found (conductor marks auto_failed rather than crashing)."""
+	_require_integration()
+	vid = (vecrm_employee or "").strip()
+	if not vid:
+		frappe.throw(frappe._("vecrm_employee id is required."), frappe.ValidationError)
+	if not frappe.db.exists("VECRM Employee", vid):
+		return {"success": False, "not_found": True, "vecrm_employee": vid}
+	cur = frappe.db.get_value("VECRM Employee", vid, "vecrm_account_status")
+	if cur == "Suspended":
+		return {"success": True, "already_suspended": True, "vecrm_employee": vid}
+	frappe.db.set_value("VECRM Employee", vid, "vecrm_account_status", "Suspended")
+	frappe.db.commit()
+	return {"success": True, "suspended": vid, "prev_status": cur}
 
 @frappe.whitelist()
 def admin_delete_employee(employee: str = "") -> dict[str, Any]:
