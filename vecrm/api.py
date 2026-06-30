@@ -4718,10 +4718,10 @@ def test_email_pipeline(recipient):
     from vecrm.email_utils import send_email
     send_email(
         to=recipient,
-        subject="VECRM Email Pipeline Test",
+        subject="Anusuya Workspace Email Pipeline Test",
         html_body=render_email_layout(
             "",
-            "<p>If you see this, the VECRM email pipeline is operational.</p>",
+            "<p>If you see this, the Anusuya Workspace email pipeline is operational.</p>",
         ),
     )
     return {"status": "ok", "sent_to": recipient}
@@ -5007,7 +5007,7 @@ def _render_weekly_report_html(data: dict) -> str:
 
     sections.append(
         f'<div style="background:{_HEADER_BG};color:#ffffff;padding:20px 24px;">'
-        f'<div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;opacity:0.7;">VECRM Weekly Report</div>'
+        f'<div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;opacity:0.7;">Anusuya Workspace Weekly Report</div>'
         f'<div style="font-size:20px;font-weight:600;margin-top:4px;">{start} — {end}</div>'
         f'</div>'
     )
@@ -5101,7 +5101,7 @@ def generate_weekly_meeting_report():
 
     html = _render_weekly_report_html(data)
     subject = (
-        f"VECRM Weekly Report — "
+        f"Anusuya Workspace Weekly Report — "
         f"{start_dt.strftime('%d %b')} to {end_dt.strftime('%d %b %Y')}"
     )
 
@@ -5446,7 +5446,7 @@ def send_followup_reminders():
             continue
         rep_name = name_map.get(owner) or ""
         count = len(owned_rows)
-        subject = f"VECRM: You have {count} overdue follow-up{'s' if count != 1 else ''}"
+        subject = f"Anusuya Workspace: You have {count} overdue follow-up{'s' if count != 1 else ''}"
         html = _render_rep_followup_html(rep_name, owned_rows, today_iso)
         try:
             send_email(to=owner, subject=subject, html_body=html)
@@ -5461,7 +5461,7 @@ def send_followup_reminders():
     total = len(rows)
     rep_count = sum(1 for k in groups if k)
     admin_subject = (
-        f"VECRM Admin: {total} overdue follow-ups across {rep_count} reps"
+        f"Anusuya Workspace Admin: {total} overdue follow-ups across {rep_count} reps"
     )
     admin_html = _render_admin_followup_html(groups, name_map, today_iso)
     send_email(
@@ -6627,7 +6627,6 @@ def set_call_disposition(call_name: str, disposition: str, notes: str = None) ->
         "disposition": doc.disposition,
         "is_conversation": int(doc.is_conversation),
     }
-
 
 
 
