@@ -4275,6 +4275,17 @@ def _offboard_release_number_core(phone: str = "", actor: str = None, ignore_per
 	history_intact = (post_counts == pre_counts)
 	links_moved = sum(post_counts.values())
 
+	# PD-S57 Piece 1b: clear the VEHRMS federation pointer for the old employee.
+	# Resolve by hrms_id (in hand), guard by the bare pre-rename `phone`, NULL
+	# not "". Best-effort: a VEHRMS hiccup must not undo the committed release.
+	try:
+		if hrms_id:
+			_vehrms_call("s2s_clear_federation_pointer",
+				{"hrms_employee_id": hrms_id, "phone": phone})
+	except Exception:
+		if hasattr(frappe.local, "message_log"):
+			frappe.local.message_log = []
+
 	# --- dual audit (mirrors admin_delete_employee). Best-effort: an audit
 	#     hiccup must never undo a committed release. ---
 	try:
