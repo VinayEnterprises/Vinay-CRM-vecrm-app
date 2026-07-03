@@ -727,7 +727,7 @@ def create_expense_voucher_draft(
 	  submitter: VECRM Employee name (phone-id, e.g. "+91-9998583596").
 	  expense_date: Date of expenses (YYYY-MM-DD). Drives FY allocation.
 	  expense_lines: JSON-encoded array of line objects with fields:
-	    category   (str, one of: Hotel/Food Allowance/Travel/Supplies/Communication/Misc)
+	    category   (str, one of: Hotel/Food Allowance/Meal Reimbursement (Actuals)/Travel/Supplies/Communication/Misc)
 	    expense_date (str, optional per-line date)
 	    days      (number, required for Food Allowance)
 	    number_of_persons (number, optional for Food Allowance, defaults to 1)
