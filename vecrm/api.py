@@ -1884,7 +1884,12 @@ def _finalize_or_challenge(employee_doc: Any, login_path: str, device_id: str = 
             "employee": employee_doc.name,
             "name": employee_doc.employee_name,
             "role": employee_doc.role,
-            "methods": _vehrms_enrolled_methods(employee_doc.name, vehrms_emp, employee_doc.role),
+            "methods": _vehrms_enrolled_methods(
+                employee_doc.name,
+                vehrms_emp,
+                employee_doc.role,
+                recovery_email=employee_doc.vecrm_email,
+            ),
         }
         
     _issue_session(employee_doc, login_path)
@@ -2165,23 +2170,34 @@ def _resolve_vehrms_employee(phone: str):
     return None
 
 
-def _vehrms_enrolled_methods(phone: str, vehrms_emp, role: str) -> list:
-    """Which 2FA methods the user actually enrolled in VEHRMS, as a subset of
-    ["passkey", "totp", "email_otp"]. Best-effort: returns [] on any failure so
-    the login gate never breaks -- the portal falls back to its policy default
-    (web = totp/email_otp; app = whatever the device supports)."""
-    if not vehrms_emp:
-        return []
-    res = _vehrms_call("get_2fa_status", {"employee_id": vehrms_emp, "phone_key": phone, "role": role})
-    if not res["ok"] or not isinstance(res["data"], dict):
-        return []
-    data = res["data"]
+def _vehrms_enrolled_methods(
+    phone: str,
+    vehrms_emp,
+    role: str,
+    recovery_email: str = "",
+) -> list:
+    """Return usable login challenges.
+
+    Passkey/TOTP reflect VEHRMS enrollment. Email OTP is also exposed as a
+    recovery method whenever VECRM has a delivery address; possession of the
+    short-lived pending login token and access to that mailbox are both still
+    required before a session can be issued.
+    """
     methods = []
-    if (data.get("webauthn") or {}).get("enabled"):
-        methods.append("passkey")
-    if (data.get("totp") or {}).get("enabled"):
-        methods.append("totp")
-    if (data.get("email_otp") or {}).get("enabled"):
+    if vehrms_emp:
+        res = _vehrms_call(
+            "get_2fa_status",
+            {"employee_id": vehrms_emp, "phone_key": phone, "role": role},
+        )
+        if res["ok"] and isinstance(res["data"], dict):
+            data = res["data"]
+            if (data.get("webauthn") or {}).get("enabled"):
+                methods.append("passkey")
+            if (data.get("totp") or {}).get("enabled"):
+                methods.append("totp")
+            if (data.get("email_otp") or {}).get("enabled"):
+                methods.append("email_otp")
+    if recovery_email and "email_otp" not in methods:
         methods.append("email_otp")
     return methods
 
@@ -2210,6 +2226,11 @@ def challenge_options(pending_token: str = "", method: str = "") -> dict[str, An
         return {"ok": True, "method": "passkey", "options": res["data"]}
 
     if method == "email_otp":
+        if not employee_doc.vecrm_email:
+            frappe.throw(
+                _("No email address is configured on your account. Contact HR."),
+                frappe.ValidationError,
+            )
         # VEHRMS generates + caches the code and returns it in _internal; VECRM
         # has no mail transport, so the portal BFF (build 3) delivers the email
         # via Graph and MUST strip _internal before responding to the browser.
@@ -6881,6 +6902,3 @@ def set_call_disposition(call_name: str, disposition: str, notes: str = None) ->
         "disposition": doc.disposition,
         "is_conversation": int(doc.is_conversation),
     }
-
-
-
