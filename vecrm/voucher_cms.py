@@ -15,6 +15,7 @@ DR_AC_NO = "5447647641"            # Kotak debit/source (same as payroll)
 BANK_CODE_INDICATOR = "M"
 KOTAK_IFSC_PREFIX = "KKBK"
 CMS_COLUMN_COUNT = 49
+VOUCHER_LAST_DATA_COL = 13          # S73: last written column (see _write)
 
 VE_COMPANY = "Vinay Enterprises"
 VECS_COMPANY = "VECS"
@@ -269,11 +270,15 @@ def generate_voucher_payment_file(from_date=None, to_date=None, payment_date=Non
     state = {"row": 0}
 
     def _write(values):
-        for col, value in enumerate(values):
-            if col in (6, 13):
-                sheet.write(state["row"], col, value, text_style)
-            else:
-                sheet.write(state["row"], col, value)
+        # S73: match kotak_cms._write_cms_row exactly —
+        #   1. EVERY cell written with the Text ('@') style, not just cols 6/13,
+        #      so IFSC / codes / dates never infer General/Number.
+        #   2. str()-coerce every value — xlwt infers Number from Python
+        #      int/float (the amount in col 7) even under a Text style.
+        #   3. Only cols 0..LAST_DATA_COL are written — no phantom trailing
+        #      cells, so Ctrl+End lands on the last real column.
+        for col in range(VOUCHER_LAST_DATA_COL + 1):
+            sheet.write(state["row"], col, str(values[col]), text_style)
         state["row"] += 1
 
     for emp in sorted(per_emp.keys()):
