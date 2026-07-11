@@ -254,6 +254,14 @@ def mark_expense_voucher_paid(voucher_name: str) -> dict:
 
 	return {"status": "ok", "voucher_name": voucher_name}
 
+@frappe.whitelist()
+def list_outstanding_carry_forward(employee: str = "") -> list:
+	"""Accounts read: un-consumed advance carry-forward per source voucher (Ruling B)."""
+	_require_hr_or_admin()
+	from vecrm.vecrm.doctype.vecrm_expense_voucher.vecrm_expense_voucher import (
+		list_outstanding_carry_forward as _list,
+	)
+	return _list(employee or None)
 
 @frappe.whitelist()
 def voucher_resubmit_travel(

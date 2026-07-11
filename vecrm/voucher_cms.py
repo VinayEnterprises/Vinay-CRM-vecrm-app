@@ -108,7 +108,7 @@ def _collect_vouchers(from_date, to_date):
         is_expense = dt == "VECRM Expense Voucher"
         fields = ["name", "submitter", "total_amount", date_field]
         if is_expense:
-            fields += ["advance_received", "advance_amount", "site"]
+            fields += ["advance_received", "advance_amount", "site", "advance_consumed"]
         rows = frappe.get_all(
             dt,
             filters={
@@ -145,7 +145,8 @@ def _collect_vouchers(from_date, to_date):
                 advance_submitted = flt(r.get("advance_amount")) if r.get("advance_received") else 0.0
                 override = overrides.get(r["name"])  # None when no override row
                 effective_advance = override if override is not None else advance_submitted
-                net = total - effective_advance
+                consumed = flt(r.get("advance_consumed"))
+                net = total - effective_advance - consumed
                 site_val = (r.get("site") or "").strip() or "—"
             else:
                 advance_submitted = None
@@ -164,6 +165,7 @@ def _collect_vouchers(from_date, to_date):
                 "period": period_label(r.get(date_field)),
                 "advance_submitted": advance_submitted,
                 "advance_override": override,
+                "advance_consumed": consumed if is_expense else None,
                 "site": site_val,
             })
     return per_emp
@@ -502,7 +504,13 @@ def set_payout_advance_override(voucher_name, amount=None, voucher_doctype="VECR
     amt = flt(amount)
     if amt < 0:
         frappe.throw("Advance override cannot be negative")
-    total = flt(frappe.db.get_value(voucher_doctype, voucher_name, "total_amount"))
+    total, consumed = frappe.db.get_value(
+        voucher_doctype, voucher_name, ["total_amount", "advance_consumed"]
+    ) if voucher_doctype == "VECRM Expense Voucher" else (
+        frappe.db.get_value(voucher_doctype, voucher_name, "total_amount"), 0
+    )
+    total = flt(total)
+    consumed = flt(consumed)
     if amt > total:
         frappe.throw(f"Advance override (₹{amt}) cannot exceed the voucher total (₹{total}).")
 
@@ -531,7 +539,7 @@ def set_payout_advance_override(voucher_name, amount=None, voucher_doctype="VECR
         }).insert(ignore_permissions=True)
     frappe.db.commit()
 
-    net = max(0.0, total - amt)
+    net = max(0.0, total - amt - consumed)
     return {
         "voucher_name": voucher_name,
         "advance_override": amt,

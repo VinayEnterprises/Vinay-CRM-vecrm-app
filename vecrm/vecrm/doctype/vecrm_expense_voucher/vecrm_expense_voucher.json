@@ -19,6 +19,9 @@
     "advance_received",
     "advance_amount",
     "net_payable",
+    "carry_forward_amount",
+    "advance_ref",
+    "advance_consumed",
     "approver_set",
     "approved_by_employee",
     "approved_by_role",
@@ -112,6 +115,30 @@
       "label": "Net Payable (₹)",
       "read_only": 1,
       "description": "total_amount - advance_amount. Computed in validate() and stored — the amount the payout actually pays before any payout-page override."
+    },
+    {
+      "fieldname": "carry_forward_amount",
+      "fieldtype": "Currency",
+      "label": "Carry Forward (₹)",
+      "read_only": 1,
+      "default": "0",
+      "description": "max(0, advance_amount - total_amount). Over-advance excess captured in validate(); consumed FIFO against this submitter's next Approved voucher (Ruling B)."
+    },
+    {
+      "fieldname": "advance_ref",
+      "fieldtype": "Link",
+      "options": "VECRM Expense Voucher",
+      "label": "Carry-Forward Source",
+      "read_only": 1,
+      "description": "Source voucher whose carry-forward was consumed against this voucher at approval."
+    },
+    {
+      "fieldname": "advance_consumed",
+      "fieldtype": "Currency",
+      "label": "Carry-Forward Consumed (₹)",
+      "read_only": 1,
+      "default": "0",
+      "description": "Amount pulled from the carry-forward source and subtracted from this voucher's net payable at approval."
     },
     {
       "fieldname": "approver_set",

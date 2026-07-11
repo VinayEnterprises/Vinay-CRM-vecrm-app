@@ -181,16 +181,17 @@ class VECRMExpenseVoucher(Document):
                     _("Advance Amount must be greater than 0 when 'Advance Payment Received' is ticked."),
                     frappe.ValidationError,
                 )
-            if advance > total:
-                frappe.throw(
-                    _("Advance Amount (₹{0}) cannot exceed the voucher total (₹{1}).").format(advance, total),
-                    frappe.ValidationError,
-                )
         else:
             # Toggle off → keep the stored advance clean so net_payable == total.
             advance = 0.0
             self.advance_amount = 0
-        self.net_payable = total - advance
+        # Ruling B (S75): over-advance no longer throws. The applied portion
+        # reduces net_payable (floored at 0 by construction); the excess is
+        # captured as carry_forward_amount and consumed FIFO against this
+        # submitter's next Approved voucher (see _consume_carry_forward).
+        applied = min(advance, total)
+        self.net_payable = total - applied
+        self.carry_forward_amount = max(0.0, advance - total)
 
     def before_submit(self) -> None:
         """Pre-submit checks: derive approver_set from submitter_role.
@@ -307,6 +308,93 @@ class VECRMExpenseVoucher(Document):
             "payload": json.dumps(merged_payload, default=str),
         }).insert(ignore_permissions=True)
 
+def _consume_carry_forward(voucher) -> dict:
+    """Ruling B (S75): at approval, pull the submitter's OLDEST un-consumed
+    carry-forward (FIFO by source approved_at) and apply it against this
+    voucher's net_payable.
+
+    Sources are the submitter's OTHER vouchers with docstatus=1,
+    approval_status='Approved' and carry_forward_amount > 0, where
+    remaining = carry_forward_amount - SUM(advance_consumed of consumers
+    whose advance_ref points at the source). Remaining is DERIVED — there
+    is deliberately no mutable counter on the source (race-safer, single
+    writer per fact).
+
+    Applies min(remaining_of_oldest_source, this_net). ONE source per
+    approval (the schema has one advance_ref slot); residual carry on other
+    sources waits for the submitter's next voucher. Writes advance_ref,
+    advance_consumed and the reduced net_payable via
+    db_set(update_modified=False), then re-SELECTs to verify (Rule E:
+    never trust the writer's return).
+
+    Returns consumption facts for the audit payload; {} when nothing
+    was consumed.
+    """
+    this_net = float(voucher.net_payable or 0)
+    if this_net <= 0:
+        return {}
+    if float(voucher.advance_consumed or 0) > 0 or (voucher.advance_ref or "").strip():
+        # Defense in depth: approval is already once-only (approved_by
+        # guard), but never double-consume.
+        return {}
+    sources = frappe.db.sql(
+        """
+        SELECT
+            src.name,
+            src.carry_forward_amount,
+            src.approved_at,
+            COALESCE(SUM(cons.advance_consumed), 0) AS consumed_total
+        FROM `tabVECRM Expense Voucher` src
+        LEFT JOIN `tabVECRM Expense Voucher` cons
+               ON cons.advance_ref = src.name
+        WHERE src.submitter = %(submitter)s
+          AND src.name != %(this)s
+          AND src.docstatus = 1
+          AND src.approval_status = 'Approved'
+          AND src.carry_forward_amount > 0
+        GROUP BY src.name, src.carry_forward_amount, src.approved_at
+        HAVING (src.carry_forward_amount - consumed_total) > 0.0001
+        ORDER BY src.approved_at ASC, src.name ASC
+        LIMIT 1
+        """,
+        {"submitter": voucher.submitter, "this": voucher.name},
+        as_dict=True,
+    )
+    if not sources:
+        return {}
+    src = sources[0]
+    remaining = float(src.carry_forward_amount) - float(src.consumed_total)
+    pull = round(min(remaining, this_net), 2)
+    if pull <= 0:
+        return {}
+    new_net = round(this_net - pull, 2)
+    voucher.db_set("advance_ref", src.name, update_modified=False)
+    voucher.db_set("advance_consumed", pull, update_modified=False)
+    voucher.db_set("net_payable", new_net, update_modified=False)
+    check = frappe.db.sql(
+        """SELECT advance_ref, advance_consumed, net_payable
+           FROM `tabVECRM Expense Voucher` WHERE name = %s""",
+        (voucher.name,),
+        as_dict=True,
+    )[0]
+    if (
+        check.advance_ref != src.name
+        or abs(float(check.advance_consumed) - pull) > 0.0001
+        or abs(float(check.net_payable) - new_net) > 0.0001
+    ):
+        frappe.throw(
+            f"Carry-forward consumption write verification FAILED on "
+            f"{voucher.name}: read-back {dict(check)} vs expected "
+            f"ref={src.name}, consumed={pull}, net={new_net}.",
+            frappe.ValidationError,
+        )
+    return {
+        "carry_source": src.name,
+        "carry_pulled": pull,
+        "net_payable_before": this_net,
+        "net_payable_after": new_net,
+        "source_remaining_after": round(remaining - pull, 2),
+    }
 
 def approve_expense_voucher(
     voucher_name: str,
@@ -363,6 +451,7 @@ def approve_expense_voucher(
     if notes:
         voucher.db_set("approval_notes", notes, update_modified=False)
 
+    consumption = _consume_carry_forward(voucher)
     voucher._audit("voucher.expense.approved", {
         "actor_employee": approver_employee,
         "actor_role": approver.role,
@@ -370,6 +459,7 @@ def approve_expense_voucher(
         "notes": notes or "",
         "from_state": "submitted",
         "to_state": "approved",
+        "carry_forward": consumption or None,
     })
 
     try:
@@ -442,7 +532,44 @@ def reject_expense_voucher(
         frappe.log_error(frappe.get_traceback(), "reject_expense_voucher.notify")
 
     return voucher.name
-
+def list_outstanding_carry_forward(employee: str | None = None) -> list:
+    """Ruling B (S75): Accounts visibility — per-source outstanding
+    (un-consumed) carry-forward. remaining = carry_forward_amount -
+    SUM(advance_consumed of consumers). Optional submitter filter
+    (VECRM Employee docname). Read-only; used for leaver recovery.
+    """
+    conds = [
+        "src.docstatus = 1",
+        "src.approval_status = 'Approved'",
+        "src.carry_forward_amount > 0",
+    ]
+    params = {}
+    if employee:
+        conds.append("src.submitter = %(employee)s")
+        params["employee"] = employee
+    rows = frappe.db.sql(
+        f"""
+        SELECT
+            src.name, src.submitter, src.expense_date, src.approved_at,
+            src.total_amount, src.advance_amount, src.carry_forward_amount,
+            COALESCE(SUM(cons.advance_consumed), 0) AS consumed_total
+        FROM `tabVECRM Expense Voucher` src
+        LEFT JOIN `tabVECRM Expense Voucher` cons
+               ON cons.advance_ref = src.name
+        WHERE {" AND ".join(conds)}
+        GROUP BY src.name, src.submitter, src.expense_date, src.approved_at,
+                 src.total_amount, src.advance_amount, src.carry_forward_amount
+        HAVING (src.carry_forward_amount - consumed_total) > 0.0001
+        ORDER BY src.submitter ASC, src.approved_at ASC, src.name ASC
+        """,
+        params,
+        as_dict=True,
+    )
+    for r in rows:
+        r["outstanding"] = round(
+            float(r["carry_forward_amount"]) - float(r["consumed_total"]), 2
+        )
+    return rows
 
 def voucher_resubmit_expense(
     voucher,
