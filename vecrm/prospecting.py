@@ -355,3 +355,103 @@ def smartflo_webhook():
     frappe.db.commit()
     return {"status": "ok", "call_id": call_id,
             "matched": matched_doctype, "record": rec.name}
+
+
+# ---------------------------------------------------------------------------
+# Smartflo P1 - click to call (S86). Write-free: call lifecycle is logged by
+# the P2 webhook receiver above; this method only originates the call.
+# ---------------------------------------------------------------------------
+
+SMARTFLO_C2C_URL = "https://api-smartflo.tatateleservices.com/v1/click_to_call"
+
+
+def _require_mapped_caller():
+    """Caller must be an Active VECRM Employee (session vecrm_email) with an
+    entry in site_config smartflo_agent_map. Returns (email, map_entry)."""
+    vecrm_email = (frappe.session.data or {}).get("vecrm_email")
+    if not vecrm_email:
+        frappe.throw(
+            frappe._("Session does not include employee linkage. "
+                     "Please log in again."),
+            frappe.PermissionError,
+        )
+    status = frappe.db.get_value(
+        "VECRM Employee", {"vecrm_email": vecrm_email},
+        "vecrm_account_status",
+    )
+    if status != "Active":
+        frappe.throw(
+            frappe._("Your account is not active for calling."),
+            frappe.PermissionError,
+        )
+    agent_map = frappe.conf.get("smartflo_agent_map") or {}
+    entry = agent_map.get(vecrm_email)
+    if not entry or not entry.get("agent_number") or not entry.get("caller_id"):
+        frappe.throw(
+            frappe._("No Smartflo agent mapping for your account. "
+                     "Contact the administrator."),
+            frappe.PermissionError,
+        )
+    return vecrm_email, entry
+
+
+@frappe.whitelist()
+def click_to_call(prospect=None, lead=None):
+    """Originate a Smartflo click-to-call from the caller's mapped agent
+    number to the record's mobile. Exactly one of prospect/lead required."""
+    import requests
+
+    token = frappe.conf.get("smartflo_api_token")
+    if not token:
+        frappe.throw("Calling is not configured", frappe.PermissionError)
+    if bool(prospect) == bool(lead):
+        frappe.throw("Pass exactly one of prospect or lead",
+                     frappe.ValidationError)
+    vecrm_email, entry = _require_mapped_caller()
+
+    if prospect:
+        destination = frappe.db.get_value("VECRM Prospect", prospect, "mobile")
+        record = prospect
+    else:
+        destination = frappe.db.get_value("VECRM Lead", lead, "contact_number")
+        record = lead
+    if destination is None:
+        frappe.throw("Record not found: {0}".format(record),
+                     frappe.ValidationError)
+    destination = normalize_mobile(destination)
+    if not destination or len(destination) != 10:
+        frappe.throw("Record has no valid 10-digit mobile",
+                     frappe.ValidationError)
+
+    payload = {
+        "agent_number": entry["agent_number"],
+        "destination_number": destination,
+        "caller_id": entry["caller_id"],
+        "async": 1,
+        "custom_identifier": record,
+    }
+    try:
+        resp = requests.post(
+            SMARTFLO_C2C_URL,
+            json=payload,
+            headers={"Authorization": token,
+                     "content-type": "application/json",
+                     "accept": "application/json"},
+            timeout=10,
+        )
+    except requests.RequestException as e:
+        frappe.throw("Smartflo unreachable: {0}".format(type(e).__name__))
+    if resp.status_code == 429:
+        retry_after = resp.headers.get("Retry-After") or ""
+        frappe.throw("Smartflo rate limit hit. Retry after: {0}s".format(
+            retry_after or "a few"))
+    try:
+        body = resp.json()
+    except ValueError:
+        body = {"raw": (resp.text or "")[:200]}
+    if resp.status_code != 200 or not body.get("success", True):
+        frappe.throw("Smartflo refused ({0}): {1}".format(
+            resp.status_code, body.get("message") or body))
+    return {"success": True, "message": body.get("message") or "originated",
+            "record": record, "destination": destination,
+            "actor": vecrm_email}
