@@ -50,7 +50,7 @@ def _names_arg(raw):
 
 @frappe.whitelist()
 def list_prospects(disposition=None, assigned_rep=None, callback_due=None,
-                   search=None, limit=50, offset=0):
+                   search=None, city=None, industry=None, limit=50, offset=0):
     actor = _require_transfer_authority()
     limit = min(int(limit or 50), 200)
     offset = max(int(offset or 0), 0)
@@ -70,6 +70,12 @@ def list_prospects(disposition=None, assigned_rep=None, callback_due=None,
             "OR company_name LIKE %(q)s OR mobile LIKE %(q)s)"
         )
         args["q"] = "%" + str(search).strip() + "%"
+    if city:
+        conds.append("city = %(city)s")
+        args["city"] = city
+    if industry:
+        conds.append("industry = %(industry)s")
+        args["industry"] = industry
     rows = frappe.db.sql(
         """SELECT name, first_name, last_name, title, company_name, industry,
                   mobile, city, state, assigned_rep, disposition, callback_on,
@@ -455,3 +461,25 @@ def click_to_call(prospect=None, lead=None):
     return {"success": True, "message": body.get("message") or "originated",
             "record": record, "destination": destination,
             "actor": vecrm_email}
+
+
+@frappe.whitelist()
+def get_prospect(prospect=None):
+    """Full single-record detail for the drawer (S86). Same admin-set guard
+    as list_prospects; list rows stay lean, drawer fetches this."""
+    actor = _require_transfer_authority()
+    if not prospect:
+        frappe.throw("prospect is required", frappe.ValidationError)
+    row = frappe.db.sql(
+        """SELECT name, first_name, last_name, title, company_name, industry,
+                  mobile, alternate_mobile, business_email, city, state,
+                  region, company_size, website, linkedin, company_details,
+                  source, assigned_rep, disposition, disposition_note,
+                  callback_on, attempt_count, last_called_at, promoted_lead,
+                  notes, creation, modified
+           FROM `tabVECRM Prospect` WHERE name = %(name)s""",
+        {"name": prospect}, as_dict=True)
+    if not row:
+        frappe.throw("Record not found: {0}".format(prospect),
+                     frappe.ValidationError)
+    return {"prospect": row[0], "actor": actor}
