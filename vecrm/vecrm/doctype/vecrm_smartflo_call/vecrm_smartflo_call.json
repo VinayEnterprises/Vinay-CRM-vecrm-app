@@ -1,0 +1,49 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:VE/SFC/{#####}",
+ "creation": "2026-07-16 21:45:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "call_id",
+  "direction",
+  "customer_number",
+  "agent_number",
+  "column_break_a",
+  "matched_doctype",
+  "matched_name",
+  "start_stamp",
+  "duration_seconds",
+  "recording_url",
+  "raw_payload"
+ ],
+ "fields": [
+  {"fieldname": "call_id", "fieldtype": "Data", "label": "Call ID", "reqd": 1, "unique": 1, "in_list_view": 1},
+  {"fieldname": "direction", "fieldtype": "Select", "label": "Direction", "options": "Inbound\nOutbound", "in_list_view": 1, "in_standard_filter": 1},
+  {"fieldname": "customer_number", "fieldtype": "Data", "label": "Customer Number", "in_list_view": 1},
+  {"fieldname": "agent_number", "fieldtype": "Data", "label": "Agent Number"},
+  {"fieldname": "column_break_a", "fieldtype": "Column Break"},
+  {"fieldname": "matched_doctype", "fieldtype": "Data", "label": "Matched Doctype"},
+  {"fieldname": "matched_name", "fieldtype": "Dynamic Link", "label": "Matched Record", "options": "matched_doctype"},
+  {"fieldname": "start_stamp", "fieldtype": "Datetime", "label": "Start", "in_list_view": 1},
+  {"fieldname": "duration_seconds", "fieldtype": "Int", "label": "Duration (s)"},
+  {"fieldname": "recording_url", "fieldtype": "Data", "label": "Recording URL"},
+  {"fieldname": "raw_payload", "fieldtype": "Long Text", "label": "Raw Payload"}
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-07-16 21:45:00.000000",
+ "modified_by": "Administrator",
+ "module": "VECRM",
+ "name": "VECRM Smartflo Call",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {"role": "System Manager", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}
