@@ -5720,12 +5720,28 @@ def send_followup_reminders():
     # One name lookup for all owners (single round-trip; tiny payload).
     owner_emails = [k for k in groups.keys() if k]
     name_map = _build_employee_name_map(owner_emails)
+    # S84: never email Suspended reps (offboarded); their
+    # leads still appear in the admin digest below.
+    if owner_emails:
+        _suspended = {
+            r.vecrm_email
+            for r in frappe.get_all(
+                "VECRM Employee",
+                filters={"vecrm_email": ["in", owner_emails],
+                         "vecrm_account_status": ["!=", "Active"]},
+                fields=["vecrm_email"],
+            )
+        }
+    else:
+        _suspended = set()
 
     # ─── Per-rep emails ─────────────────────────────────────────────
     for owner, owned_rows in groups.items():
         if not owner:
             # Leads without a lead_owner can't be addressed; they still
             # appear in the admin digest below. Skip silently here.
+            continue
+        if owner in _suspended:
             continue
         rep_name = name_map.get(owner) or ""
         count = len(owned_rows)
@@ -6910,3 +6926,262 @@ def set_call_disposition(call_name: str, disposition: str, notes: str = None) ->
         "disposition": doc.disposition,
         "is_conversation": int(doc.is_conversation),
     }
+
+
+# ============================================================================
+# S84 — BULK LEAD TRANSFER / CLOSE (frontend-driven, role-gated)
+# ============================================================================
+
+_LEAD_TERMINAL_STATES = ("Converted", "Closed-Won", "Closed-Lost")
+_LEAD_TRANSFER_ROLES = (
+    "Senior Business Acceleration Executive",
+    "HR",
+    "Head of Accounts & HR",
+    "Admin",
+)
+_LEAD_BULK_CAP = 500
+
+
+def _require_transfer_authority() -> str:
+    """Gate for bulk lead transfer/close. Caller's session role must be in
+    _LEAD_TRANSFER_ROLES and their VECRM Employee row must be Active.
+    Returns the actor email for audit. Backend defence-in-depth behind the
+    BFF's display gate (S84; same posture as _require_lead_owner_or_admin).
+    """
+    session_data = frappe.session.data or {}
+    role = session_data.get("vecrm_employee_role")
+    vecrm_email = session_data.get("vecrm_email")
+    if role not in _LEAD_TRANSFER_ROLES:
+        frappe.throw(
+            frappe._("You are not authorized for bulk lead operations."),
+            frappe.PermissionError,
+        )
+    if not vecrm_email:
+        frappe.throw(
+            frappe._("Session does not include employee linkage. "
+                     "Please log in again."),
+            frappe.PermissionError,
+        )
+    status = frappe.db.get_value(
+        "VECRM Employee", {"vecrm_email": vecrm_email},
+        "vecrm_account_status",
+    )
+    if status != "Active":
+        frappe.throw(
+            frappe._("Your account is not Active."),
+            frappe.PermissionError,
+        )
+    return vecrm_email
+
+
+def _lead_names_arg(lead_names):
+    """Normalize the lead_names HTTP arg (list or JSON string) with cap."""
+    if isinstance(lead_names, str):
+        try:
+            lead_names = json.loads(lead_names)
+        except Exception:
+            frappe.throw(
+                frappe._("lead_names must be a JSON list."),
+                frappe.ValidationError,
+            )
+    if not isinstance(lead_names, (list, tuple)) or not lead_names:
+        frappe.throw(
+            frappe._("lead_names must be a non-empty list."),
+            frappe.ValidationError,
+        )
+    if len(lead_names) > _LEAD_BULK_CAP:
+        frappe.throw(
+            frappe._("Bulk operations are capped at {0} leads per call.")
+            .format(_LEAD_BULK_CAP),
+            frappe.ValidationError,
+        )
+    return [str(x).strip() for x in lead_names if str(x).strip()]
+
+
+@frappe.whitelist()
+def list_transfer_candidates() -> dict:
+    """Active VECRM Employees as transfer destinations.
+    Returns {candidates: [{phone_key, email, name, role}]}. (S84)"""
+    _require_transfer_authority()
+    rows = frappe.get_all(
+        "VECRM Employee",
+        filters={"vecrm_account_status": "Active"},
+        fields=["name", "vecrm_email", "employee_name", "role"],
+        order_by="employee_name asc",
+    )
+    return {
+        "candidates": [
+            {
+                "phone_key": r.name,
+                "email": r.vecrm_email,
+                "name": r.employee_name,
+                "role": r.role,
+            }
+            for r in rows
+            if r.vecrm_email
+        ]
+    }
+
+
+@frappe.whitelist()
+def reassign_leads(
+    to_email: str,
+    lead_names=None,
+    all_open_of_owner: str = "",
+    reason: str = "",
+) -> dict:
+    """Bulk-transfer leads to a new owner (S84).
+    Either an explicit lead_names list OR all_open_of_owner (email) —
+    the latter resolves ALL Open leads of that owner server-side.
+    Writes lead_owner only, via doc.save(), so the controller's
+    reassignment_history + Assignment Ledger dual-write fires per lead.
+    Per-lead pushes are suppressed; one summary push goes to the new
+    owner. creating_employee is deliberately NOT rewritten (origin
+    attribution; scoping already honours lead_owner).
+    """
+    actor = _require_transfer_authority()
+    to_email = (to_email or "").strip()
+    dest = frappe.db.get_value(
+        "VECRM Employee", {"vecrm_email": to_email},
+        ["vecrm_account_status", "employee_name"], as_dict=True,
+    )
+    if not dest or dest.vecrm_account_status != "Active":
+        frappe.throw(
+            frappe._("Destination '{0}' is not an Active VECRM Employee.")
+            .format(to_email),
+            frappe.ValidationError,
+        )
+    if all_open_of_owner:
+        src = (all_open_of_owner or "").strip()
+        names = [
+            r.name for r in frappe.get_all(
+                "VECRM Lead",
+                filters={"lead_owner": src, "status": "Open"},
+                fields=["name"],
+                limit_page_length=_LEAD_BULK_CAP,
+            )
+        ]
+        if not names:
+            return {"transferred": 0, "skipped": [],
+                    "to": to_email, "by": actor}
+    else:
+        names = _lead_names_arg(lead_names)
+    reason = (reason or "").strip()
+    transferred = 0
+    skipped = []
+    for nm in names:
+        try:
+            row = frappe.db.get_value(
+                "VECRM Lead", nm, ["status", "lead_owner"], as_dict=True)
+            if not row:
+                skipped.append({"name": nm, "reason": "not found"})
+                continue
+            if row.status in _LEAD_TERMINAL_STATES:
+                skipped.append(
+                    {"name": nm,
+                     "reason": "terminal state {0}".format(row.status)})
+                continue
+            if row.lead_owner == to_email:
+                skipped.append({"name": nm, "reason": "already owner"})
+                continue
+            doc = frappe.get_doc("VECRM Lead", nm)
+            doc.lead_owner = to_email
+            doc.flags.suppress_lead_push = True
+            if reason:
+                doc.flags.transfer_reason = reason
+            doc.save()
+            transferred += 1
+        except Exception as e:
+            skipped.append(
+                {"name": nm,
+                 "reason": "{0}: {1}".format(type(e).__name__, e)})
+    frappe.db.commit()
+    if transferred:
+        try:
+            from vecrm.notifications import send_push, _tokens_for_user
+            tokens = _tokens_for_user(to_email)
+            if tokens:
+                send_push(
+                    tokens,
+                    "Leads transferred to you",
+                    "{0} lead{1} transferred to you by {2}".format(
+                        transferred, "s" if transferred != 1 else "",
+                        actor),
+                    {"screen": "leads"},
+                )
+        except Exception:
+            frappe.log_error(
+                frappe.get_traceback(), "reassign_leads summary push")
+    return {"transferred": transferred, "skipped": skipped,
+            "to": to_email, "by": actor}
+
+
+@frappe.whitelist()
+def close_leads(lead_names, outcome: str, notes: str = "") -> dict:
+    """Bulk-close leads with a final outcome (S84). Explicit selection
+    only — no all-open shorthand for a destructive terminal op.
+    Per-lead status pushes/emails are suppressed; one digest email goes
+    to Sales Head + Admin.
+    """
+    actor = _require_transfer_authority()
+    if outcome not in ("Closed-Won", "Closed-Lost"):
+        frappe.throw(
+            frappe._("Invalid outcome '{0}'. Must be Closed-Won or "
+                     "Closed-Lost.").format(outcome),
+            frappe.ValidationError,
+        )
+    names = _lead_names_arg(lead_names)
+    notes = (notes or "").strip()
+    closed = 0
+    skipped = []
+    for nm in names:
+        try:
+            row = frappe.db.get_value(
+                "VECRM Lead", nm, ["status"], as_dict=True)
+            if not row:
+                skipped.append({"name": nm, "reason": "not found"})
+                continue
+            if row.status in _LEAD_TERMINAL_STATES:
+                skipped.append(
+                    {"name": nm,
+                     "reason": "terminal state {0}".format(row.status)})
+                continue
+            doc = frappe.get_doc("VECRM Lead", nm)
+            doc.status = outcome
+            if notes:
+                doc.closure_notes = notes
+            doc.flags.suppress_lead_push = True
+            doc.flags.suppress_status_email = True
+            doc.save()
+            closed += 1
+        except Exception as e:
+            skipped.append(
+                {"name": nm,
+                 "reason": "{0}: {1}".format(type(e).__name__, e)})
+    frappe.db.commit()
+    if closed:
+        try:
+            from vecrm.email_utils import send_email
+            heads = frappe.get_all(
+                "VECRM Employee",
+                filters={"role": ["in", ["Sales Head", "Admin"]],
+                         "vecrm_account_status": "Active"},
+                fields=["vecrm_email"],
+            )
+            recipients = [h.vecrm_email for h in heads if h.vecrm_email]
+            if recipients:
+                send_email(
+                    to=recipients,
+                    subject="Bulk lead closure: {0} lead{1} {2}".format(
+                        closed, "s" if closed != 1 else "", outcome),
+                    html_body=(
+                        "<p>{0} lead{1} bulk-closed as <b>{2}</b> by {3}."
+                        "</p><p>Notes: {4}</p>".format(
+                            closed, "s" if closed != 1 else "", outcome,
+                            actor, notes or "-")),
+                )
+        except Exception:
+            frappe.log_error(
+                frappe.get_traceback(), "close_leads digest email")
+    return {"closed": closed, "skipped": skipped,
+            "outcome": outcome, "by": actor}

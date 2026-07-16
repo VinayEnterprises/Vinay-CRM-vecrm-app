@@ -99,11 +99,14 @@ class VECRMLead(Document):
 		#       ref tuples by design — child is the parent's
 		#       breadcrumb; ledger is the system record.
 		if before.lead_owner != self.lead_owner:
+			_reason_note = (self.flags.get("transfer_reason") or "").strip()
+			_owner_change_reason = "lead_owner change" + (
+				" | " + _reason_note if _reason_note else "")
 			self.append("reassignment_history", {
 				"from_owner": before.lead_owner,
 				"to_owner": self.lead_owner,
 				"changed_by": actor,
-				"change_reason": "lead_owner change",
+				"change_reason": _owner_change_reason,
 				"ref_document": self.name,
 				"event_timestamp": ts,
 			})
@@ -113,7 +116,7 @@ class VECRMLead(Document):
 				"from_owner": before.lead_owner,
 				"to_owner": self.lead_owner,
 				"changed_by": actor,
-				"change_reason": "lead_owner change",
+				"change_reason": _owner_change_reason,
 				"ref_document": self.name,
 				"event_timestamp": ts,
 			}).insert(ignore_permissions=True)
@@ -142,7 +145,7 @@ class VECRMLead(Document):
 				"event_timestamp": ts,
 			}).insert(ignore_permissions=True)
 
-			if self.status in ("Closed-Won", "Closed-Lost"):
+			if self.status in ("Closed-Won", "Closed-Lost") and not self.flags.get("suppress_status_email"):
 				try:
 					from vecrm.api import _send_lead_notification
 					from vecrm.vecrm.email_templates import render_lead_status_email

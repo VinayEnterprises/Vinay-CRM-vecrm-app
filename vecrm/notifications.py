@@ -232,6 +232,8 @@ def notify_lead_assigned(doc, method):
 		before = doc.get_doc_before_save()
 		if before is None:
 			return  # insert path; ignored here
+		if doc.flags.get("suppress_lead_push"):
+			return
 		old_owner = getattr(before, "lead_owner", None)
 		new_owner = doc.lead_owner
 		if not new_owner or new_owner == old_owner:
@@ -254,6 +256,8 @@ def notify_lead_status(doc, method):
 	try:
 		before = doc.get_doc_before_save()
 		if before is None:
+			return
+		if doc.flags.get("suppress_lead_push"):
 			return
 		old_status = getattr(before, "status", None)
 		new_status = doc.status
