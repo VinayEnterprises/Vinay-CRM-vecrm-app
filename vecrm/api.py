@@ -6999,13 +6999,34 @@ def _lead_names_arg(lead_names):
 
 
 @frappe.whitelist()
-def list_transfer_candidates() -> dict:
+def list_transfer_candidates(roles=None) -> dict:
     """Active VECRM Employees as transfer destinations.
-    Returns {candidates: [{phone_key, email, name, role}]}. (S84)"""
+    Returns {candidates: [{phone_key, email, name, role}]}. (S84)
+
+    S87: optional `roles` (JSON list or list) narrows the set by VECRM
+    Employee role -- the prospecting assign dialog passes the sales set.
+    Omitted => unchanged S84 behaviour (every Active employee).
+    """
     _require_transfer_authority()
+    filters = {"vecrm_account_status": "Active"}
+    if roles:
+        if isinstance(roles, str):
+            try:
+                roles = json.loads(roles)
+            except Exception:
+                frappe.throw(
+                    frappe._("roles must be a JSON list."),
+                    frappe.ValidationError,
+                )
+        if not isinstance(roles, (list, tuple)) or not roles:
+            frappe.throw(
+                frappe._("roles must be a non-empty list."),
+                frappe.ValidationError,
+            )
+        filters["role"] = ["in", [str(r).strip() for r in roles if str(r).strip()]]
     rows = frappe.get_all(
         "VECRM Employee",
-        filters={"vecrm_account_status": "Active"},
+        filters=filters,
         fields=["name", "vecrm_email", "employee_name", "role"],
         order_by="employee_name asc",
     )

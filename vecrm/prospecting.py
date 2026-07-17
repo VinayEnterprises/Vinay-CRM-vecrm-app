@@ -48,13 +48,79 @@ def _names_arg(raw):
     return [str(x).strip() for x in raw if str(x).strip()]
 
 
+_PROSPECTING_ADMIN_ROLES = (
+    "Senior Business Acceleration Executive",
+    "HR",
+    "Head of Accounts & HR",
+    "Admin",
+)
+_PROSPECTING_REP_ROLES = ("Sales Rep",)
+
+
+def _require_prospecting_access():
+    """Gate for the prospecting surface (S87 rider 1, ruling (a)).
+
+    Returns (actor_email, scope, rep_key):
+      scope "all" -> admin set; sees every prospect.
+      scope "own" -> Sales Rep; scoped to prospects whose assigned_rep is the
+                     caller's own VECRM Employee name (the phone_key).
+    rep_key is resolved server-side from the session email, never taken from
+    the portal. Unassigned prospects are invisible to reps by ruling (a):
+    assign_prospects (admin-only) is the control point.
+    """
+    session_data = frappe.session.data or {}
+    role = session_data.get("vecrm_employee_role")
+    vecrm_email = session_data.get("vecrm_email")
+    if not vecrm_email:
+        frappe.throw(
+            frappe._("Session does not include employee linkage. "
+                     "Please log in again."),
+            frappe.PermissionError,
+        )
+    if role in _PROSPECTING_ADMIN_ROLES:
+        scope = "all"
+    elif role in _PROSPECTING_REP_ROLES:
+        scope = "own"
+    else:
+        frappe.throw(
+            frappe._("You are not authorized for the prospecting queue."),
+            frappe.PermissionError,
+        )
+    emp = frappe.db.get_value(
+        "VECRM Employee", {"vecrm_email": vecrm_email},
+        ["name", "vecrm_account_status"], as_dict=True,
+    )
+    if not emp or emp.vecrm_account_status != "Active":
+        frappe.throw(
+            frappe._("Your account is not Active."),
+            frappe.PermissionError,
+        )
+    return vecrm_email, scope, emp.name
+
+
+def _assert_owns(prospect_name, scope, rep_key):
+    """Ownership check for rep-scoped single-record operations (S87)."""
+    if scope == "all":
+        return
+    owner = frappe.db.get_value("VECRM Prospect", prospect_name, "assigned_rep")
+    if owner != rep_key:
+        frappe.throw(
+            frappe._("This prospect is not in your queue."),
+            frappe.PermissionError,
+        )
+
+
 @frappe.whitelist()
 def list_prospects(disposition=None, assigned_rep=None, callback_due=None,
                    search=None, city=None, industry=None, limit=50, offset=0):
-    actor = _require_transfer_authority()
+    actor, scope, rep_key = _require_prospecting_access()
     limit = min(int(limit or 50), 200)
     offset = max(int(offset or 0), 0)
     conds, args = ["1=1"], {}
+    if scope == "own":
+        # Ruling (a): reps see only their own queue. A caller-supplied
+        # assigned_rep is ignored for reps -- never trust the portal.
+        assigned_rep = rep_key
     if disposition:
         conds.append("disposition = %(disposition)s")
         args["disposition"] = disposition
@@ -94,9 +160,10 @@ def list_prospects(disposition=None, assigned_rep=None, callback_due=None,
 @frappe.whitelist()
 def set_prospect_disposition(prospect=None, disposition=None, note=None,
                              callback_on=None):
-    actor = _require_transfer_authority()
+    actor, scope, rep_key = _require_prospecting_access()
     if not prospect or not str(prospect).strip():
         frappe.throw("prospect is required", frappe.ValidationError)
+    _assert_owns(str(prospect).strip(), scope, rep_key)
     if disposition not in DISPOSITIONS:
         frappe.throw(
             "disposition must be one of: {0}".format(", ".join(DISPOSITIONS)),
@@ -429,6 +496,11 @@ def click_to_call(prospect=None, lead=None):
         frappe.throw("Record has no valid 10-digit mobile",
                      frappe.ValidationError)
 
+    if prospect:
+        # S87: reps may only originate to prospects in their own queue.
+        # The lead branch keeps its own lead_owner model (out of scope).
+        _p_actor, _p_scope, _p_rep_key = _require_prospecting_access()
+        _assert_owns(str(prospect).strip(), _p_scope, _p_rep_key)
     payload = {
         "agent_number": entry["agent_number"],
         "destination_number": destination,
@@ -465,11 +537,13 @@ def click_to_call(prospect=None, lead=None):
 
 @frappe.whitelist()
 def get_prospect(prospect=None):
-    """Full single-record detail for the drawer (S86). Same admin-set guard
-    as list_prospects; list rows stay lean, drawer fetches this."""
-    actor = _require_transfer_authority()
+    """Full single-record detail for the drawer (S86). Rep-scoped by
+    _require_prospecting_access (S87); list rows stay lean, drawer fetches
+    this."""
+    actor, scope, rep_key = _require_prospecting_access()
     if not prospect:
         frappe.throw("prospect is required", frappe.ValidationError)
+    _assert_owns(str(prospect).strip(), scope, rep_key)
     row = frappe.db.sql(
         """SELECT name, first_name, last_name, title, company_name, industry,
                   mobile, alternate_mobile, business_email, city, state,
