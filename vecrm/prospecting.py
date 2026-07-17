@@ -236,10 +236,17 @@ def promote_prospect(prospect=None, territory=None, priority=3):
     INTENTIONALLY not suppressed (it is a real new lead - S85 spec section 2).
     Field map covers the six documented-required Lead fields (OBS-S84-D):
     territory, priority, contact_date, lead_owner, company_name, status.
+
+    S88: gate widened from _require_transfer_authority (admin-only) to
+    _require_prospecting_access + _assert_owns, so a Sales Rep may promote a
+    prospect that is in their OWN queue. Admin/SBAE scope "all" -> _assert_owns
+    is a no-op. `actor` keeps its binding; the add_comment and return dict are
+    unchanged.
     """
-    actor = _require_transfer_authority()
+    actor, _pp_scope, _pp_rep_key = _require_prospecting_access()
     if not prospect or not str(prospect).strip():
         frappe.throw("prospect is required", frappe.ValidationError)
+    _assert_owns(str(prospect).strip(), _pp_scope, _pp_rep_key)
     if not territory or not str(territory).strip():
         frappe.throw("territory is required to create the lead",
                      frappe.ValidationError)
@@ -351,6 +358,139 @@ def import_prospects_batch(rows_json=None, batch_tag=None):
         "SELECT COUNT(*) c FROM `tabVECRM Prospect`", as_dict=True)[0].c
     return {"inserted": len(inserted), "skipped": skipped,
             "table_total_after": count, "actor": actor}
+
+
+@frappe.whitelist()
+def create_prospect(payload_json=None):
+    """Single-record prospect creation from the portal (S88).
+
+    Guard: admin set (scope "all") + Sales Rep (scope "own").
+      scope "own" -> assigned_rep is FORCED to the caller's own phone_key;
+                     any client-supplied assigned_rep is ignored.
+      scope "all" -> a supplied assigned_rep is honoured, validated Active and
+                     role-in-set (R1-ii, deliberately stricter than
+                     assign_prospects, which checks existence only);
+                     omitted -> None (unassigned).
+    `source` is stamped server-side as manual:<actor_email>; the payload's own
+    `source` is explicitly discarded. The doctype's read_only:1 on `source` is
+    a FORM flag only and does NOT block server-side dict construction.
+    Dedupe: identical predicates to import_prospects_batch (Prospect + Lead),
+    plus a DuplicateEntryError catch for the pre-check/insert race (`mobile` is
+    unique:1 at the DB level).
+    """
+    actor, scope, rep_key = _require_prospecting_access()
+
+    if isinstance(payload_json, str):
+        payload = json.loads(payload_json)
+    else:
+        payload = payload_json
+    if not isinstance(payload, dict) or not payload:
+        frappe.throw("payload_json must be a non-empty object",
+                     frappe.ValidationError)
+
+    mob = normalize_mobile(payload.get("mobile"))
+    if not mob or len(mob) != 10:
+        frappe.throw(
+            "Mobile must contain a valid 10-digit number (got: {0})".format(
+                payload.get("mobile")),
+            frappe.ValidationError,
+        )
+
+    first_name = (payload.get("first_name") or "").strip()
+    company_name = (payload.get("company_name") or "").strip()
+    if not first_name:
+        frappe.throw("first_name is required", frappe.ValidationError)
+    if not company_name:
+        frappe.throw("company_name is required", frappe.ValidationError)
+
+    if frappe.db.exists("VECRM Prospect", {"mobile": mob}):
+        existing = frappe.db.get_value("VECRM Prospect", {"mobile": mob}, "name")
+        frappe.throw(
+            "A prospect with mobile {0} already exists: {1}".format(
+                mob, existing),
+            frappe.ValidationError,
+        )
+    lead_dup = frappe.db.get_value("VECRM Lead", {"contact_number": mob}, "name")
+    if lead_dup:
+        frappe.throw(
+            "A lead with mobile {0} already exists: {1}".format(mob, lead_dup),
+            frappe.ValidationError,
+        )
+
+    if scope == "own":
+        assigned_rep = rep_key
+    else:
+        raw_rep = (payload.get("assigned_rep") or "").strip()
+        if raw_rep:
+            rep_row = frappe.db.get_value(
+                "VECRM Employee", raw_rep,
+                ["name", "vecrm_account_status", "role"], as_dict=True,
+            )
+            if not rep_row:
+                frappe.throw("VECRM Employee {0} not found".format(raw_rep),
+                             frappe.ValidationError)
+            if rep_row.vecrm_account_status != "Active":
+                frappe.throw(
+                    "VECRM Employee {0} is not Active".format(raw_rep),
+                    frappe.ValidationError,
+                )
+            if rep_row.role not in (_PROSPECTING_ADMIN_ROLES
+                                    + _PROSPECTING_REP_ROLES):
+                frappe.throw(
+                    "VECRM Employee {0} (role {1}) cannot hold a prospect "
+                    "queue".format(raw_rep, rep_row.role),
+                    frappe.ValidationError,
+                )
+            assigned_rep = rep_row.name
+        else:
+            assigned_rep = None
+
+    doc = frappe.get_doc({
+        "doctype": "VECRM Prospect",
+        "first_name": first_name,
+        "last_name": (payload.get("last_name") or "").strip(),
+        "title": (payload.get("title") or "").strip(),
+        "company_name": company_name,
+        "industry": (payload.get("industry") or "").strip(),
+        "mobile": mob,
+        "alternate_mobile": (payload.get("alternate_mobile") or "").strip(),
+        "business_email": (payload.get("business_email") or "").strip(),
+        "city": (payload.get("city") or "").strip(),
+        "state": (payload.get("state") or "").strip(),
+        "region": (payload.get("region") or "").strip(),
+        "company_size": (payload.get("company_size") or "").strip(),
+        "website": (payload.get("website") or "").strip(),
+        "linkedin": (payload.get("linkedin") or "").strip(),
+        "company_details": payload.get("company_details") or "",
+        "source": "manual:{0}".format(actor),
+        "assigned_rep": assigned_rep,
+        "disposition": "Fresh",
+        "disposition_note": "",
+        "notes": payload.get("notes") or "",
+    })
+    try:
+        doc.insert(ignore_permissions=True)
+    except frappe.exceptions.DuplicateEntryError:
+        frappe.throw(
+            "A prospect with mobile {0} already exists".format(mob),
+            frappe.ValidationError,
+        )
+    frappe.db.commit()
+
+    fresh = frappe.db.get_value(
+        "VECRM Prospect", doc.name,
+        ["name", "assigned_rep", "source", "mobile"], as_dict=True,
+    )
+    if not fresh:
+        frappe.throw(
+            "Post-write verification failed: prospect {0} not readable".format(
+                doc.name))
+    if fresh.mobile != mob or fresh.source != "manual:{0}".format(actor):
+        frappe.throw(
+            "Post-write verification failed: prospect {0} stored "
+            "mobile={1} source={2}".format(doc.name, fresh.mobile, fresh.source)
+        )
+    return {"prospect": fresh.name, "assigned_rep": fresh.assigned_rep}
 
 
 # ---------------------------------------------------------------------------
