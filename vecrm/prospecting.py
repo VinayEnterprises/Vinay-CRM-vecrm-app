@@ -110,6 +110,49 @@ def _assert_owns(prospect_name, scope, rep_key):
         )
 
 
+def _rep_email(rep_name):
+    """Resolve a VECRM Employee's vecrm_email for lead_owner (S89/B30).
+
+    VECRM Lead.lead_owner carries an EMAIL (2820/2821 rows; lib/owner-names.ts
+    joins on vecrm_email). VECRM Employee.name is a phone key. promote_prospect
+    wrote the phone key, mis-keying the one lead it created. Throws rather than
+    writing a blank: lead_owner is reqd.
+    """
+    em = frappe.db.get_value("VECRM Employee", rep_name, "vecrm_email")
+    if not em:
+        frappe.throw(
+            "VECRM Employee {0} has no vecrm_email; cannot set lead_owner"
+            .format(rep_name), frappe.ValidationError)
+    return em
+
+
+def _validate_rep_target(rep_name):
+    """Validate a VECRM Employee may hold a prospect queue.
+
+    Shared by create_prospect (S88) and assign_prospects (S89/B29). Returns the
+    row so callers use the canonical .name. Extracted verbatim from
+    create_prospect; the create path's behaviour is unchanged.
+    """
+    rep_row = frappe.db.get_value(
+        "VECRM Employee", rep_name,
+        ["name", "vecrm_account_status", "role"], as_dict=True,
+    )
+    if not rep_row:
+        frappe.throw("VECRM Employee {0} not found".format(rep_name),
+                     frappe.ValidationError)
+    if rep_row.vecrm_account_status != "Active":
+        frappe.throw("VECRM Employee {0} is not Active".format(rep_name),
+                     frappe.ValidationError)
+    if rep_row.role not in (_PROSPECTING_ADMIN_ROLES
+                            + _PROSPECTING_REP_ROLES):
+        frappe.throw(
+            "VECRM Employee {0} (role {1}) cannot hold a prospect "
+            "queue".format(rep_name, rep_row.role),
+            frappe.ValidationError,
+        )
+    return rep_row
+
+
 @frappe.whitelist()
 def list_prospects(disposition=None, assigned_rep=None, callback_due=None,
                    search=None, city=None, industry=None, limit=50, offset=0):
@@ -198,9 +241,7 @@ def assign_prospects(prospect_names=None, to_rep=None):
     if not to_rep or not str(to_rep).strip():
         frappe.throw("to_rep is required", frappe.ValidationError)
     to_rep = str(to_rep).strip()
-    if not frappe.db.exists("VECRM Employee", to_rep):
-        frappe.throw("VECRM Employee {0} not found".format(to_rep),
-                     frappe.ValidationError)
+    to_rep = _validate_rep_target(to_rep).name
     names = _names_arg(prospect_names)
     if not names:
         frappe.throw("prospect_names is required", frappe.ValidationError)
@@ -274,7 +315,7 @@ def promote_prospect(prospect=None, territory=None, priority=3):
         "territory": str(territory).strip(),
         "priority": int(priority or 3),
         "contact_date": today(),
-        "lead_owner": doc.assigned_rep,
+        "lead_owner": _rep_email(doc.assigned_rep),
         "status": "Open",
     })
     lead.insert(ignore_permissions=True)
@@ -422,26 +463,7 @@ def create_prospect(payload_json=None):
     else:
         raw_rep = (payload.get("assigned_rep") or "").strip()
         if raw_rep:
-            rep_row = frappe.db.get_value(
-                "VECRM Employee", raw_rep,
-                ["name", "vecrm_account_status", "role"], as_dict=True,
-            )
-            if not rep_row:
-                frappe.throw("VECRM Employee {0} not found".format(raw_rep),
-                             frappe.ValidationError)
-            if rep_row.vecrm_account_status != "Active":
-                frappe.throw(
-                    "VECRM Employee {0} is not Active".format(raw_rep),
-                    frappe.ValidationError,
-                )
-            if rep_row.role not in (_PROSPECTING_ADMIN_ROLES
-                                    + _PROSPECTING_REP_ROLES):
-                frappe.throw(
-                    "VECRM Employee {0} (role {1}) cannot hold a prospect "
-                    "queue".format(raw_rep, rep_row.role),
-                    frappe.ValidationError,
-                )
-            assigned_rep = rep_row.name
+            assigned_rep = _validate_rep_target(raw_rep).name
         else:
             assigned_rep = None
 
