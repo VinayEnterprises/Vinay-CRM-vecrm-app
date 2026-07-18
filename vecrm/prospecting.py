@@ -155,10 +155,30 @@ def _validate_rep_target(rep_name):
 
 @frappe.whitelist()
 def list_prospects(disposition=None, assigned_rep=None, callback_due=None,
-                   search=None, city=None, industry=None, limit=50, offset=0):
+                   search=None, city=None, industry=None, limit=50, offset=0,
+                   sort_by=None, sort_dir=None):
     actor, scope, rep_key = _require_prospecting_access()
-    limit = min(int(limit or 50), 200)
+    limit = min(int(limit or 50), 500)
     offset = max(int(offset or 0), 0)
+
+    # --- Sort whitelist: UI key -> real column. Raw input NEVER reaches ORDER BY. ---
+    _SORT_COLUMNS = {
+        "name": "first_name",
+        "company": "company_name",
+        "city": "city",
+        "industry": "industry",
+        "assigned_rep": "assigned_rep",
+        "disposition": "disposition",
+        "callback": "callback_on",
+        "attempts": "attempt_count",
+        "last_called": "last_called_at",
+        "modified": "modified",
+    }
+    sort_col = _SORT_COLUMNS.get((sort_by or "").strip().lower(), "modified")
+    sort_dir = "ASC" if str(sort_dir or "").strip().lower() == "asc" else "DESC"
+    # Deterministic tiebreaker on unique name -> stable pagination.
+    order_by = "{col} {dir}, name ASC".format(col=sort_col, dir=sort_dir)
+
     conds, args = ["1=1"], {}
     if scope == "own":
         # Ruling (a): reps see only their own queue. A caller-supplied
@@ -191,8 +211,9 @@ def list_prospects(disposition=None, assigned_rep=None, callback_due=None,
                   attempt_count, last_called_at, promoted_lead, modified
            FROM `tabVECRM Prospect`
            WHERE {conds}
-           ORDER BY modified DESC
-           LIMIT %(limit)s OFFSET %(offset)s""".format(conds=" AND ".join(conds)),
+           ORDER BY {order_by}
+           LIMIT %(limit)s OFFSET %(offset)s""".format(
+            conds=" AND ".join(conds), order_by=order_by),
         dict(args, limit=limit, offset=offset), as_dict=True)
     total = frappe.db.sql(
         "SELECT COUNT(*) c FROM `tabVECRM Prospect` WHERE {conds}".format(
