@@ -19,6 +19,7 @@ Conventions:
 import json
 import re
 import secrets
+import hmac
 
 import frappe
 from vecrm.vecrm.email_templates import render_touchpoint_email, render_email_layout
@@ -7206,3 +7207,274 @@ def close_leads(lead_names, outcome: str, notes: str = "") -> dict:
                 frappe.get_traceback(), "close_leads digest email")
     return {"closed": closed, "skipped": skipped,
             "outcome": outcome, "by": actor}
+
+
+# ============================================================================
+# PD-MKT-S4-INBOUND — Inbound Web Lead Receiver
+# Public endpoint: website contact-form (via BFF) -> VECRM Lead / Touchpoint.
+# Rule-E (writes Leads). Shared-secret guarded, idempotent, dedup->touchpoint.
+# Appended to vecrm/api.py. Requires `import hmac` at module top (add if absent).
+# ============================================================================
+
+_INBOUND_SBAE_ROLE = "Senior Business Acceleration Executive"
+_INBOUND_ADMIN_ROLE = "Admin"
+_INBOUND_TERRITORY = "Web"
+_INBOUND_PRIORITY = 4
+_INBOUND_IDEMPOTENCY_WINDOW_MIN = 10
+_INBOUND_SENDER = "hello@anusuya.ai"
+_INBOUND_CONSUMER_DOMAINS = {
+    "gmail.com", "yahoo.com", "yahoo.co.in", "yahoo.in", "outlook.com",
+    "hotmail.com", "live.com", "rediffmail.com", "icloud.com",
+    "proton.me", "protonmail.com",
+}
+
+
+def _inbound_check_secret():
+    """Constant-time shared-secret gate. Unset config => refuse (ships dark)."""
+    configured = frappe.conf.get("inbound_web_lead_secret")
+    if not configured:
+        frappe.throw(_("Inbound endpoint is not configured."), frappe.PermissionError)
+    presented = frappe.get_request_header("X-VE-Inbound-Secret") or ""
+    if not hmac.compare_digest(str(presented), str(configured)):
+        frappe.throw(_("Invalid inbound secret."), frappe.PermissionError)
+
+
+def _inbound_norm_phone(raw):
+    if not raw:
+        return ""
+    digits = "".join(ch for ch in str(raw) if ch.isdigit())
+    return digits[-10:] if len(digits) >= 10 else digits
+
+
+def _inbound_norm_email(raw):
+    return str(raw).strip().lower() if raw else ""
+
+
+def _inbound_derive_company(company, email_norm, person):
+    company = (company or "").strip()
+    if company:
+        return company[:140]
+    if "@" in email_norm:
+        domain = email_norm.split("@", 1)[1]
+        if domain and domain not in _INBOUND_CONSUMER_DOMAINS:
+            return domain.split(".")[0].title()[:140]
+    person = (person or "").strip()
+    if person:
+        return person[:140]
+    return "Unknown (Web)"
+
+
+def _inbound_resolve_owner():
+    """Live-resolve active SBAE's +91- key. Never orphan: Admin fallback, then refuse."""
+    holders = frappe.get_all(
+        "VECRM Employee",
+        filters={"role": _INBOUND_SBAE_ROLE, "vecrm_account_status": "Active"},
+        fields=["name"], order_by="name asc",
+    )
+    if holders:
+        return holders[0]["name"], None
+    admins = frappe.get_all(
+        "VECRM Employee",
+        filters={"role": _INBOUND_ADMIN_ROLE, "vecrm_account_status": "Active"},
+        fields=["name"], order_by="name asc",
+    )
+    if admins:
+        return admins[0]["name"], "No active SBAE; assigned to Admin fallback."
+    return None, "No active SBAE or Admin to own inbound lead."
+
+
+def _inbound_find_existing_lead(email_norm, phone10):
+    """Any Lead (any status) matching email OR last-10 phone. Newest first."""
+    conds, params = [], {}
+    if email_norm:
+        conds.append("LOWER(TRIM(COALESCE(contact_email, ''))) = %(email)s")
+        params["email"] = email_norm
+    if phone10:
+        conds.append(
+            "RIGHT(REGEXP_REPLACE(COALESCE(contact_number, ''), '[^0-9]', ''), 10) = %(phone)s"
+        )
+        params["phone"] = phone10
+    if not conds:
+        return None
+    rows = frappe.db.sql(
+        "SELECT name FROM `tabVECRM Lead` WHERE " + " OR ".join(conds)
+        + " ORDER BY creation DESC LIMIT 1",
+        params, as_dict=True,
+    )
+    return rows[0]["name"] if rows else None
+
+
+def _inbound_seen_recently(idempotency_key):
+    """Dedupe rapid retries / double-POST. Marker set up-front; auto-expires."""
+    if not idempotency_key:
+        return False
+    ck = "inbound_web_lead:idem:" + str(idempotency_key)
+    if frappe.cache().get_value(ck):
+        return True
+    frappe.cache().set_value(ck, "1", expires_in_sec=_INBOUND_IDEMPOTENCY_WINDOW_MIN * 60)
+    return False
+
+
+def _inbound_autoack_enabled():
+    try:
+        val = frappe.db.get_single_value("VECRM Inbound Settings", "auto_ack_enabled")
+        return bool(int(val or 0))
+    except Exception:
+        return False
+
+
+def _inbound_send_autoack(person, company_name, message, to_email):
+    from vecrm.email_utils import send_email
+    esc = frappe.utils.escape_html
+    parts = [
+        "<p>Hi {0},</p>".format(esc(person or "there")),
+        "<p>Thanks for reaching out to Vinay Enterprises. We&#39;ve received your "
+        "project brief and it&#39;s now with our team.</p>",
+        "<p>One of our infrastructure specialists will review your requirements and "
+        "get back to you within one business day. If your enquiry is urgent, you can "
+        "reach us directly at global@vinayenterprises.co.in.</p>",
+    ]
+    ref = []
+    if company_name and company_name != "Unknown (Web)":
+        ref.append("<b>Company:</b> " + esc(company_name))
+    if message:
+        ref.append("<b>Your message:</b> " + esc(message))
+    if ref:
+        parts.append("<p>For reference, here&#39;s what you submitted:<br>"
+                     + "<br>".join(ref) + "</p>")
+    parts.append("<p>We look forward to speaking with you.</p>")
+    parts.append("<p>&mdash; Vinay Enterprises<br>"
+                 "<span style='color:#888'>Global MSP Desk &middot; "
+                 "powered by Anusuya Workspace</span></p>")
+    html_body = "\n".join(parts)
+    # Originates from hello@anusuya.ai (monitored; prospect replies land there).
+    # send_email hits graph .../users/<sender>/sendMail — the send-as permission
+    # is proven at the auto-ack canary before the flag is ever flipped on.
+    send_email(
+        to=[to_email],
+        subject="We've received your project brief — Vinay Enterprises",
+        html_body=html_body,
+        sender=_INBOUND_SENDER,
+    )
+
+
+@frappe.whitelist(allow_guest=True)
+def inbound_web_lead(name=None, email=None, phone=None, company=None,
+                     message=None, source="contact-us", idempotency_key=None,
+                     **extra):
+    """Website contact form (via BFF) -> VECRM Lead, or Touchpoint if the
+    contact already exists. Rule-E. Guarded by X-VE-Inbound-Secret header.
+
+    Returns a small dict describing the action taken. Never raises to leak
+    internals beyond the guard; owner-resolution failure is a loud refuse.
+    """
+    _inbound_check_secret()
+
+    person = (name or "").strip()[:140]
+    email_norm = _inbound_norm_email(email)
+    phone10 = _inbound_norm_phone(phone)
+    msg = (message or "").strip()
+    src = (source or "contact-us").strip()[:60]
+
+    if _inbound_seen_recently(idempotency_key):
+        return {"ok": True, "action": "duplicate_ignored"}
+
+    # --- dedup: known contact => append touchpoint, no 2nd Lead ---
+    existing = _inbound_find_existing_lead(email_norm, phone10)
+    if existing:
+        summary = ("Web enquiry ({0}): {1}".format(src, msg) if msg
+                   else "Web enquiry ({0}) — no message".format(src))
+        tp = frappe.get_doc({
+            "doctype": "VECRM Lead Touchpoint",
+            "lead": existing,
+            "touchpoint_date": frappe.utils.today(),
+            "touchpoint_type": "Other",
+            "summary": summary[:1000],
+        })
+        tp.insert(ignore_permissions=True)
+        frappe.db.commit()
+        if not frappe.db.exists("VECRM Lead Touchpoint", tp.name):
+            frappe.throw(_("Touchpoint insert not persisted."))
+        return {"ok": True, "action": "touchpoint_appended",
+                "lead": existing, "touchpoint": tp.name}
+
+    # --- new lead ---
+    owner_key, warn = _inbound_resolve_owner()
+    if owner_key is None:
+        frappe.log_error(
+            title="inbound_web_lead: no owner",
+            message="{0} email={1} phone={2}".format(warn, email_norm, phone10),
+        )
+        frappe.throw(_("Cannot resolve a lead owner."), frappe.ValidationError)
+
+    company_name = _inbound_derive_company(company, email_norm, person)
+
+    lead = frappe.get_doc({
+        "doctype": "VECRM Lead",
+        # DO NOT set name — autoname() allocates VE/LEAD/####/FY from contact_date.
+        "company_name": company_name,
+        "territory": _INBOUND_TERRITORY,
+        "contact_date": frappe.utils.today(),
+        "status": "Open",
+        "priority": _INBOUND_PRIORITY,
+        "contact_person_name": person or None,
+        "contact_email": email_norm or None,
+        "contact_number": phone10 or None,
+        "email_unavailable": 0 if email_norm else 1,
+        "mobile_unavailable": 0 if phone10 else 1,
+        "meeting_brief": msg or None,
+        "lead_owner": owner_key,
+    })
+    lead.insert(ignore_permissions=True)  # after_insert hook notifies owner (FCM)
+    frappe.db.commit()
+
+    if not frappe.db.exists("VECRM Lead", lead.name):
+        frappe.throw(_("Lead insert not persisted."))
+
+    ack_sent = False
+    if email_norm:
+        try:
+            if _inbound_autoack_enabled():
+                _inbound_send_autoack(person, company_name, msg, email_norm)
+                ack_sent = True
+        except Exception as e:
+            frappe.log_error(title="inbound_web_lead: auto-ack failed", message=str(e))
+
+    result = {"ok": True, "action": "lead_created",
+              "lead": lead.name, "owner": owner_key, "auto_ack": ack_sent}
+    if warn:
+        result["warning"] = warn
+        frappe.log_error(title="inbound_web_lead: owner fallback", message=warn)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# CRM-section toggle backend (auto-ack on/off). Gated to lead-transfer authority.
+# ---------------------------------------------------------------------------
+@frappe.whitelist()
+def get_inbound_settings():
+    """Read the inbound auto-ack toggle for the CRM-section settings UI."""
+    _require_transfer_authority()
+    return {"auto_ack_enabled": _inbound_autoack_enabled()}
+
+
+@frappe.whitelist()
+def set_inbound_autoack(enabled):
+    """Toggle the inbound auto-ack email. Gated to lead-transfer authority."""
+    actor = _require_transfer_authority()
+    val = 1 if str(enabled) in ("1", "true", "True", "yes", "on") else 0
+    frappe.db.set_single_value("VECRM Inbound Settings", "auto_ack_enabled", val)
+    frappe.db.commit()
+    # Independent fresh read from tabSingles (bypasses the Single doc cache).
+    readback = frappe.db.get_value(
+        "Singles",
+        {"doctype": "VECRM Inbound Settings", "field": "auto_ack_enabled"},
+        "value",
+    )
+    if str(readback or "0") != str(val):
+        frappe.throw(_("Toggle write did not persist."))
+    frappe.log_error(
+        title="inbound auto-ack toggle",
+        message="{0} set auto_ack_enabled={1}".format(actor, val),
+    )
+    return {"auto_ack_enabled": bool(val)}
