@@ -7325,14 +7325,18 @@ def _inbound_autoack_enabled():
 
 def _inbound_send_autoack(person, company_name, message, to_email):
     from vecrm.email_utils import send_email
+    from vecrm.vecrm.email_templates import render_email_layout
     esc = frappe.utils.escape_html
+    greeting = esc(person or "there")
     parts = [
-        "<p>Hi {0},</p>".format(esc(person or "there")),
-        "<p>Thanks for reaching out to Vinay Enterprises. We&#39;ve received your "
-        "project brief and it&#39;s now with our team.</p>",
-        "<p>One of our infrastructure specialists will review your requirements and "
-        "get back to you within one business day. If your enquiry is urgent, you can "
-        "reach us directly at global@vinayenterprises.co.in.</p>",
+        "<p style='margin:0 0 16px;font-size:15px;'>Hi {0},</p>".format(greeting),
+        "<p style='margin:0 0 16px;font-size:15px;line-height:1.6;'>"
+        "Thank you for reaching out to Vinay Enterprises. We have received your "
+        "project brief and it is now with our team.</p>",
+        "<p style='margin:0 0 16px;font-size:15px;line-height:1.6;'>"
+        "One of our infrastructure specialists will review your requirements and "
+        "reply within one business day. If your enquiry is urgent, you can reach us "
+        "directly at global@vinayenterprises.co.in.</p>",
     ]
     ref = []
     if company_name and company_name != "Unknown (Web)":
@@ -7340,19 +7344,27 @@ def _inbound_send_autoack(person, company_name, message, to_email):
     if message:
         ref.append("<b>Your message:</b> " + esc(message))
     if ref:
-        parts.append("<p>For reference, here&#39;s what you submitted:<br>"
-                     + "<br>".join(ref) + "</p>")
-    parts.append("<p>We look forward to speaking with you.</p>")
-    parts.append("<p>&mdash; Vinay Enterprises<br>"
-                 "<span style='color:#888'>Global MSP Desk &middot; "
-                 "powered by Anusuya Workspace</span></p>")
-    html_body = "\n".join(parts)
+        parts.append(
+            "<div style='margin:0 0 16px;padding:16px;background:#F8FAFC;"
+            "border-radius:8px;font-size:14px;line-height:1.6;color:#334155;'>"
+            "<p style='margin:0 0 8px;font-weight:600;'>For reference, here is what "
+            "you submitted:</p>" + "<br>".join(ref) + "</div>"
+        )
+    parts.append(
+        "<p style='margin:0;font-size:15px;line-height:1.6;'>"
+        "We look forward to speaking with you.</p>"
+    )
+    body_html = "\n".join(parts)
+    html_body = render_email_layout(
+        preheader="We have received your project brief.",
+        body_html=body_html,
+    )
     # Originates from hello@anusuya.ai (monitored; prospect replies land there).
-    # send_email hits graph .../users/<sender>/sendMail — the send-as permission
+    # send_email hits graph .../users/<sender>/sendMail; the send-as permission
     # is proven at the auto-ack canary before the flag is ever flipped on.
     send_email(
         to=[to_email],
-        subject="We've received your project brief — Vinay Enterprises",
+        subject="We have received your project brief",
         html_body=html_body,
         sender=_INBOUND_SENDER,
     )
