@@ -740,3 +740,130 @@ def get_prospect(prospect=None):
         frappe.throw("Record not found: {0}".format(prospect),
                      frappe.ValidationError)
     return {"prospect": row[0], "actor": actor}
+
+
+# ---------------------------------------------------------------------------
+# SMARTFLO-PANEL-BE (S92) - read-only caller-ID panel feed.
+# Matched-ownership scope on the _require_prospecting_access rail; Call Log
+# history folded by normalized last-10 phone key. No writes.
+# ---------------------------------------------------------------------------
+
+
+@frappe.whitelist()
+def list_recent_inbound_calls(limit=20, since=None):
+    """Recent INBOUND Smartflo calls the caller may see, each hydrated with
+    matched-record context and recent manual/device call history.
+
+    Scope (S92, matched-ownership):
+      "all" (admin / Sales Head) -> every inbound call, matched or not.
+      "own" (Sales Rep)          -> inbound calls whose matched Prospect's
+                                     assigned_rep == caller's rep_key.
+    Read-only. Session-derived role; never trusts a client-supplied scope.
+    """
+    actor, scope, rep_key = _require_prospecting_access()
+
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(limit, 100))
+
+    args = {"limit": limit}
+    conds = ["sc.direction = 'Inbound'"]
+    if scope == "own":
+        conds.append("sc.matched_doctype = 'VECRM Prospect'")
+        conds.append("p.assigned_rep = %(rep_key)s")
+        args["rep_key"] = rep_key
+    if since:
+        conds.append("COALESCE(sc.start_stamp, sc.creation) >= %(since)s")
+        args["since"] = since
+    where = " AND ".join(conds)
+
+    rows = frappe.db.sql(
+        """SELECT sc.call_id, sc.customer_number, sc.agent_number,
+                  sc.start_stamp, sc.creation, sc.duration_seconds,
+                  sc.recording_url, sc.matched_doctype, sc.matched_name
+           FROM `tabVECRM Smartflo Call` sc
+           LEFT JOIN `tabVECRM Prospect` p
+                  ON sc.matched_doctype = 'VECRM Prospect'
+                 AND sc.matched_name = p.name
+           WHERE {where}
+           ORDER BY COALESCE(sc.start_stamp, sc.creation) DESC
+           LIMIT %(limit)s""".format(where=where),
+        args, as_dict=True,
+    )
+
+    out = []
+    for r in rows:
+        out.append({
+            "call_id": r.call_id,
+            "customer_number": r.customer_number,
+            "agent_number": r.agent_number,
+            "start_stamp": r.start_stamp or r.creation,
+            "duration_seconds": r.duration_seconds,
+            "recording_url": r.recording_url,
+            "matched": _hydrate_match(r.matched_doctype, r.matched_name),
+            "call_history": _recent_call_log(r.customer_number),
+        })
+    return {"scope": scope, "calls": out}
+
+
+def _hydrate_match(matched_doctype, matched_name):
+    """Resolve display + context for a matched Prospect or Lead; None if unmatched."""
+    if not matched_doctype or not matched_name:
+        return None
+    if matched_doctype == "VECRM Prospect":
+        p = frappe.db.get_value(
+            "VECRM Prospect", matched_name,
+            ["name", "first_name", "last_name", "company_name", "mobile",
+             "city", "state", "assigned_rep", "disposition", "callback_on",
+             "attempt_count", "last_called_at"], as_dict=True,
+        )
+        if not p:
+            return None
+        display = " ".join(x for x in (p.first_name, p.last_name) if x) \
+            or p.company_name or p.name
+        return {
+            "doctype": "VECRM Prospect", "name": p.name,
+            "display_name": display, "company": p.company_name,
+            "city": p.city, "state": p.state, "assigned_rep": p.assigned_rep,
+            "disposition": p.disposition, "attempt_count": p.attempt_count,
+            "last_called_at": p.last_called_at, "callback_on": p.callback_on,
+        }
+    if matched_doctype == "VECRM Lead":
+        lead = frappe.db.get_value(
+            "VECRM Lead", matched_name,
+            ["name", "company_name", "contact_person_name", "lead_owner",
+             "status", "territory"], as_dict=True,
+        )
+        if not lead:
+            return None
+        return {
+            "doctype": "VECRM Lead", "name": lead.name,
+            "display_name": lead.contact_person_name or lead.company_name
+            or lead.name,
+            "company": lead.company_name, "city": None, "state": None,
+            "assigned_rep": lead.lead_owner, "disposition": lead.status,
+            "attempt_count": None, "last_called_at": None, "callback_on": None,
+        }
+    return None
+
+
+def _recent_call_log(number, limit=5):
+    """Recent VECRM Call Log rows for a phone number, matched on normalized
+    last-10 digits (Call Log stores mixed +91 / bare forms)."""
+    if not number:
+        return []
+    num10 = normalize_mobile(number) or ""
+    if len(num10) != 10:
+        return []
+    return frappe.db.sql(
+        """SELECT call_datetime, direction, disposition, notes,
+                  next_followup_date, duration_seconds, source
+           FROM `tabVECRM Call Log`
+           WHERE RIGHT(REGEXP_REPLACE(contact_number, '[^0-9]', ''), 10)
+                 = %(num)s
+           ORDER BY call_datetime DESC
+           LIMIT %(lim)s""",
+        {"num": num10, "lim": limit}, as_dict=True,
+    )
