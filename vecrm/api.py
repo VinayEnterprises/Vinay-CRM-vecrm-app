@@ -7460,6 +7460,122 @@ def inbound_web_lead(name=None, email=None, phone=None, company=None,
     return result
 
 
+
+
+# ---------------------------------------------------------------------------
+# Referral capture (portal -> VECRM Lead). Rule-E. MKT-S7.
+# Authenticated rep only (lead-transfer authority), cookie-forwarded. NOT guest.
+# Sibling to inbound_web_lead: territory sentinel "Referral"; referred_by folded
+# into meeting_brief (no schema change); dedup -> Referral touchpoint. No auto-ack.
+# ---------------------------------------------------------------------------
+_REFERRAL_TERRITORY = "Referral"
+_REFERRAL_PRIORITY = 4
+
+
+def _referral_compose_brief(referred_by, relationship, brief):
+    """Structured first line carrying the referrer, then the brief body.
+    No new column: this is the storage contract for referred_by."""
+    rb = (referred_by or "").strip()[:140]
+    rel = (relationship or "").strip()[:80]
+    body = (brief or "").strip()
+    if rel:
+        head = "Referred by: {0} ({1})".format(rb, rel)
+    else:
+        head = "Referred by: {0}".format(rb)
+    if body:
+        return "{0}\n\n{1}".format(head, body)
+    return head
+
+
+@frappe.whitelist()
+def create_referral_lead(person=None, email=None, phone=None, company=None,
+                         referred_by=None, relationship=None, brief=None,
+                         idempotency_key=None, **extra):
+    """Portal 'Log a referral' -> VECRM Lead, or Touchpoint if the contact
+    already exists. Rule-E. Gated to lead-transfer authority (the authed rep's
+    role, cookie-forwarded). Returns a small dict describing the action taken.
+    referred_by is REQUIRED (a referral without a referrer is just a manual lead).
+    """
+    _require_transfer_authority()
+    person_c = (person or "").strip()[:140]
+    referrer = (referred_by or "").strip()[:140]
+    if not referrer:
+        frappe.throw(_("A referral requires who referred it (referred_by)."),
+                     frappe.ValidationError)
+    email_norm = _inbound_norm_email(email)
+    phone10 = _inbound_norm_phone(phone)
+    brief_body = (brief or "").strip()
+    if _inbound_seen_recently(idempotency_key):
+        return {"ok": True, "action": "duplicate_ignored"}
+    # --- dedup: known contact => append Referral touchpoint, stamp referred_by,
+    #     leave territory as-is (rep's qualification is authoritative) ---
+    existing = _inbound_find_existing_lead(email_norm, phone10)
+    if existing:
+        rel = (relationship or "").strip()[:80]
+        if rel:
+            summary = "Referral from {0} ({1}). {2}".format(referrer, rel, brief_body)
+        else:
+            summary = "Referral from {0}. {1}".format(referrer, brief_body)
+        tp = frappe.get_doc({
+            "doctype": "VECRM Lead Touchpoint",
+            "lead": existing,
+            "touchpoint_date": frappe.utils.today(),
+            "touchpoint_type": "Referral",
+            "summary": summary.strip()[:1000],
+        })
+        tp.insert(ignore_permissions=True)
+        # stamp referred_by onto the existing lead's brief (prepend), territory untouched
+        try:
+            prior = frappe.db.get_value("VECRM Lead", existing, "meeting_brief") or ""
+            stamp = _referral_compose_brief(referrer, relationship, "")
+            merged = "{0}\n{1}".format(stamp, prior) if prior else stamp
+            frappe.db.set_value("VECRM Lead", existing, "meeting_brief",
+                                merged[:1000], update_modified=False)
+        except Exception as e:
+            frappe.log_error(title="create_referral_lead: brief stamp failed",
+                             message=str(e))
+        frappe.db.commit()
+        if not frappe.db.exists("VECRM Lead Touchpoint", tp.name):
+            frappe.throw(_("Touchpoint insert not persisted."))
+        return {"ok": True, "action": "touchpoint_appended",
+                "lead": existing, "touchpoint": tp.name, "referred_by": referrer}
+    # --- new referral lead ---
+    owner_key, warn = _inbound_resolve_owner()
+    if owner_key is None:
+        frappe.log_error(
+            title="create_referral_lead: no owner",
+            message="{0} email={1} phone={2}".format(warn, email_norm, phone10),
+        )
+        frappe.throw(_("Cannot resolve a lead owner."), frappe.ValidationError)
+    company_name = _inbound_derive_company(company, email_norm, person_c)
+    lead = frappe.get_doc({
+        "doctype": "VECRM Lead",
+        # DO NOT set name — autoname() allocates VE/LEAD/####/FY from contact_date.
+        "company_name": company_name,
+        "territory": _REFERRAL_TERRITORY,
+        "contact_date": frappe.utils.today(),
+        "status": "Open",
+        "priority": _REFERRAL_PRIORITY,
+        "contact_person_name": person_c or None,
+        "contact_email": email_norm or None,
+        "contact_number": phone10 or None,
+        "email_unavailable": 0 if email_norm else 1,
+        "mobile_unavailable": 0 if phone10 else 1,
+        "meeting_brief": _referral_compose_brief(referrer, relationship, brief_body),
+        "lead_owner": owner_key,
+    })
+    lead.insert(ignore_permissions=True)  # after_insert hook notifies owner (FCM)
+    frappe.db.commit()
+    if not frappe.db.exists("VECRM Lead", lead.name):
+        frappe.throw(_("Lead insert not persisted."))
+    result = {"ok": True, "action": "lead_created",
+              "lead": lead.name, "owner": owner_key, "referred_by": referrer}
+    if warn:
+        result["warning"] = warn
+        frappe.log_error(title="create_referral_lead: owner fallback", message=warn)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # CRM-section toggle backend (auto-ack on/off). Gated to lead-transfer authority.
 # ---------------------------------------------------------------------------

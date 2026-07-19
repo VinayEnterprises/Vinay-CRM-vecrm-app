@@ -37,7 +37,7 @@
             "fieldtype": "Select",
             "in_list_view": 1,
             "label": "Touchpoint Type",
-            "options": "Call\nEmail\nMeeting\nOther",
+            "options": "Call\nEmail\nMeeting\nOther\nReferral",
             "reqd": 1,
             "description": "Type of contact. Enum per PD-S30-LEAD-FOLLOWUP-LOCK Phase 2 spec."
         },
