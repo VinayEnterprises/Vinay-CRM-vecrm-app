@@ -7478,11 +7478,12 @@ def set_inbound_autoack(enabled):
     frappe.db.set_single_value("VECRM Inbound Settings", "auto_ack_enabled", val)
     frappe.db.commit()
     # Independent fresh read from tabSingles (bypasses the Single doc cache).
-    readback = frappe.db.get_value(
-        "Singles",
-        {"doctype": "VECRM Inbound Settings", "field": "auto_ack_enabled"},
-        "value",
+    _rb = frappe.db.sql(
+        "select `value` from `tabSingles` "
+        "where `doctype`=%s and `field`=%s",
+        ("VECRM Inbound Settings", "auto_ack_enabled"),
     )
+    readback = _rb[0][0] if _rb else None
     if str(readback or "0") != str(val):
         frappe.throw(_("Toggle write did not persist."))
     frappe.log_error(
