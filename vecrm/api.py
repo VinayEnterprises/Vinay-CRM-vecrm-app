@@ -3486,6 +3486,18 @@ def _require_user_admin() -> None:
         )
 
 
+def _assignable_roles() -> frozenset:
+    """Single source of truth for assignable role names, derived from
+    VECRM Role Config (not a hardcoded tuple) so the allowlist can never
+    drift from the actual configured roles. Cached per-request."""
+    cached = getattr(frappe.local, "_vecrm_assignable_roles", None)
+    if cached is not None:
+        return cached
+    roles = frozenset(frappe.get_all("VECRM Role Config", pluck="role_name"))
+    frappe.local._vecrm_assignable_roles = roles
+    return roles
+
+
 def _validate_assignable_role(role: str) -> None:
     """Admin may assign any role; Head of Accounts & HR may assign
     HR-and-below only (never Admin or its own tier)."""
@@ -3902,12 +3914,7 @@ def admin_list_employees(
             )
         filters["vecrm_account_status"] = status
     if role:
-        valid_roles = (
-            "Admin", "Sales Head", "HR", "Head of Accounts & HR",
-            "Sales Rep", "Field Engineer", "Head of Engineers",
-            "Network Security Engineer", "Store Executive", "Head of Stores",
-            "Senior Business Acceleration Executive", "Operations Executive",
-        )
+        valid_roles = _assignable_roles()
         if role not in valid_roles:
             frappe.throw(
                 frappe._("Invalid role filter '{0}'.").format(role),
@@ -4030,12 +4037,7 @@ def admin_create_employee(
             frappe._("Phone is required."),
             frappe.ValidationError,
         )
-    valid_roles = (
-        "Admin", "Sales Head", "HR", "Head of Accounts & HR",
-        "Sales Rep", "Field Engineer", "Head of Engineers",
-        "Network Security Engineer", "Store Executive", "Head of Stores",
-        "Senior Business Acceleration Executive", "Operations Executive",
-    )
+    valid_roles = _assignable_roles()
     if role not in valid_roles:
         frappe.throw(
             frappe._("Invalid role '{0}'.").format(role),
@@ -4149,12 +4151,7 @@ def admin_update_employee(
     if employee_name:
         doc.employee_name = employee_name.strip()
     if role:
-        valid_roles = (
-            "Admin", "Sales Head", "HR", "Head of Accounts & HR",
-            "Sales Rep", "Field Engineer", "Head of Engineers",
-            "Network Security Engineer", "Store Executive", "Head of Stores",
-            "Senior Business Acceleration Executive", "Operations Executive",
-        )
+        valid_roles = _assignable_roles()
         if role not in valid_roles:
             frappe.throw(
                 frappe._("Invalid role '{0}'.").format(role),
