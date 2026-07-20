@@ -3498,6 +3498,17 @@ def _assignable_roles() -> frozenset:
     return roles
 
 
+@frappe.whitelist()
+def list_assignable_roles() -> list:
+    """Read-only: assignable role names, derived from VECRM Role Config.
+    Single source of truth shared by backend validators (_assignable_roles)
+    and the portal admin UI, so the allowlist can never drift between the
+    two surfaces. Gated to the user-management tier (Admin or Head of
+    Accounts & HR), mirroring the create/update assignment gate."""
+    _require_user_admin()
+    return sorted(_assignable_roles())
+
+
 def _validate_assignable_role(role: str) -> None:
     """Admin may assign any role; Head of Accounts & HR may assign
     HR-and-below only (never Admin or its own tier)."""
