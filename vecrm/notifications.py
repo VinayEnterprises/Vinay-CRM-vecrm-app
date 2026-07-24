@@ -544,8 +544,7 @@ def manager_daily_digest():
 		
 		tv_submitted = frappe.db.count("VECRM Travel Voucher", {"docstatus": 1, "modified": ["like", f"{today}%"]})
 		ev_submitted = frappe.db.count("VECRM Expense Voucher", {"docstatus": 1, "modified": ["like", f"{today}%"]})
-		pv_submitted = frappe.db.count("VECRM Petrol Voucher", {"docstatus": 1, "modified": ["like", f"{today}%"]})
-		vouchers_submitted = tv_submitted + ev_submitted + pv_submitted
+		vouchers_submitted = tv_submitted + ev_submitted
 
 		if leads_created == 0 and vouchers_submitted == 0:
 			return

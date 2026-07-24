@@ -233,10 +233,13 @@ scheduler_events = {
 		# Auto-submit consolidated TRAVEL drafts whose grace window just
 		# closed — 18th (H1) & 3rd (H2) at 00:05 IST. Stamps Auto-Submitted +
 		# notifies; empty drafts skipped with a "no voucher filed" notice.
-		"5 0 18 * *": [
-			"vecrm.notifications.auto_submit_closed_period_vouchers",
-		],
-		"5 0 3 * *": [
+		# S95: ONE cron, one method. The function self-gates on day==18 (H1)
+		# and day==3 (H2); every other night it returns immediately. Declaring
+		# the same method under two cron expressions collides on the
+		# unique_scheduled_job key (frequency, cron_format, method) and
+		# sync_jobs collapses it to a single row -- which silently dropped the
+		# 18th leg on 2026-07-19 and stranded six H1-July drafts.
+		"5 0 * * *": [
 			"vecrm.notifications.auto_submit_closed_period_vouchers",
 		],
 		# Re-lock expired manager reopens — daily 00:30 IST. Any reopened
