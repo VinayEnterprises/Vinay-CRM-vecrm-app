@@ -207,7 +207,7 @@ def list_prospects(disposition=None, assigned_rep=None, callback_due=None,
         args["industry"] = industry
     rows = frappe.db.sql(
         """SELECT name, first_name, last_name, title, company_name, industry,
-                  mobile, city, state, assigned_rep, disposition, callback_on,
+                  mobile, city, state, assigned_rep, disposition, disposition_note, callback_on,
                   attempt_count, last_called_at, promoted_lead, modified
            FROM `tabVECRM Prospect`
            WHERE {conds}
