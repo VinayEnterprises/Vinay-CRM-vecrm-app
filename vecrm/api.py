@@ -7615,3 +7615,367 @@ def set_inbound_autoack(enabled):
         message="{0} set auto_ack_enabled={1}".format(actor, val),
     )
     return {"auto_ack_enabled": bool(val)}
+
+
+# ============================================================================
+# S118 -- VECRM LEAD EXPORT
+# Rulings R1-R10 (VECRM-Lead-Export-Build-Brief-S117 + S118 rulings).
+# Scope field is lead_owner ONLY (R8): it is populated on 100% of rows and
+# tracks the CURRENT holder. creating_employee is the immutable original
+# creator, null on 685 rows, and diverges from lead_owner for 6 of 9 reps --
+# using it would hand a departed rep leads he no longer owns.
+# Identity is resolved server-side from the session. Nothing is trusted from
+# the caller except the filter arguments, and every one of those is validated
+# against values that actually exist in the data.
+# ============================================================================
+
+_EXPORT_ALL_ROLES = (
+    "Admin",
+    "Sales Head",
+    "Senior Business Acceleration Executive",
+    "Head of Operations",
+)
+_EXPORT_REP_ROLE = "Sales Rep"
+_EXPORT_ROW_CAP = 5000
+
+# (db column, sheet header). Order is the sheet order.
+_EXPORT_COLUMNS = (
+    ("name", "Lead ID"),
+    ("creation", "Created"),
+    ("company_name", "Company"),
+    ("company_vertical", "Vertical"),
+    ("contact_person_name", "Contact"),
+    ("contact_person_designation", "Designation"),
+    ("contact_number", "Phone"),
+    ("contact_email", "Email"),
+    ("status", "Status"),
+    ("territory", "Territory"),
+    ("priority", "Priority"),
+    ("contact_date", "Contact Date"),
+    ("next_followup_date", "Next Follow-up"),
+    ("converted_inquiry", "Converted Inquiry"),
+    ("meeting_brief", "Meeting Brief"),
+    ("closure_notes", "Closure Notes"),
+)
+_EXPORT_OWNER_COLUMN = ("lead_owner", "Lead Owner")
+_EXPORT_NUMERIC_FIELDS = ("priority",)
+
+
+def _export_known_owners():
+    """Distinct lead_owner values present in the data.
+
+    Derived from tabVECRM Lead, NOT from tabVECRM Employee. This is
+    deliberate: it guarantees every accepted rep argument returns at least
+    one row, so a refusal can never be mistaken for a real answer with no
+    rows. A rep who owns nothing (e.g. a departed rep whose pipeline was
+    reassigned) is refused with a reason rather than handed a blank sheet.
+    """
+    rows = frappe.db.sql(
+        "select distinct lead_owner from `tabVECRM Lead` "
+        "where lead_owner is not null and lead_owner != ''",
+        as_dict=True,
+    )
+    return set(r["lead_owner"] for r in rows)
+
+
+def _export_known_statuses():
+    """Distinct status values present in the data. Same reasoning as owners."""
+    rows = frappe.db.sql(
+        "select distinct status from `tabVECRM Lead` "
+        "where status is not null and status != ''",
+        as_dict=True,
+    )
+    return set(r["status"] for r in rows)
+
+
+def _export_fy_start():
+    """First day of the current Indian financial year (1 April)."""
+    from frappe.utils import getdate, nowdate
+
+    today = getdate(nowdate())
+    year = today.year if today.month >= 4 else today.year - 1
+    return "{0}-04-01".format(year)
+
+
+def _require_export_authority():
+    """Resolve the actor from the session and return (actor_email, scope).
+
+    scope "all" -> may export any single rep, or every rep.
+    scope "own" -> Sales Rep; may export only their own lead_owner rows.
+
+    Default-deny: any role outside _EXPORT_ALL_ROLES + Sales Rep is refused.
+    Modelled on _require_transfer_authority (role tier + Active account),
+    with two additions: the session's employee linkage must resolve to a
+    real row, and the session role must still agree with the master. A
+    stale session after a role change is refused with a re-login message
+    rather than silently honoured.
+    """
+    session_data = frappe.session.data or {}
+    role = session_data.get("vecrm_employee_role")
+    actor_email = session_data.get("vecrm_email")
+    phone = session_data.get("vecrm_employee_phone")
+
+    if not role or not actor_email or not phone:
+        frappe.throw(
+            frappe._("Session does not include employee linkage. Please log in again."),
+            frappe.PermissionError,
+        )
+
+    row = frappe.db.get_value(
+        "VECRM Employee",
+        phone,
+        ["vecrm_email", "vecrm_account_status", "role"],
+        as_dict=True,
+    )
+    if not row:
+        frappe.throw(
+            frappe._("Employee record for this session no longer exists."),
+            frappe.PermissionError,
+        )
+    if row.vecrm_account_status != "Active":
+        frappe.throw(
+            frappe._("Your account is not Active; export is not available."),
+            frappe.PermissionError,
+        )
+    if row.vecrm_email != actor_email:
+        frappe.throw(
+            frappe._("Session identity does not match your employee record. Please log in again."),
+            frappe.PermissionError,
+        )
+    if row.role != role:
+        frappe.throw(
+            frappe._("Your role has changed since you logged in. Please log in again."),
+            frappe.PermissionError,
+        )
+
+    if role in _EXPORT_ALL_ROLES:
+        return actor_email, "all"
+    if role == _EXPORT_REP_ROLE:
+        return actor_email, "own"
+
+    frappe.throw(
+        frappe._("Your role ({0}) is not permitted to export leads.").format(role),
+        frappe.PermissionError,
+    )
+
+
+def _resolve_export_target(scope, actor_email, rep):
+    """Return the lead_owner to filter on, or None meaning every owner.
+
+    A Sales Rep passing someone else's key is REFUSED, not narrowed to their
+    own rows: refusing teaches the boundary, narrowing hides it.
+    An unknown rep key is refused rather than returning an empty sheet.
+    """
+    rep = (rep or "").strip() or None
+
+    if scope == "own":
+        if rep and rep != actor_email:
+            frappe.throw(
+                frappe._("You can only export your own leads."),
+                frappe.PermissionError,
+            )
+        target = actor_email
+    else:
+        target = rep
+
+    if target is not None and target not in _export_known_owners():
+        frappe.throw(
+            frappe._("No leads are attributed to {0}.").format(target),
+            frappe.DoesNotExistError,
+        )
+    return target
+
+
+def _export_where(target_owner, date_from, date_to, status):
+    """Build the WHERE fragment and its bound values. Parameterised only."""
+    conditions = []
+    values = {}
+
+    if target_owner is not None:
+        conditions.append("lead_owner = %(owner)s")
+        values["owner"] = target_owner
+    if date_from is not None:
+        conditions.append("DATE(creation) >= %(dfrom)s")
+        values["dfrom"] = date_from
+    if date_to is not None:
+        conditions.append("DATE(creation) <= %(dto)s")
+        values["dto"] = date_to
+    if status is not None:
+        conditions.append("status = %(status)s")
+        values["status"] = status
+
+    return (" and ".join(conditions) if conditions else "1=1"), values
+
+
+def _export_count(where, values):
+    """Single-statement count. Called twice, in two separate statements, so
+    the post-write assertion is a genuine second measurement."""
+    return frappe.db.sql(
+        "select count(*) from `tabVECRM Lead` where " + where, values
+    )[0][0]
+
+
+def _build_lead_export(target_owner, date_from, date_to, status, multi_rep):
+    """Core builder. Returns (filename, xlsx_bytes, meta).
+
+    Separated from the whitelisted wrapper so it can be exercised in-process
+    by a canary; the wrapper adds only the HTTP delivery, which in-process
+    testing cannot prove.
+    """
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    columns = list(_EXPORT_COLUMNS)
+    if multi_rep:
+        columns.insert(2, _EXPORT_OWNER_COLUMN)
+
+    where, values = _export_where(target_owner, date_from, date_to, status)
+
+    pre_count = _export_count(where, values)
+    if pre_count > _EXPORT_ROW_CAP:
+        frappe.throw(
+            frappe._(
+                "This export would contain {0} rows, above the limit of {1}. "
+                "Narrow the date range or pick a single rep."
+            ).format(pre_count, _EXPORT_ROW_CAP),
+            frappe.ValidationError,
+        )
+
+    field_list = ", ".join("`{0}`".format(c[0]) for c in columns)
+    rows = frappe.db.sql(
+        "select {0} from `tabVECRM Lead` where {1} order by creation desc".format(
+            field_list, where
+        ),
+        values,
+        as_dict=True,
+    )
+
+    wb = Workbook()
+    ws = wb.active
+    # R5: name the attribution basis on the sheet itself so nobody has to
+    # reverse-engineer which field the scope used.
+    ws.title = "Leads by Lead Owner"
+
+    ws.append([c[1] for c in columns])
+    bold = Font(bold=True)
+    for cell in ws[1]:
+        cell.font = bold
+
+    written = 0
+    for r in rows:
+        line = []
+        for field, _header in columns:
+            val = r.get(field)
+            if val is None:
+                line.append("")
+            elif field in _EXPORT_NUMERIC_FIELDS:
+                line.append(val)
+            else:
+                # Everything else as text so +91- prefixes and IDs survive Excel.
+                line.append(str(val))
+        ws.append(line)
+        written += 1
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = "A1:{0}{1}".format(
+        get_column_letter(len(columns)), written + 1
+    )
+    for idx in range(1, len(columns) + 1):
+        ws.column_dimensions[get_column_letter(idx)].width = 22
+
+    # Assertion: re-count in a SECOND statement and compare against rows
+    # actually written. A mismatch raises rather than returning a file.
+    post_count = _export_count(where, values)
+    if not (pre_count == post_count == written):
+        frappe.throw(
+            frappe._(
+                "Export aborted: row count did not reconcile "
+                "(pre={0}, written={1}, post={2})."
+            ).format(pre_count, written, post_count),
+            frappe.ValidationError,
+        )
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    content = bio.getvalue()
+
+    who = "all-reps" if target_owner is None else target_owner.split("@")[0]
+    who = "".join(ch if (ch.isalnum() or ch in "-_") else "-" for ch in who)
+    filename = "leads_{0}_{1}rows.xlsx".format(who, written)
+
+    meta = {
+        "rows": written,
+        "pre_count": pre_count,
+        "post_count": post_count,
+        "owner": target_owner,
+        "date_from": date_from,
+        "date_to": date_to,
+        "status": status,
+        "columns": [c[1] for c in columns],
+        "bytes": len(content),
+        "filename": filename,
+    }
+    return filename, content, meta
+
+
+@frappe.whitelist(methods=["GET"])
+def export_leads(rep=None, date_from=None, date_to=None, status=None,
+                 all_time=0, fmt="xlsx"):
+    """Export VECRM Leads to xlsx, scoped by the caller's role.
+
+    Identity is NOT accepted from the caller -- actor and role come from the
+    session. Arguments are filters only.
+
+    rep       lead_owner email. Omit for every rep (privileged roles only).
+    date_from / date_to   ISO dates against creation. Default is the current
+              financial year (R2); pass all_time=1 for the whole dataset.
+    status    one of the statuses present in the data.
+    fmt       xlsx only (R6).
+    """
+    from frappe.utils import getdate, nowdate
+
+    if str(fmt or "xlsx").lower() != "xlsx":
+        frappe.throw(
+            frappe._("Only xlsx export is supported."), frappe.ValidationError
+        )
+
+    actor_email, scope = _require_export_authority()
+    target_owner = _resolve_export_target(scope, actor_email, rep)
+
+    all_time_flag = str(all_time) in ("1", "true", "True", "yes", "on")
+    if all_time_flag:
+        d_from = None
+        d_to = None
+    else:
+        d_from = str(getdate(date_from)) if date_from else _export_fy_start()
+        d_to = str(getdate(date_to)) if date_to else str(getdate(nowdate()))
+        if d_from > d_to:
+            frappe.throw(
+                frappe._("Start date {0} is after end date {1}.").format(d_from, d_to),
+                frappe.ValidationError,
+            )
+
+    status = (status or "").strip() or None
+    if status is not None and status not in _export_known_statuses():
+        frappe.throw(
+            frappe._("Unknown status {0}.").format(status),
+            frappe.ValidationError,
+        )
+
+    filename, content, meta = _build_lead_export(
+        target_owner, d_from, d_to, status, multi_rep=(target_owner is None)
+    )
+
+    frappe.log_error(
+        title="lead export",
+        message="{0} exported {1} rows (owner={2}, {3}..{4}, status={5})".format(
+            actor_email, meta["rows"], target_owner, d_from, d_to, status
+        ),
+    )
+
+    frappe.response["filename"] = filename
+    frappe.response["filecontent"] = content
+    frappe.response["type"] = "binary"
+    return
