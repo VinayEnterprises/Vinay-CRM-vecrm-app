@@ -575,6 +575,9 @@ def smartflo_webhook():
     customer10 = normalize_mobile(customer_raw)
     direction = "Inbound" if str(
         payload.get("direction", "")).lower().startswith("in") else "Outbound"
+    # S120c: the click-to-call self-leg is not a customer call.
+    if direction == "Inbound" and _is_self_leg(payload):
+        direction = "Internal"
 
     matched_doctype, matched_name = None, None
     if customer10 and len(customer10) == 10:
@@ -1077,3 +1080,121 @@ def get_call_counts(prospect_names=None):
 	found = {r["name"]: int(r["calls"]) for r in rows}
 	return {"counts": {n: found.get(n, 0) for n in names},
 	        "coverage_from": CALL_COVERAGE_FROM}
+
+
+# ─────────────────────────────────────────────────────────────
+# S120c — self-leg suppression + per-day outbound call list
+#
+# Smartflo emits a phantom INBOUND leg for every click-to-call: the DID
+# rings the rep first, then dials out, and the receiver stored that leg as
+# a real customer call. 939 of 1034 inbound rows (measured 2026-08-12) are
+# these. They are kept, not dropped -- direction "Internal" preserves the
+# audit trail while excluding them from every Inbound view by value.
+#
+# The guard keys on the SELF-LEG RULE (last-10 of caller == last-10 of
+# called), not a DID list: strict string equality finds ZERO because one
+# side carries a 91 prefix and the other does not. VE_DIDS is a sanity
+# reference only and is deliberately not the matcher.
+#
+# agent_number is empty on all 1908 rows -- Tata does not send it on this
+# hook, and the receiver already looks for two spellings of it. So a rep's
+# day is attributed through custom_identifier (the prospect stamped by
+# click_to_call, present on 873 of 874 outbound) -> Prospect.assigned_rep.
+# That is "calls to my prospects", not "calls I placed", and the FE must
+# say so.
+# ─────────────────────────────────────────────────────────────
+
+VE_DIDS = ("9228133997", "9228133996", "9228134958", "9228134957")
+
+
+def _last10(value):
+	digits = re.sub(r"[^0-9]", "", str(value or ""))
+	return digits[-10:] if len(digits) >= 10 else digits
+
+
+def _is_self_leg(payload):
+	"""True when the caller and the called party are the same line -- the
+	click-to-call leg that rings the rep's own DID."""
+	a = _last10(payload.get("caller_id_number"))
+	b = _last10(payload.get("call_to_number"))
+	return bool(a) and a == b
+
+
+@frappe.whitelist()
+def list_calls_for_day(on_date=None, rep=None):
+	"""Outbound calls for one day, grouped for the rep's own review.
+
+	Outbound only: custom_identifier is stamped by click_to_call and is
+	absent on every inbound row, so it is the only reliable link from a
+	call to a prospect.
+
+	Attribution is via the called prospect's assigned_rep. A rep calling a
+	prospect assigned to someone else lands on that person's list -- the
+	agent is not in the webhook payload, so this cannot be resolved here.
+	"""
+	actor, scope, rep_key = _require_prospecting_access()
+	on_date = str(on_date or today()).strip()
+	if scope == "own":
+		target = rep_key
+	else:
+		target = str(rep).strip() if rep else None
+
+	rows = frappe.db.sql(
+		"""SELECT sc.call_id, sc.customer_number,
+		          COALESCE(sc.start_stamp, sc.creation) AS when_at,
+		          JSON_UNQUOTE(JSON_EXTRACT(sc.raw_payload,
+		                       '$.custom_identifier')) AS prospect
+		     FROM `tabVECRM Smartflo Call` sc
+		    WHERE sc.direction = 'Outbound'
+		      AND DATE(COALESCE(sc.start_stamp, sc.creation)) = %(d)s
+		 ORDER BY COALESCE(sc.start_stamp, sc.creation) ASC""",
+		{"d": on_date}, as_dict=True)
+
+	names = [r["prospect"] for r in rows if r.get("prospect")]
+	info = {}
+	if names:
+		uniq = list(dict.fromkeys(names))
+		ph = ", ".join(["%s"] * len(uniq))
+		for p in frappe.db.sql(
+				"SELECT name, first_name, last_name, company_name, mobile,"
+				" assigned_rep, disposition FROM `tabVECRM Prospect`"
+				" WHERE name IN (" + ph + ")", tuple(uniq), as_dict=True):
+			info[p["name"]] = p
+
+	calls = []
+	for r in rows:
+		p = info.get(r.get("prospect"))
+		if target and (not p or p.get("assigned_rep") != target):
+			continue
+		display = None
+		if p:
+			display = " ".join(
+				x for x in (p.get("first_name"), p.get("last_name")) if x) \
+				or p.get("company_name") or p.get("name")
+		calls.append({
+			"call_id": r["call_id"],
+			"when": r["when_at"],
+			"number": r["customer_number"],
+			"prospect": r.get("prospect"),
+			"display_name": display,
+			"company": p.get("company_name") if p else None,
+			"disposition": p.get("disposition") if p else None,
+			"unlinked": not bool(p),
+		})
+
+	seen = [c["prospect"] for c in calls if c.get("prospect")]
+	return {
+		"date": on_date,
+		"rep": target,
+		"scope": scope,
+		"summary": {
+			"total_calls": len(calls),
+			"unique_prospects": len(set(seen)),
+			"unlinked_calls": sum(1 for c in calls if c["unlinked"]),
+			"first_call": calls[0]["when"] if calls else None,
+			"last_call": calls[-1]["when"] if calls else None,
+		},
+		"calls": calls,
+		"attribution": "assigned_rep",
+		"note": "Outbound calls to prospects assigned to this rep.",
+	}

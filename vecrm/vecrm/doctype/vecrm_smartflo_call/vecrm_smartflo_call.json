@@ -20,7 +20,7 @@
  ],
  "fields": [
   {"fieldname": "call_id", "fieldtype": "Data", "label": "Call ID", "reqd": 1, "unique": 1, "in_list_view": 1},
-  {"fieldname": "direction", "fieldtype": "Select", "label": "Direction", "options": "Inbound\nOutbound", "in_list_view": 1, "in_standard_filter": 1},
+  {"fieldname": "direction", "fieldtype": "Select", "label": "Direction", "options": "Inbound\nOutbound\nInternal", "in_list_view": 1, "in_standard_filter": 1},
   {"fieldname": "customer_number", "fieldtype": "Data", "label": "Customer Number", "in_list_view": 1},
   {"fieldname": "agent_number", "fieldtype": "Data", "label": "Agent Number"},
   {"fieldname": "column_break_a", "fieldtype": "Column Break"},
