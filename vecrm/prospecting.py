@@ -883,6 +883,7 @@ def _recent_call_log(number, limit=5):
 # ─────────────────────────────────────────────────────────────
 
 CALL_HISTORY_CAP = 200
+CALL_COVERAGE_FROM = "2026-07-17"
 
 
 def _call_history_rows(prospect_name, limit):
@@ -979,7 +980,7 @@ def get_call_history(prospect=None, limit=50):
 		"calls": calls,
 		"returned": len(calls),
 		"truncated": len(calls) >= limit,
-		"coverage_from": "2026-07-17",
+		"coverage_from": CALL_COVERAGE_FROM,
 		"duration_available": False,
 	}
 
@@ -1036,3 +1037,43 @@ def save_notes(prospect=None, notes=None, modified=None):
 	return {"ok": True, "conflict": False, "changed": True,
 	        "prospect": prospect, "notes": fresh.notes or "",
 	        "modified": str(fresh.modified)}
+
+
+@frappe.whitelist()
+def get_call_counts(prospect_names=None):
+	"""Smartflo call counts for a page of prospects (S120).
+
+	Bulk companion to get_call_history: a 50-row list costs two queries,
+	never one per row. Every requested name comes back with an explicit
+	integer including 0, so the FE renders a real zero rather than a blank
+	where the map has no key.
+
+	Rep scope filters the INPUT list: a rep asking about a prospect outside
+	their queue gets silence, not a count. Ownership is resolved in one
+	query, not per name.
+	"""
+	actor, scope, rep_key = _require_prospecting_access()
+	names = _names_arg(prospect_names)
+	if not names:
+		return {"counts": {}, "coverage_from": CALL_COVERAGE_FROM}
+	names = list(dict.fromkeys(names))
+	ph = ", ".join(["%s"] * len(names))
+	if scope == "own":
+		owned = frappe.db.sql(
+			"SELECT name FROM `tabVECRM Prospect`"
+			" WHERE name IN (" + ph + ") AND assigned_rep = %s",
+			tuple(names) + (rep_key,))
+		names = [r[0] for r in owned]
+		if not names:
+			return {"counts": {}, "coverage_from": CALL_COVERAGE_FROM}
+		ph = ", ".join(["%s"] * len(names))
+	rows = frappe.db.sql(
+		"""SELECT matched_name AS name, COUNT(*) AS calls
+		     FROM `tabVECRM Smartflo Call`
+		    WHERE matched_doctype = 'VECRM Prospect'
+		      AND matched_name IN (""" + ph + """)
+		 GROUP BY matched_name""",
+		tuple(names), as_dict=True)
+	found = {r["name"]: int(r["calls"]) for r in rows}
+	return {"counts": {n: found.get(n, 0) for n in names},
+	        "coverage_from": CALL_COVERAGE_FROM}
