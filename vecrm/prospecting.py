@@ -867,3 +867,172 @@ def _recent_call_log(number, limit=5):
            LIMIT %(lim)s""",
         {"num": num10, "lim": limit}, as_dict=True,
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# S120 — call history + notes for the prospect drawer
+# Sales-team requirement, 12 Aug 2026. Sourced from VECRM Smartflo
+# Call, NOT VECRM Call Log: Call Log holds 14 rows, all lead-keyed,
+# zero prospect matches (measured 2026-08-12). Smartflo carries 945
+# prospect-matched rows, matched_name integrity 945/945 with zero
+# dangling and zero number disagreement.
+# duration_seconds and recording_url are 0/empty on all 1908 rows;
+# they are returned as null, never 0, so the FE cannot render an
+# absent measurement as a real one. The CDR reconciler is the route
+# to real durations and is a separate build.
+# ─────────────────────────────────────────────────────────────
+
+CALL_HISTORY_CAP = 200
+
+
+def _call_history_rows(prospect_name, limit):
+	"""Smartflo events for one prospect, newest first. Joined on
+	matched_name, which the receive-time matcher sets and which was
+	verified to agree with the phone key on every matched row."""
+	return frappe.db.sql(
+		"""SELECT sc.call_id, sc.direction, sc.customer_number,
+		          COALESCE(sc.start_stamp, sc.creation) AS when_at,
+		          sc.duration_seconds, sc.recording_url
+		     FROM `tabVECRM Smartflo Call` sc
+		    WHERE sc.matched_doctype = 'VECRM Prospect'
+		      AND sc.matched_name = %(name)s
+		 ORDER BY COALESCE(sc.start_stamp, sc.creation) DESC
+		    LIMIT %(lim)s""",
+		{"name": prospect_name, "lim": limit}, as_dict=True)
+
+
+@frappe.whitelist()
+def get_call_history(prospect=None, limit=50):
+	"""Call count, per-day breakdown and recent calls for one prospect.
+	Rep-scoped by _require_prospecting_access + _assert_owns."""
+	actor, scope, rep_key = _require_prospecting_access()
+	if not prospect or not str(prospect).strip():
+		frappe.throw("prospect is required", frappe.ValidationError)
+	prospect = str(prospect).strip()
+	_assert_owns(prospect, scope, rep_key)
+	if not frappe.db.exists("VECRM Prospect", prospect):
+		frappe.throw("Record not found: {0}".format(prospect),
+		             frappe.ValidationError)
+	try:
+		limit = int(limit)
+	except (TypeError, ValueError):
+		limit = 50
+	limit = max(1, min(limit, CALL_HISTORY_CAP))
+
+	agg = frappe.db.sql(
+		"""SELECT COUNT(*) AS total,
+		          MIN(COALESCE(start_stamp, creation)) AS first_call,
+		          MAX(COALESCE(start_stamp, creation)) AS last_call,
+		          SUM(CASE WHEN direction = 'Inbound' THEN 1 ELSE 0 END)
+		            AS inbound,
+		          SUM(CASE WHEN direction = 'Outbound' THEN 1 ELSE 0 END)
+		            AS outbound
+		     FROM `tabVECRM Smartflo Call`
+		    WHERE matched_doctype = 'VECRM Prospect'
+		      AND matched_name = %(name)s""",
+		{"name": prospect}, as_dict=True)[0]
+
+	by_date_raw = frappe.db.sql(
+		"""SELECT DATE(COALESCE(start_stamp, creation)) AS on_date,
+		          COUNT(*) AS calls,
+		          SUM(CASE WHEN direction = 'Inbound' THEN 1 ELSE 0 END)
+		            AS inbound,
+		          SUM(CASE WHEN direction = 'Outbound' THEN 1 ELSE 0 END)
+		            AS outbound
+		     FROM `tabVECRM Smartflo Call`
+		    WHERE matched_doctype = 'VECRM Prospect'
+		      AND matched_name = %(name)s
+		 GROUP BY on_date
+		 ORDER BY on_date DESC""",
+		{"name": prospect}, as_dict=True)
+
+	# MySQL SUM() returns Decimal; cast so the wire contract is integers
+	# throughout and the FE never sees 1.0 where it expects 1.
+	by_date = [{
+		"on_date": r.get("on_date"),
+		"calls": int(r.get("calls") or 0),
+		"inbound": int(r.get("inbound") or 0),
+		"outbound": int(r.get("outbound") or 0),
+	} for r in by_date_raw]
+
+	calls = []
+	for r in _call_history_rows(prospect, limit):
+		dur = r.get("duration_seconds")
+		rec = r.get("recording_url")
+		calls.append({
+			"call_id": r.get("call_id"),
+			"direction": r.get("direction"),
+			"number": r.get("customer_number"),
+			"when": r.get("when_at"),
+			"duration_seconds": int(dur) if dur else None,
+			"recording_url": rec or None,
+		})
+
+	return {
+		"prospect": prospect,
+		"total_calls": int(agg.get("total") or 0),
+		"inbound": int(agg.get("inbound") or 0),
+		"outbound": int(agg.get("outbound") or 0),
+		"first_call": agg.get("first_call"),
+		"last_call": agg.get("last_call"),
+		"by_date": by_date,
+		"calls": calls,
+		"returned": len(calls),
+		"truncated": len(calls) >= limit,
+		"coverage_from": "2026-07-17",
+		"duration_available": False,
+	}
+
+
+@frappe.whitelist()
+def save_notes(prospect=None, notes=None, modified=None):
+	"""Autosave the prospect notes field.
+
+	notes MUST be sent. An empty string clears the field deliberately;
+	an ABSENT notes argument is refused, because autosave makes a
+	dropped payload indistinguishable from an intentional clear.
+
+	modified is the timestamp the client last read (get_prospect
+	returns it). If it no longer matches, the write is refused and the
+	current value is returned so the caller can surface the conflict
+	rather than silently overwriting a colleague.
+	"""
+	actor, scope, rep_key = _require_prospecting_access()
+	if not prospect or not str(prospect).strip():
+		frappe.throw("prospect is required", frappe.ValidationError)
+	prospect = str(prospect).strip()
+	_assert_owns(prospect, scope, rep_key)
+	if notes is None:
+		frappe.throw("notes is required (send an empty string to clear)",
+		             frappe.ValidationError)
+	notes = str(notes)
+	if len(notes) > 20000:
+		frappe.throw("notes exceeds 20000 characters", frappe.ValidationError)
+
+	cur = frappe.db.get_value(
+		"VECRM Prospect", prospect, ["notes", "modified"], as_dict=True)
+	if not cur:
+		frappe.throw("Record not found: {0}".format(prospect),
+		             frappe.ValidationError)
+
+	if modified is not None and str(modified).strip():
+		if str(cur.modified) != str(modified).strip():
+			return {"ok": False, "conflict": True, "prospect": prospect,
+			        "notes": cur.notes or "", "modified": str(cur.modified),
+			        "message": ("These notes were changed elsewhere since you "
+			                    "opened them. Your text was not saved.")}
+
+	if (cur.notes or "") == notes:
+		return {"ok": True, "conflict": False, "changed": False,
+		        "prospect": prospect, "notes": cur.notes or "",
+		        "modified": str(cur.modified)}
+
+	frappe.db.set_value("VECRM Prospect", prospect, "notes", notes)
+	frappe.db.commit()
+	fresh = frappe.db.get_value(
+		"VECRM Prospect", prospect, ["notes", "modified"], as_dict=True)
+	if not fresh or (fresh.notes or "") != notes:
+		frappe.throw("Post-write verification failed for {0}".format(prospect))
+	return {"ok": True, "conflict": False, "changed": True,
+	        "prospect": prospect, "notes": fresh.notes or "",
+	        "modified": str(fresh.modified)}
