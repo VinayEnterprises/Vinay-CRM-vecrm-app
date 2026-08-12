@@ -4452,6 +4452,170 @@ def s2s_suspend_employee(vecrm_employee: str = "") -> dict[str, Any]:
 	frappe.db.commit()
 	return {"success": True, "suspended": vid, "prev_status": cur}
 
+
+@frappe.whitelist()
+def s2s_create_employee(
+	vecrm_phone: str = "",
+	employee_name: str = "",
+	role: str = "",
+	vecrm_base_city: str = "",
+	hrms_employee_id: str = "",
+	company: str = "",
+	vecrm_email: str = "",
+) -> dict[str, Any]:
+	"""S2S (VEHRMS conductor): provision a VECRM Employee portal login from
+	the onboarding cascade. Authorized by the integration principal, not by
+	session role.
+
+	Replaces the cascade's former POST to /api/resource/VECRM Employee, which
+	403s: the integration principal is a zero-role Website User and DocPerm on
+	VECRM Employee grants System Manager only. A whitelisted method runs
+	internally and bypasses DocPerm by design, exactly as s2s_suspend_employee
+	and s2s_offboard_release_number already do.
+
+	No cleartext credential crosses the S2S hop (ruled 2026-08-12). The record
+	is created without a password and a reset token is issued; the raw token is
+	returned for the caller to deliver. If the caller ignores it, HR can still
+	drive admin_send_reset_password later.
+
+	Guards:
+	  G1 phone normalizes to +91-XXXXXXXXXX
+	  G2 no tombstone <phone>-OFFB-* exists (a released number must never
+	     re-federate to the departed holder's lineage)
+	  G3 idempotent on an existing live record -> already_exists, no throw
+	  G4 role is a configured VECRM Role Config name
+	  G5 base city is validated by the controller against the Rate Card
+
+	Note: _validate_assignable_role is deliberately NOT called. It reads
+	frappe.session.data['vecrm_employee_role'] to enforce the Head of
+	Accounts & HR tier ceiling; under S2S the session is the integration
+	principal, that key is absent, and the check is a silent no-op. There is
+	no human caller whose tier could be exceeded. Membership in
+	_assignable_roles() is the real gate and IS enforced.
+
+	Returns:
+	  {"success": True, "name", "hrms_employee_id", "reset_token", "created"}
+	  {"success": True, "already_exists": True, "name", "created": False}
+	"""
+	_require_integration()
+
+	raw_phone = (vecrm_phone or "").strip()
+	employee_name = (employee_name or "").strip()
+	role = (role or "").strip()
+	vecrm_base_city = (vecrm_base_city or "").strip()
+	hrms_employee_id = (hrms_employee_id or "").strip()
+	company = (company or "").strip()
+	vecrm_email = (vecrm_email or "").strip()
+
+	if not raw_phone:
+		frappe.throw(frappe._("vecrm_phone is required."), frappe.ValidationError)
+	if not employee_name:
+		frappe.throw(frappe._("employee_name is required."), frappe.ValidationError)
+	if not role:
+		frappe.throw(frappe._("role is required."), frappe.ValidationError)
+	if not vecrm_base_city:
+		frappe.throw(frappe._("vecrm_base_city is required."), frappe.ValidationError)
+
+	# G2 (early): a tombstone id must never be passed in as a live number.
+	if "-OFFB-" in raw_phone:
+		frappe.throw(
+			frappe._("'{0}' is a released (tombstoned) record id.").format(raw_phone),
+			frappe.ValidationError,
+		)
+
+	# G1: canonicalize, then assert the shape the autoname PK depends on.
+	phone = _normalize_phone(raw_phone)
+	if not re.match(r"^\+91-\d{10}$", phone):
+		frappe.throw(
+			frappe._("Phone must normalize to +91-XXXXXXXXXX (got '{0}').").format(raw_phone),
+			frappe.ValidationError,
+		)
+
+	# G3: idempotent — the cascade may re-run.
+	if frappe.db.exists("VECRM Employee", phone):
+		existing_hrms = frappe.db.get_value("VECRM Employee", phone, "hrms_employee_id")
+		return {
+			"success": True,
+			"already_exists": True,
+			"name": phone,
+			"hrms_employee_id": existing_hrms,
+			"created": False,
+		}
+
+	# G2: a released number carries a tombstone. Re-provisioning it would
+	# bind a new hire to the departed holder's history.
+	tomb = frappe.get_all(
+		"VECRM Employee",
+		filters=[["name", "like", phone + "-OFFB-%"]],
+		pluck="name",
+		limit=1,
+	)
+	if tomb:
+		frappe.throw(
+			frappe._(
+				"Number {0} was released on offboarding (tombstone {1}). "
+				"Allocate a different number for this employee."
+			).format(phone, tomb[0]),
+			frappe.ValidationError,
+		)
+
+	# G4
+	if role not in _assignable_roles():
+		frappe.throw(frappe._("Invalid role '{0}'.").format(role), frappe.ValidationError)
+
+	doc = frappe.get_doc({
+		"doctype": "VECRM Employee",
+		"employee_name": employee_name,
+		"vecrm_phone": phone,
+		"role": role,
+		"vecrm_base_city": vecrm_base_city,
+		"vecrm_account_status": "Active",
+	})
+	if hrms_employee_id:
+		doc.hrms_employee_id = hrms_employee_id
+	if company:
+		doc.company = company
+	if vecrm_email:
+		doc.vecrm_email = vecrm_email
+
+	# G5 fires inside validate(): base city absent from the Rate Card throws
+	# with its own remedy text, which we surface rather than pre-empt.
+	doc.insert(ignore_permissions=True)
+
+	reset_token = _create_reset_token_row(doc.name, "password")
+
+	_audit_auth(
+		"auth.s2s.create_employee",
+		employee=doc.name,
+		path="s2s",
+		extra={"hrms_employee_id": hrms_employee_id or None},
+	)
+
+	frappe.db.commit()
+
+	# Independent fresh read — never trust the writer's return.
+	verify = frappe.db.get_value(
+		"VECRM Employee",
+		doc.name,
+		["name", "role", "vecrm_account_status", "hrms_employee_id"],
+		as_dict=True,
+	)
+	if not verify:
+		frappe.throw(
+			frappe._("Post-insert verification failed for {0}.").format(doc.name),
+			frappe.ValidationError,
+		)
+
+	return {
+		"success": True,
+		"created": True,
+		"name": verify["name"],
+		"role": verify["role"],
+		"hrms_employee_id": verify["hrms_employee_id"],
+		"vecrm_account_status": verify["vecrm_account_status"],
+		"reset_token": reset_token,
+	}
+
 @frappe.whitelist()
 def admin_delete_employee(employee: str = "") -> dict[str, Any]:
     """Admin-only: Delete an employee from the system.
