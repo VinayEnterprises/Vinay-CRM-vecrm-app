@@ -722,6 +722,77 @@ def click_to_call(prospect=None, lead=None):
 
 
 @frappe.whitelist()
+def click_to_call_number(destination=None, custom_identifier=None):
+    """Originate a click-to-call to an ARBITRARY 10-digit number.
+
+    Sibling of click_to_call, which resolves its destination from a
+    Prospect or Lead record. This one takes the number directly, so
+    that surfaces outside the prospecting queue -- recruitment being
+    the first -- can dial a contact that is not a CRM record.
+
+    AUTHORITY IS _require_mapped_caller AND NOTHING ELSE (ruled S9).
+    That gate gives an Active VECRM Employee holding a complete
+    smartflo_agent_map entry, which is five people. There is no
+    ownership check because there is no record to own: the caller
+    supplies the number. Do NOT add a role gate here without also
+    reconsidering click_to_call, or the two siblings diverge.
+
+    custom_identifier is passed through to Smartflo for correlation.
+    The inbound webhook matcher resolves Prospect then Lead only, so
+    an identifier naming anything else (a Job Applicant, say) logs a
+    call row that stays UNMATCHED. Accepted deliberately, ruled S9:
+    the call places correctly and the orphan row is visible.
+    """
+    import requests
+
+    token = frappe.conf.get("smartflo_api_token")
+    if not token:
+        frappe.throw("Calling is not configured", frappe.PermissionError)
+
+    vecrm_email, entry = _require_mapped_caller()
+
+    number = normalize_mobile(destination)
+    if not number or len(number) != 10:
+        frappe.throw("A valid 10-digit mobile number is required",
+                     frappe.ValidationError)
+
+    ident = str(custom_identifier or "").strip()[:100] or number
+
+    payload = {
+        "agent_number": entry["agent_number"],
+        "destination_number": number,
+        "caller_id": entry["caller_id"],
+        "async": 1,
+        "custom_identifier": ident,
+    }
+    try:
+        resp = requests.post(
+            SMARTFLO_C2C_URL,
+            json=payload,
+            headers={"Authorization": token,
+                     "content-type": "application/json",
+                     "accept": "application/json"},
+            timeout=10,
+        )
+    except requests.RequestException as e:
+        frappe.throw("Smartflo unreachable: {0}".format(type(e).__name__))
+    if resp.status_code == 429:
+        retry_after = resp.headers.get("Retry-After") or ""
+        frappe.throw("Smartflo rate limit hit. Retry after: {0}s".format(
+            retry_after or "a few"))
+    try:
+        body = resp.json()
+    except ValueError:
+        body = {"raw": (resp.text or "")[:200]}
+    if resp.status_code != 200 or not body.get("success", True):
+        frappe.throw("Smartflo refused ({0}): {1}".format(
+            resp.status_code, body.get("message") or body))
+    return {"success": True, "message": body.get("message") or "originated",
+            "destination": number, "custom_identifier": ident,
+            "actor": vecrm_email}
+
+
+@frappe.whitelist()
 def get_prospect(prospect=None):
     """Full single-record detail for the drawer (S86). Rep-scoped by
     _require_prospecting_access (S87); list rows stay lean, drawer fetches
