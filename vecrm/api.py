@@ -3886,6 +3886,7 @@ def list_employees_directory() -> list[dict]:
 def admin_list_employees(
     status: str = "",
     role: str = "",
+    exclude_role: str = "",
     search: str = "",
     page: str = "1",
     limit: str = "50",
@@ -3895,6 +3896,8 @@ def admin_list_employees(
     Filters (all optional, combinable):
       status: "Active" | "Suspended" | "" (no filter)
       role: any of the 6 VecrmRole strings | "" (no filter)
+      exclude_role: a configured role to EXCLUDE | "" (no filter).
+        Mutually exclusive with role -- supplying both throws.
       search: substring match against employee_name (case-insensitive)
 
     Returns:
@@ -3932,6 +3935,19 @@ def admin_list_employees(
                 frappe.ValidationError,
             )
         filters["role"] = role
+    if exclude_role:
+        if role:
+            frappe.throw(
+                frappe._("Cannot combine role and exclude_role."),
+                frappe.ValidationError,
+            )
+        if exclude_role not in _assignable_roles():
+            frappe.throw(
+                frappe._("Invalid exclude_role filter '{0}'.").format(
+                    exclude_role),
+                frappe.ValidationError,
+            )
+        filters["role"] = ["!=", exclude_role]
     if search:
         filters["employee_name"] = ["like", f"%{search}%"]
 
