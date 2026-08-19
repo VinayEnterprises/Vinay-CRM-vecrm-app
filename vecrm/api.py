@@ -8159,3 +8159,174 @@ def export_leads(rep=None, date_from=None, date_to=None, status=None,
     frappe.response["filecontent"] = content
     frappe.response["type"] = "binary"
     return
+
+
+# ============================================================
+# Partnerships S2 — Partner Lead triage endpoints (VECRM side)
+# Portal-facing. Gated on _require_user_admin (Admin OR Head of Accounts & HR),
+# the SAME gate as /admin/users, because these expose partner-lead PII. The
+# rows live on the VEHRMS bench (tabVEHRMS Partner Lead), reached via the
+# established S2S whitelisted-method path (vehrms_api_key/secret ->
+# _validate_bff_caller on VEHRMS). We call vehrms.api.s2s_partner_lead_*.
+#
+# FAIL-CLOSED: unlike _vehrms_call (which fails-open-on-check for 2FA, where the
+# user already passed a primary credential), a triage read that silently
+# returned empty on a VEHRMS outage would tell an admin "no leads" -- a
+# consequential false claim about PII data. So every endpoint here throws when
+# VEHRMS is unreachable or credentials are missing. No silent empties.
+# ============================================================
+
+
+def _vehrms_api_call(method: str, payload: dict) -> dict:
+    """Call vehrms.api.<method> server-to-server as the bff_service_account.
+    Sibling of _vehrms_call but targets the `api` module (not `api_mobile`).
+    Returns {"ok": bool, "status": int, "data": <message|error>}. `ok` is True
+    only on HTTP 200 with a parseable `message`."""
+    import requests
+    headers = _get_vehrms_auth_header()
+    if not headers:
+        return {
+            "ok": False,
+            "status": 0,
+            "data": {"error": "VEHRMS credentials not configured"},
+        }
+    url = f"{_get_vehrms_base_url()}/api/method/vehrms.api.{method}"
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=15)
+    except Exception as e:
+        frappe.log_error(f"VEHRMS api call {method} failed: {e}", "VECRM partner-lead triage")
+        return {"ok": False, "status": 0, "data": {"error": str(e)}}
+    try:
+        body = resp.json()
+    except Exception:
+        body = {}
+    message = body.get("message") if isinstance(body, dict) else None
+    if resp.status_code == 200 and message is not None:
+        return {"ok": True, "status": 200, "data": message}
+    return {"ok": False, "status": resp.status_code, "data": message if message is not None else body}
+
+
+def _partner_triage_actor() -> dict:
+    """The reviewer's identity, for reviewed_by stamping. Mirrors the house
+    convention (name for humans, phone as the stable key)."""
+    sd = frappe.session.data or {}
+    name = sd.get("vecrm_employee_name")
+    phone = sd.get("vecrm_employee_phone")
+    label = name or phone or frappe.session.user
+    return {"label": label, "phone": phone, "name": name}
+
+
+def _partner_triage_fail(res: dict):
+    """Turn a failed _vehrms_api_call into a fail-closed throw-with-remedy so the
+    admin never sees a silent empty. Never returns."""
+    data = res.get("data") if isinstance(res, dict) else {}
+    detail = ""
+    if isinstance(data, dict):
+        detail = data.get("error") or data.get("message") or ""
+    frappe.throw(
+        frappe._(
+            "Partner Lead service is unavailable right now ({0}). "
+            "No data could be loaded. Please try again shortly or contact the administrator."
+        ).format(detail or "VEHRMS unreachable"),
+        frappe.ValidationError,
+    )
+
+
+@frappe.whitelist()
+def partner_leads_list(partner_type=None, status=None, has_knockouts=None):
+    """Admin/HoA&HR: list Partner Leads for triage. Fail-closed on VEHRMS
+    outage (never a silent empty)."""
+    _require_user_admin()
+    res = _vehrms_api_call(
+        "s2s_partner_lead_list",
+        {
+            "partner_type": partner_type or "",
+            "status": status or "",
+            "has_knockouts": has_knockouts or "",
+        },
+    )
+    if not res.get("ok"):
+        _partner_triage_fail(res)
+    data = res.get("data") or {}
+    if not isinstance(data, dict) or not data.get("ok"):
+        _partner_triage_fail(res)
+    return {"ok": True, "count": data.get("count", 0), "rows": data.get("rows", [])}
+
+
+@frappe.whitelist()
+def partner_lead_detail(name=None):
+    """Admin/HoA&HR: full detail of one Partner Lead (parsed answers, fee-slab
+    options, allowed next statuses). Fail-closed."""
+    _require_user_admin()
+    if not name:
+        frappe.throw(frappe._("name is required"), frappe.ValidationError)
+    res = _vehrms_api_call("s2s_partner_lead_get", {"name": name})
+    if not res.get("ok"):
+        _partner_triage_fail(res)
+    data = res.get("data") or {}
+    if not isinstance(data, dict) or not data.get("ok"):
+        _partner_triage_fail(res)
+    return {"ok": True, "lead": data.get("lead", {})}
+
+
+@frappe.whitelist()
+def partner_lead_set_status(name=None, new_status=None, review_notes=None):
+    """Admin/HoA&HR: move a Partner Lead through the triage pipeline. The state
+    machine is enforced VEHRMS-side; an illegal transition returns ok:false with
+    a remedy (surfaced to the reviewer), NOT a throw. Stamps reviewed_by."""
+    _require_user_admin()
+    if not name:
+        frappe.throw(frappe._("name is required"), frappe.ValidationError)
+    if not new_status:
+        frappe.throw(frappe._("new_status is required"), frappe.ValidationError)
+    actor = _partner_triage_actor()
+    res = _vehrms_api_call(
+        "s2s_partner_lead_update",
+        {
+            "name": name,
+            "new_status": new_status,
+            "review_notes": review_notes or "",
+            "reviewed_by": actor["label"],
+        },
+    )
+    if not res.get("ok"):
+        _partner_triage_fail(res)
+    data = res.get("data") or {}
+    if isinstance(data, dict) and data.get("ok") is False:
+        return data
+    if not isinstance(data, dict) or not data.get("ok"):
+        _partner_triage_fail(res)
+    return data
+
+
+@frappe.whitelist()
+def partner_lead_set_fee_slab(name=None, fee_slab_field=None, fee_slab_value=None):
+    """Admin/HoA&HR: set one fee-slab field on a Partner Lead during review.
+    The field/option are validated VEHRMS-side against live doctype meta.
+    Stamps reviewed_by."""
+    _require_user_admin()
+    if not name:
+        frappe.throw(frappe._("name is required"), frappe.ValidationError)
+    if not fee_slab_field:
+        frappe.throw(frappe._("fee_slab_field is required"), frappe.ValidationError)
+    actor = _partner_triage_actor()
+    res = _vehrms_api_call(
+        "s2s_partner_lead_update",
+        {
+            "name": name,
+            "fee_slab_field": fee_slab_field,
+            "fee_slab_value": fee_slab_value or "",
+            "reviewed_by": actor["label"],
+        },
+    )
+    if not res.get("ok"):
+        _partner_triage_fail(res)
+    data = res.get("data") or {}
+    # A validation refusal (bad option / wrong family) comes back HTTP 200 with
+    # ok:false + remedy -- pass it through verbatim so the FE shows a correctable
+    # error, NOT a "service unavailable" throw.
+    if isinstance(data, dict) and data.get("ok") is False:
+        return data
+    if not isinstance(data, dict) or not data.get("ok"):
+        _partner_triage_fail(res)
+    return data
