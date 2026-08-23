@@ -256,6 +256,9 @@ def set_prospect_disposition(prospect=None, disposition=None, note=None,
             "attempt_count": fresh.attempt_count}
 
 
+_PROSPECT_BULK_CAP = 500
+
+
 @frappe.whitelist()
 def assign_prospects(prospect_names=None, to_rep=None):
     actor = _require_transfer_authority()
@@ -266,6 +269,11 @@ def assign_prospects(prospect_names=None, to_rep=None):
     names = _names_arg(prospect_names)
     if not names:
         frappe.throw("prospect_names is required", frappe.ValidationError)
+    if len(names) > _PROSPECT_BULK_CAP:
+        frappe.throw(
+            "Bulk assignment is capped at {0} prospects per call."
+            .format(_PROSPECT_BULK_CAP),
+            frappe.ValidationError)
     assigned, skipped = [], []
     for name in names:
         row = frappe.db.get_value(
