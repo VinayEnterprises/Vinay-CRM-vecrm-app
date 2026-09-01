@@ -4470,6 +4470,42 @@ def s2s_suspend_employee(vecrm_employee: str = "") -> dict[str, Any]:
 
 
 @frappe.whitelist()
+def s2s_set_employee_email(
+	vecrm_employee: str = "",
+	hrms_employee_id: str = "",
+	vecrm_email: str = "",
+) -> dict[str, Any]:
+	"""S2S (VEHRMS conductor): sync the federated record's vecrm_email when
+	the HRMS company_email changes (Item 3, 2026-09-01). Ownership-verified:
+	the pointer must belong to the claiming HRMS employee."""
+	_require_integration()
+	ve = (vecrm_employee or "").strip()
+	hemp = (hrms_employee_id or "").strip()
+	mail = (vecrm_email or "").strip()
+	if not ve or not hemp or not mail:
+		return {"success": False, "code": "BAD_ARGS",
+			"message": "vecrm_employee, hrms_employee_id and vecrm_email are required.",
+			"remedy": "Pass all three."}
+	rec = frappe.db.get_value("VECRM Employee", ve,
+		["name", "hrms_employee_id", "vecrm_email"], as_dict=True)
+	if not rec:
+		return {"success": False, "code": "SOURCE_NOT_FOUND",
+			"message": "No VECRM Employee at " + ve + ".",
+			"remedy": "Check the federation pointer."}
+	if rec.hrms_employee_id != hemp:
+		return {"success": False, "code": "WRONG_EMPLOYEE",
+			"message": ve + " belongs to " + str(rec.hrms_employee_id) + ", not " + hemp + ".",
+			"remedy": "Refuse: sync must target the employee's own record."}
+	if rec.vecrm_email == mail:
+		return {"success": True, "unchanged": True, "name": ve, "vecrm_email": mail}
+	frappe.db.set_value("VECRM Employee", ve, "vecrm_email", mail,
+		update_modified=False)
+	frappe.db.commit()
+	fresh = frappe.db.get_value("VECRM Employee", ve, "vecrm_email")
+	return {"success": True, "name": ve, "vecrm_email": fresh,
+		"synced": fresh == mail}
+
+@frappe.whitelist()
 def s2s_refederate_employee(
 	old_phone: str = "",
 	new_phone: str = "",
