@@ -4470,6 +4470,89 @@ def s2s_suspend_employee(vecrm_employee: str = "") -> dict[str, Any]:
 
 
 @frappe.whitelist()
+def s2s_refederate_employee(
+	old_phone: str = "",
+	new_phone: str = "",
+	hrms_employee_id: str = "",
+	confirm_reuse: int = 0,
+) -> dict[str, Any]:
+	"""S2S (VEHRMS conductor): move an UNUSED portal principal to a new
+	number. Productizes the 2026-09-01 manual repair (personal number
+	federated in place of the company SIM).
+
+	Only an unused principal may move: no login, no PIN, no password.
+	A used principal carries history keyed to its name and needs a
+	supervised rename, not this endpoint.
+
+	Tombstone lineage on the TARGET is returned as DATA, not a throw:
+	the pool recycles numbers by design, and reuse is a human decision.
+	Without confirm_reuse the call reports the lineage and does nothing.
+	"""
+	_require_integration()
+
+	old_raw = (old_phone or "").strip()
+	new_raw = (new_phone or "").strip()
+	hemp = (hrms_employee_id or "").strip()
+	if not old_raw or not new_raw or not hemp:
+		frappe.throw(frappe._("old_phone, new_phone and hrms_employee_id are required."),
+			frappe.ValidationError)
+	if "-OFFB-" in old_raw or "-OFFB-" in new_raw:
+		frappe.throw(frappe._("Tombstone ids cannot be re-federated."), frappe.ValidationError)
+
+	old = _normalize_phone(old_raw)
+	new = _normalize_phone(new_raw)
+	for p, label in ((old, "old_phone"), (new, "new_phone")):
+		if not re.match(r"^\+91-\d{10}$", p):
+			frappe.throw(frappe._("{0} must normalize to +91-XXXXXXXXXX.").format(label),
+				frappe.ValidationError)
+	if old == new:
+		return {"success": True, "unchanged": True, "name": new}
+
+	rec = frappe.db.get_value("VECRM Employee", old,
+		["name", "hrms_employee_id", "vecrm_account_status",
+		 "last_login_at", "last_pin_login_at", "pin_hash", "password_hash"],
+		as_dict=True)
+	if not rec:
+		return {"success": False, "code": "SOURCE_NOT_FOUND",
+			"message": "No VECRM Employee at " + old + ".",
+			"remedy": "Check the current federation pointer on the HRMS side."}
+	if rec.hrms_employee_id != hemp:
+		return {"success": False, "code": "WRONG_EMPLOYEE",
+			"message": old + " belongs to " + str(rec.hrms_employee_id) + ", not " + hemp + ".",
+			"remedy": "Refuse: re-federation must target the employee's own record."}
+	if rec.last_login_at or rec.last_pin_login_at or rec.pin_hash or rec.password_hash:
+		return {"success": False, "code": "USED_PRINCIPAL",
+			"message": old + " has been used (login or credential exists).",
+			"remedy": "History is keyed to this principal. A supervised rename is required; this endpoint only moves unused records."}
+
+	if frappe.db.exists("VECRM Employee", new):
+		return {"success": False, "code": "LIVE_HOLDER",
+			"message": new + " is already held by a live record.",
+			"remedy": "Pick a different number or resolve the existing holder first."}
+
+	tombs = frappe.get_all("VECRM Employee",
+		filters=[["name", "like", new + "-OFFB-%"]],
+		fields=["name", "employee_name", "hrms_employee_id"])
+	if tombs and not int(confirm_reuse or 0):
+		return {"success": False, "code": "TOMBSTONE_LINEAGE",
+			"requires_confirmation": True, "tombstones": tombs,
+			"message": new + " carries " + str(len(tombs)) + " released lineage record(s).",
+			"remedy": "Review the lineage, then retry with confirm_reuse=1 to reuse this pool number."}
+
+	from frappe.model.rename_doc import rename_doc
+	rename_doc("VECRM Employee", old, new, force=True, ignore_permissions=True)
+	frappe.db.set_value("VECRM Employee", new, "vecrm_phone", new,
+		update_modified=False)
+	frappe.db.commit()
+	fresh = frappe.db.get_value("VECRM Employee", new,
+		["name", "vecrm_phone", "employee_name", "hrms_employee_id",
+		 "vecrm_account_status"], as_dict=True)
+	return {"success": True, "name": fresh.name, "renamed": fresh,
+		"old_name_freed": not bool(frappe.db.exists("VECRM Employee", old)),
+		"name_phone_match": fresh.name == fresh.vecrm_phone,
+		"tombstones": tombs}
+
+@frappe.whitelist()
 def s2s_create_employee(
 	vecrm_phone: str = "",
 	employee_name: str = "",
