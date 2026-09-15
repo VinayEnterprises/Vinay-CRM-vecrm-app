@@ -108,7 +108,8 @@ def _collect_vouchers(from_date, to_date):
         is_expense = dt == "VECRM Expense Voucher"
         fields = ["name", "submitter", "total_amount", date_field]
         if is_expense:
-            fields += ["advance_received", "advance_amount", "site", "advance_consumed"]
+            fields += ["advance_received", "advance_amount", "site",
+                       "advance_consumed", "advance_ref", "carry_forward_amount"]
         rows = frappe.get_all(
             dt,
             filters={
@@ -142,15 +143,20 @@ def _collect_vouchers(from_date, to_date):
                 continue
             total = flt(r["total_amount"])
             if is_expense:
+                # S132 R3: the Accounts override is ON-RECORD — it writes back to
+                # the voucher's own advance_received / advance_amount — so the
+                # voucher is the single source of the advance figure. The
+                # adjustment row is read ONLY to badge the row as Accounts-set;
+                # its value no longer enters the arithmetic. One fact, one writer.
                 advance_submitted = flt(r.get("advance_amount")) if r.get("advance_received") else 0.0
-                override = overrides.get(r["name"])  # None when no override row
-                effective_advance = override if override is not None else advance_submitted
+                override = overrides.get(r["name"])  # presence == set by Accounts
                 consumed = flt(r.get("advance_consumed"))
-                net = total - effective_advance - consumed
+                net = total - advance_submitted - consumed
                 site_val = (r.get("site") or "").strip() or "—"
             else:
                 advance_submitted = None
                 override = None
+                consumed = 0.0
                 net = total
                 site_val = travel_sites.get(r["name"]) or "—"
             if net < 0:
@@ -166,6 +172,8 @@ def _collect_vouchers(from_date, to_date):
                 "advance_submitted": advance_submitted,
                 "advance_override": override,
                 "advance_consumed": consumed if is_expense else None,
+                "advance_ref": r.get("advance_ref") if is_expense else None,
+                "carry_forward_amount": flt(r.get("carry_forward_amount")) if is_expense else None,
                 "site": site_val,
             })
     return per_emp
@@ -206,6 +214,13 @@ def _shape_people(per_emp, only_emps=None):
             if v["type"] == "VECRM Expense Voucher":
                 entry["advance_submitted"] = v["advance_submitted"]
                 entry["advance_override"] = v["advance_override"]
+                # S132: carried through to the payout page so a recovery can be
+                # read off the row. S42 collected these and dropped them here,
+                # which is why the page showed unexplained deductions for two
+                # months and why the P1 portal had to re-fetch them itself.
+                entry["advance_consumed"] = v["advance_consumed"]
+                entry["advance_ref"] = v["advance_ref"]
+                entry["carry_forward_amount"] = v["carry_forward_amount"]
             vouchers.append(entry)
             total_payable += v["net_payable"]
         # Stable order — petrol then expense (by label), then voucher name.
@@ -259,6 +274,34 @@ def generate_voucher_payment_file(from_date=None, to_date=None, payment_date=Non
     per_emp = _collect_vouchers(from_date, to_date)
     if not per_emp:
         frappe.throw("No approved-unpaid vouchers found in the selected period")
+
+    # S132: report carry still outstanding for the people in this run.
+    #
+    # WARNS, does not refuse. Deliberate, and the sequencing matters: the
+    # portal has no Settle action yet, so a hard refusal here would block the
+    # payout with no way for Accounts to clear the block, which is how you
+    # strand a payroll. Mirrors PF-14's warn-before-export in the HRMS lane.
+    # This becomes a hard gate in the same release that ships the Settle
+    # button, not before. Best-effort: a failure to compute the warning must
+    # never stop a bank file that is otherwise correct.
+    unsettled = []
+    try:
+        from vecrm.vecrm.doctype.vecrm_expense_voucher.vecrm_expense_voucher import (
+            list_outstanding_carry_forward as _outstanding,
+        )
+        for _emp in per_emp:
+            for _row in _outstanding(_emp):
+                if flt(_row.get("outstanding")) > 0:
+                    unsettled.append({
+                        "employee": _emp,
+                        "source": _row["name"],
+                        "expense_date": str(_row.get("expense_date") or ""),
+                        "carry_forward_amount": flt(_row.get("carry_forward_amount")),
+                        "outstanding": flt(_row["outstanding"]),
+                    })
+    except Exception:
+        frappe.log_error(frappe.get_traceback(),
+                         "generate_voucher_payment_file.unsettled_carry")
 
     workbook = xlwt.Workbook()
     sheet = workbook.add_sheet("electronic")
@@ -378,6 +421,15 @@ def generate_voucher_payment_file(from_date=None, to_date=None, payment_date=Non
             "vecs_employee_count": len(vecs_emps),
             "vecs_total_amount": int(round(vecs_total)),
             "total_amount": int(round(total_amount)),
+            # S132: advance still owed by people in this run, not recovered by
+            # it. Informational; run settle_payout_cycle to absorb what this
+            # cycle can absorb before generating the file.
+            "unsettled_carry": {
+                "count": len(unsettled),
+                "employees": len(set(u["employee"] for u in unsettled)),
+                "total": round(sum(u["outstanding"] for u in unsettled), 2),
+                "rows": unsettled,
+            },
             "lines": rows_written, "skipped": skipped, "by_type": by_type,
             # Per-person Petrol/Expense split (S42) for the written employees,
             # so the payout page can show the breakdown alongside the file.
@@ -475,18 +527,53 @@ def get_voucher_payout_breakdown(from_date=None, to_date=None):
 
 @frappe.whitelist()
 def set_payout_advance_override(voucher_name, amount=None, voucher_doctype="VECRM Expense Voucher"):
-    """Upsert (or clear) the payout-time advance override for a voucher (S42).
+    """Record (or clear) the advance Accounts holds against a voucher.
 
-    Off-record: writes to VECRM Payout Adjustment, never to the voucher itself,
-    so the employee's submitted record stays clean. Single-row-per-voucher
-    upsert (no append log). A blank/null amount CLEARS the override (deletes the
-    row), reverting to the submitter's declared advance. An explicit 0 means
-    'pay full — ignore the submitter's advance'."""
+    S132 R1 + R3. ON-RECORD, reversing S42's off-record ruling, deliberately.
+
+    Accounts hold the authority to record an advance the submitter forgot to
+    declare — field engineers are non-technical and miss the tick routinely —
+    and that authority is only useful if the recorded figure IS the advance.
+    So this writes back to the voucher's own advance_received / advance_amount,
+    recomputes net_payable and carry_forward_amount by the same formula
+    validate() uses, and emits an audit event the employee's own voucher view
+    renders. One fact, one writer. Every defect in the S132 chain traced back
+    to one fact (how much cash the employee holds) having two shadows.
+
+    The VECRM Payout Adjustment row survives as the AUDIT of who set it, when,
+    and what it replaced (advance_before) — not as the override itself.
+
+    R1: the amount MAY exceed the voucher total. A ₹2,000 advance against a
+    ₹1,520 claim is the ordinary case, not an error. The excess becomes
+    carry_forward_amount and settles at the next payout run.
+
+    Clearing restores advance_before, the submitter's own declaration.
+    """
     _require_payout_access()
     if not voucher_name:
         frappe.throw("voucher_name is required")
+    if voucher_doctype != "VECRM Expense Voucher":
+        # Travel vouchers carry no advance fields at all, so an on-record
+        # override has nowhere to land. Narrowed deliberately in S132; the
+        # portal has only ever sent Expense vouchers here.
+        frappe.throw(
+            f"Advance overrides apply only to VECRM Expense Voucher, not {voucher_doctype!r}."
+        )
     if not frappe.db.exists(voucher_doctype, voucher_name):
         frappe.throw(f"{voucher_doctype} {voucher_name!r} does not exist")
+
+    voucher = frappe.get_doc(voucher_doctype, voucher_name)
+    if voucher.docstatus != 1:
+        frappe.throw(
+            f"{voucher_name} is not submitted (docstatus={voucher.docstatus}); "
+            f"an advance can only be recorded against a submitted voucher."
+        )
+
+    total = flt(voucher.total_amount)
+    consumed = flt(voucher.advance_consumed)
+    already_drawn = _carry_already_consumed(voucher_name)
+    before_received = 1 if voucher.advance_received else 0
+    before_amount = flt(voucher.advance_amount) if voucher.advance_received else 0.0
 
     existing = frappe.db.get_value(
         ADJUSTMENT_DOCTYPE,
@@ -494,25 +581,31 @@ def set_payout_advance_override(voucher_name, amount=None, voucher_doctype="VECR
         "name",
     )
 
-    # Blank / null clears the override (revert to the submitter's advance).
+    # Blank / null clears: restore the submitter's own declaration exactly.
     if amount is None or str(amount).strip() == "":
-        if existing:
-            frappe.delete_doc(ADJUSTMENT_DOCTYPE, existing, ignore_permissions=True)
-            frappe.db.commit()
-        return {"voucher_name": voucher_name, "advance_override": None, "cleared": True}
+        if not existing:
+            return {"voucher_name": voucher_name, "advance_override": None, "cleared": True}
+        restore = flt(frappe.db.get_value(ADJUSTMENT_DOCTYPE, existing, "advance_before"))
+        _apply_advance_on_record(
+            voucher, restore, consumed, already_drawn,
+            reason="override cleared, restored to the submitter's declaration",
+        )
+        frappe.delete_doc(ADJUSTMENT_DOCTYPE, existing, ignore_permissions=True)
+        frappe.db.commit()
+        _audit_override(voucher, before_received, before_amount, restore, cleared=True)
+        return {
+            "voucher_name": voucher_name,
+            "advance_override": None,
+            "advance_amount": restore,
+            "net_payable": flt(frappe.db.get_value(voucher_doctype, voucher_name, "net_payable")),
+            "cleared": True,
+        }
 
     amt = flt(amount)
     if amt < 0:
-        frappe.throw("Advance override cannot be negative")
-    total, consumed = frappe.db.get_value(
-        voucher_doctype, voucher_name, ["total_amount", "advance_consumed"]
-    ) if voucher_doctype == "VECRM Expense Voucher" else (
-        frappe.db.get_value(voucher_doctype, voucher_name, "total_amount"), 0
-    )
-    total = flt(total)
-    consumed = flt(consumed)
-    if amt > total:
-        frappe.throw(f"Advance override (₹{amt}) cannot exceed the voucher total (₹{total}).")
+        frappe.throw("Advance recorded by Accounts cannot be negative")
+    # R1: NO upper bound against the voucher total. An advance larger than the
+    # claim is the ordinary case and becomes carry_forward_amount.
 
     date_field = dict(VOUCHER_TYPES).get(voucher_doctype, "expense_date")
     vdate = frappe.db.get_value(voucher_doctype, voucher_name, date_field)
@@ -526,6 +619,9 @@ def set_payout_advance_override(voucher_name, amount=None, voucher_doctype="VECR
         doc.period_key = pkey
         doc.set_by = actor
         doc.set_at = now
+        # advance_before is written ONCE, at first override. Later edits must
+        # not overwrite it or a clear would restore the previous OVERRIDE
+        # instead of the submitter's own declaration.
         doc.save(ignore_permissions=True)
     else:
         frappe.get_doc({
@@ -533,16 +629,357 @@ def set_payout_advance_override(voucher_name, amount=None, voucher_doctype="VECR
             "voucher_doctype": voucher_doctype,
             "voucher_name": voucher_name,
             "advance_override": amt,
+            "advance_before": before_amount,
             "period_key": pkey,
             "set_by": actor,
             "set_at": now,
         }).insert(ignore_permissions=True)
-    frappe.db.commit()
 
-    net = max(0.0, total - amt - consumed)
+    _apply_advance_on_record(
+        voucher, amt, consumed, already_drawn,
+        reason=f"advance recorded by Accounts ({actor})",
+    )
+    frappe.db.commit()
+    _audit_override(voucher, before_received, before_amount, amt, cleared=False)
+
+    fresh = frappe.db.get_value(
+        voucher_doctype, voucher_name,
+        ["advance_amount", "net_payable", "carry_forward_amount"],
+        as_dict=True,
+    )
     return {
         "voucher_name": voucher_name,
         "advance_override": amt,
-        "net_payable": net,
+        "advance_amount": flt(fresh.advance_amount),
+        "net_payable": flt(fresh.net_payable),
+        "carry_forward_amount": flt(fresh.carry_forward_amount),
         "cleared": False,
     }
+
+
+def _carry_already_consumed(voucher_name):
+    """Rupees already drawn from this voucher's carry by later vouchers."""
+    row = frappe.db.sql(
+        """SELECT COALESCE(SUM(amount), 0) FROM `tabVECRM Carry Consumption`
+           WHERE parent = %s AND parenttype = 'VECRM Expense Voucher'
+             AND parentfield = 'carry_consumptions'""",
+        (voucher_name,),
+    )
+    return flt(row[0][0]) if row else 0.0
+
+
+def _apply_advance_on_record(voucher, advance, consumed, already_drawn, reason=""):
+    """Write the advance onto the voucher and recompute, with a read-back gate.
+
+    Mirrors VECRMExpenseVoucher.validate() exactly:
+        applied = min(advance, total)
+        net_payable = total - applied      (floored at 0, less carry consumed)
+        carry_forward_amount = max(0, advance - total)
+
+    Refuses to shrink a carry below what later vouchers have ALREADY drawn from
+    it — that would leave an over-consumed source and silently double-recover
+    from the employee. The remedy for such a case is a corrective voucher, not
+    a quieter number here.
+    """
+    total = flt(voucher.total_amount)
+    advance = flt(advance)
+    applied = min(advance, total)
+    new_carry = max(0.0, advance - total)
+    new_net = max(0.0, total - applied - flt(consumed))
+
+    if new_carry + 0.005 < flt(already_drawn):
+        frappe.throw(
+            f"Cannot set the advance on {voucher.name} to ₹{advance}: that leaves a "
+            f"carry-forward of ₹{new_carry}, but ₹{already_drawn} has already been "
+            f"recovered from it by later vouchers. Raise a corrective voucher instead."
+        )
+
+    voucher.db_set("advance_received", 1 if advance > 0 else 0, update_modified=False)
+    voucher.db_set("advance_amount", advance, update_modified=False)
+    voucher.db_set("net_payable", new_net, update_modified=False)
+    voucher.db_set("carry_forward_amount", new_carry, update_modified=False)
+
+    # Rule E: never trust the writer's return. Re-SELECT and compare.
+    check = frappe.db.get_value(
+        voucher.doctype, voucher.name,
+        ["advance_received", "advance_amount", "net_payable", "carry_forward_amount"],
+        as_dict=True,
+    )
+    expected_recv = 1 if advance > 0 else 0
+    if (
+        int(check.advance_received or 0) != expected_recv
+        or abs(flt(check.advance_amount) - advance) > 0.0001
+        or abs(flt(check.net_payable) - new_net) > 0.0001
+        or abs(flt(check.carry_forward_amount) - new_carry) > 0.0001
+    ):
+        frappe.throw(
+            f"Advance write verification FAILED on {voucher.name} ({reason}): "
+            f"read-back {dict(check)} vs expected received={expected_recv}, "
+            f"advance={advance}, net={new_net}, carry={new_carry}."
+        )
+    return {"advance": advance, "net_payable": new_net, "carry_forward_amount": new_carry}
+
+
+def _audit_override(voucher, before_received, before_amount, after_amount, cleared):
+    """Emit the advance-override audit event, best-effort.
+
+    The employee's own voucher view renders this, so a debt Accounts recorded
+    is never invisible to the person carrying it. Best-effort by design: an
+    audit-log failure must not roll back a money write that already verified.
+    """
+    try:
+        voucher._audit("voucher.expense.advance_overridden", {
+            "actor_employee": (frappe.session.data or {}).get("vecrm_employee_phone"),
+            "actor_role": (frappe.session.data or {}).get("vecrm_employee_role"),
+            "advance_before": float(before_amount or 0),
+            "advance_received_before": int(before_received or 0),
+            "advance_after": float(after_amount or 0),
+            "cleared": bool(cleared),
+            "total_amount": float(voucher.total_amount or 0),
+            "from_state": "advance_declared_by_submitter" if not before_received
+            else "advance_%s" % before_amount,
+            "to_state": "advance_%s" % after_amount,
+        })
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "set_payout_advance_override.audit")
+
+
+@frappe.whitelist()
+def settle_payout_cycle(from_date=None, to_date=None, dry_run=1):
+    """Settle advance carry-forward across a whole payout cycle (S132 R2).
+
+    Ruling B (S75) consumed carry at APPROVAL time. That made the outcome a
+    function of the order the approver happened to click: consumption looked
+    backwards only at sources already approved, and returned immediately when
+    the consumer's own net was zero. Measured on Gunjan Pandya's batch,
+    approved inside 66 seconds on 5 Sep 2026, the source raising a Rs 480 carry
+    was approved second from last and nothing remained to absorb it.
+
+    Settlement now happens once, here, over the whole cycle:
+
+      consumers  the employee's EXPENSE vouchers in [from_date, to_date] that
+                 are Approved + Unpaid and still have net_payable > 0,
+                 ordered by voucher name (deterministic, and voucher numbers
+                 are sequential so this is also chronological in practice)
+      sources    that same employee's vouchers with outstanding carry, ANY
+                 date, oldest approved_at first — a carry raised in July
+                 settles against a September claim, which is the point
+      apply      FIFO: min(source_remaining, consumer_remaining), walking
+                 sources outer and consumers inner, so one consumer can absorb
+                 from SEVERAL sources in one pass. Ruling B could not express
+                 that: it had one advance_ref slot and a LIMIT 1.
+
+    Each consumption writes a VECRM Carry Consumption row on the SOURCE, and
+    reduces the consumer's net_payable. advance_consumed / advance_ref on the
+    consumer are still maintained as the aggregate and primary-source mirror,
+    because the payout page and the portal read them.
+
+    dry_run (default 1) returns the full plan and writes NOTHING. Run it, read
+    it, then run again with dry_run=0. Every live write is read back and
+    verified before the next one (Rule E: never trust the writer's return).
+
+    Idempotent: a (source, consumer) pair that already has a row is skipped,
+    and a consumer whose net is already reduced offers nothing to absorb.
+
+    DELIBERATE SCOPE: Travel (petrol) vouchers do not absorb carry. Every
+    source is an Expense voucher, the advance was given against expenses, and
+    Travel has no net_payable column to reduce. Where an employee's cycle has
+    no expense net to absorb against, the carry stays open and is VISIBLE on
+    the payout page, so Accounts can act deliberately rather than the system
+    guessing. Revisit only if the visible balance shows this biting.
+    """
+    _require_payout_access()
+    if not (from_date and to_date):
+        frappe.throw("from_date and to_date are required")
+    from_date = getdate(from_date)
+    to_date = getdate(to_date)
+    if from_date > to_date:
+        frappe.throw("from_date cannot be after to_date")
+    dry = str(dry_run).strip().lower() not in ("0", "false", "no", "")
+
+    from vecrm.vecrm.doctype.vecrm_expense_voucher.vecrm_expense_voucher import (
+        list_outstanding_carry_forward as _outstanding,
+    )
+
+    per_emp = _collect_vouchers(from_date, to_date)
+    actor = (frappe.session.data or {}).get("vecrm_email") or frappe.session.user
+    now = frappe.utils.now_datetime()
+
+    # --- plan (pure; no writes) ------------------------------------------
+    plan = []
+    for emp in sorted(per_emp.keys()):
+        consumers = sorted(
+            [
+                {"name": v["name"], "remaining": flt(v["net_payable"]), "period": v["period"]}
+                for v in per_emp[emp]["vouchers"]
+                if v["type"] == "VECRM Expense Voucher" and flt(v["net_payable"]) > 0
+            ],
+            key=lambda c: c["name"],
+        )
+        if not consumers:
+            continue
+        sources = [s for s in _outstanding(emp) if flt(s.get("outstanding")) > 0]
+        for src in sources:
+            src_left = flt(src["outstanding"])
+            for con in consumers:
+                if src_left <= 0.005:
+                    break
+                if con["remaining"] <= 0.005 or con["name"] == src["name"]:
+                    continue
+                pull = round(min(src_left, con["remaining"]), 2)
+                if pull <= 0:
+                    continue
+                plan.append({
+                    "employee": emp,
+                    "source": src["name"],
+                    "source_date": str(src.get("expense_date") or ""),
+                    "source_carry": flt(src.get("carry_forward_amount")),
+                    "consumer": con["name"],
+                    "consumer_period": con["period"],
+                    "amount": pull,
+                    "consumer_net_before": round(con["remaining"], 2),
+                    "consumer_net_after": round(con["remaining"] - pull, 2),
+                })
+                src_left = round(src_left - pull, 2)
+                con["remaining"] = round(con["remaining"] - pull, 2)
+
+    total = round(sum(p["amount"] for p in plan), 2)
+    result = {
+        "from_date": str(from_date),
+        "to_date": str(to_date),
+        "dry_run": dry,
+        "employees_in_cycle": len(per_emp),
+        "employees_settled": len(set(p["employee"] for p in plan)),
+        "consumptions": len(plan),
+        "total_recovered": total,
+        "plan": plan,
+        "applied": [],
+        "skipped_existing": [],
+    }
+    if dry or not plan:
+        return result
+
+    # --- apply (writes; one verified step at a time) ----------------------
+    for p in plan:
+        dup = frappe.db.sql(
+            """SELECT name FROM `tabVECRM Carry Consumption`
+               WHERE parent = %s AND parenttype = 'VECRM Expense Voucher'
+                 AND parentfield = 'carry_consumptions'
+                 AND consumer_doctype = 'VECRM Expense Voucher'
+                 AND consumer_name = %s""",
+            (p["source"], p["consumer"]),
+        )
+        if dup:
+            result["skipped_existing"].append(
+                {"source": p["source"], "consumer": p["consumer"]}
+            )
+            continue
+
+        con = frappe.db.get_value(
+            "VECRM Expense Voucher", p["consumer"],
+            ["net_payable", "advance_consumed", "advance_ref", "expense_date"],
+            as_dict=True,
+        )
+        net_before = flt(con.net_payable)
+        if net_before + 0.005 < p["amount"]:
+            frappe.throw(
+                f"settle_payout_cycle ABORT on {p['consumer']}: planned pull of "
+                f"Rs {p['amount']} exceeds its current net payable of Rs {net_before}. "
+                f"The cycle moved under the plan; re-run the dry run."
+            )
+        new_net = round(net_before - p["amount"], 2)
+        new_consumed = round(flt(con.advance_consumed) + p["amount"], 2)
+        new_ref = (con.advance_ref or "").strip() or p["source"]
+
+        idx = frappe.db.sql(
+            """SELECT IFNULL(MAX(idx), 0) + 1 FROM `tabVECRM Carry Consumption`
+               WHERE parent = %s""",
+            (p["source"],),
+        )[0][0]
+        row_name = frappe.generate_hash(length=10)
+        frappe.db.sql(
+            """
+            INSERT INTO `tabVECRM Carry Consumption`
+                (name, creation, modified, modified_by, owner, docstatus, idx,
+                 parent, parentfield, parenttype,
+                 consumer_doctype, consumer_name, amount,
+                 settled_at, settled_by, period_key)
+            VALUES
+                (%(name)s, NOW(), NOW(), %(owner)s, %(owner)s, 1, %(idx)s,
+                 %(parent)s, 'carry_consumptions', 'VECRM Expense Voucher',
+                 'VECRM Expense Voucher', %(consumer)s, %(amount)s,
+                 %(settled_at)s, %(actor)s, %(period_key)s)
+            """,
+            {
+                "name": row_name, "actor": actor, "idx": idx,
+                # owner / modified_by are Link to User. `actor` is the portal
+                # person's vecrm_email, which is NOT a User on this bench —
+                # portal-bff@ is the only one — so passing it would write two
+                # dangling links on every settlement row. The human identity
+                # belongs in settled_by, which is Data and already carries it.
+                "owner": frappe.session.user,
+                "parent": p["source"], "consumer": p["consumer"],
+                "amount": p["amount"], "settled_at": now,
+                "period_key": period_key(con.expense_date) if con.expense_date else None,
+            },
+        )
+
+        voucher = frappe.get_doc("VECRM Expense Voucher", p["consumer"])
+        voucher.db_set("net_payable", new_net, update_modified=False)
+        voucher.db_set("advance_consumed", new_consumed, update_modified=False)
+        voucher.db_set("advance_ref", new_ref, update_modified=False)
+
+        # Rule E read-back, on BOTH sides of the fact.
+        check = frappe.db.get_value(
+            "VECRM Expense Voucher", p["consumer"],
+            ["net_payable", "advance_consumed", "advance_ref"], as_dict=True,
+        )
+        row = frappe.db.sql(
+            "SELECT amount, consumer_name FROM `tabVECRM Carry Consumption` WHERE name = %s",
+            (row_name,), as_dict=True,
+        )
+        if (
+            abs(flt(check.net_payable) - new_net) > 0.0001
+            or abs(flt(check.advance_consumed) - new_consumed) > 0.0001
+            or (check.advance_ref or "") != new_ref
+            or not row
+            or abs(flt(row[0]["amount"]) - p["amount"]) > 0.0001
+            or row[0]["consumer_name"] != p["consumer"]
+        ):
+            frappe.throw(
+                f"settle_payout_cycle write verification FAILED: source {p['source']} "
+                f"-> consumer {p['consumer']} Rs {p['amount']}. Voucher read-back "
+                f"{dict(check)}, child row {row}. Nothing further applied."
+            )
+        result["applied"].append({
+            "source": p["source"], "consumer": p["consumer"], "amount": p["amount"],
+            "net_before": net_before, "net_after": new_net, "row": row_name,
+        })
+
+    # --- invariant, BEFORE the commit so a violation can still roll back ---
+    # This ran after the commit as first written. A post-commit assertion can
+    # only report a bad state, never undo it. Patch v1_11 already establishes
+    # the correct order: assert, then commit. Reading inside the transaction
+    # still proves the writes took effect, which is what the Rule E read-backs
+    # above are for; durability is not what this check is testing.
+    over = frappe.db.sql(
+        """
+        SELECT src.name, src.carry_forward_amount, SUM(cc.amount) AS consumed
+        FROM `tabVECRM Expense Voucher` src
+        JOIN `tabVECRM Carry Consumption` cc
+          ON cc.parent = src.name AND cc.parentfield = 'carry_consumptions'
+        GROUP BY src.name, src.carry_forward_amount
+        HAVING SUM(cc.amount) - src.carry_forward_amount > 0.005
+        """,
+        as_dict=True,
+    )
+    if over:
+        frappe.throw(
+            "settle_payout_cycle POST-assert FAILED, consumption exceeds carry on: "
+            + ", ".join(f"{r['name']} ({r['consumed']} > {r['carry_forward_amount']})"
+                        for r in over)
+        )
+
+    frappe.db.commit()
+    result["applied_total"] = round(sum(a["amount"] for a in result["applied"]), 2)
+    return result

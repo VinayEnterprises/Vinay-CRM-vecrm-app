@@ -11,6 +11,7 @@
     "voucher_name",
     "period_key",
     "advance_override",
+    "advance_before",
     "set_by",
     "set_at"
   ],
@@ -43,6 +44,13 @@
       "in_list_view": 1,
       "label": "Advance Override (₹)",
       "description": "Accounts-set advance for payout. When present, supersedes the submitter's advance_amount for net payable. The presence of this row IS the override; deleting it reverts to the submitter's declared advance."
+    },
+    {
+      "fieldname": "advance_before",
+      "fieldtype": "Currency",
+      "label": "Advance Before Override (Rs)",
+      "read_only": 1,
+      "description": "S132 R3: the voucher's own advance_amount immediately before the FIRST override was applied. Clearing the override restores this value, so an Accounts correction is reversible to the submitter's own declaration. Written once at override creation; later override edits do not touch it."
     },
     {
       "fieldname": "set_by",

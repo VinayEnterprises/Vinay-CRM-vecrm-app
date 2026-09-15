@@ -361,6 +361,19 @@ def voucher_resubmit_expense(
 	# authorizes editing past the deadline.
 	if voucher.approval_status != "Rejected" and voucher.docstatus != 0:
 		_check_voucher_date_cutoff(expense_date or voucher.expense_date, submitter=voucher.submitter)
+		# S132: the cutoff now applies to every LINE date too, mirroring what
+		# Travel has always done per visit_line. A Rejected resubmit still
+		# bypasses entirely (the guard above) — the rejection authorizes
+		# editing past the deadline, which is the escape hatch Ops needs.
+		try:
+			_s132_lines = json.loads(expense_lines)
+		except (json.JSONDecodeError, TypeError):
+			_s132_lines = None
+		if isinstance(_s132_lines, list):
+			for _s132_line in _s132_lines:
+				_s132_ld = _s132_line.get("expense_date") if isinstance(_s132_line, dict) else None
+				if _s132_ld:
+					_check_voucher_date_cutoff(_s132_ld, submitter=voucher.submitter)
 
 	from vecrm.vecrm.doctype.vecrm_expense_voucher.vecrm_expense_voucher import (
 		voucher_resubmit_expense as _resubmit,
@@ -787,10 +800,22 @@ def create_expense_voucher_draft(
 			frappe.ValidationError,
 		)
 
-	# Bi-monthly submission cutoff (PD-S29-BACKFILL-PREVENTION). EV
-	# has a single voucher-level expense_date (no per-line dates); one
-	# check covers the whole voucher. Admin/Sales Head/HR bypass.
+	# Bi-monthly submission cutoff (PD-S29-BACKFILL-PREVENTION).
+	# Admin/Sales Head/HR bypass.
+	#
+	# S132 CORRECTION: this comment used to read "EV has a single
+	# voucher-level expense_date (no per-line dates); one check covers the
+	# whole voucher". That was FALSE — VECRM Expense Line has carried its
+	# own expense_date since S23, and the code matched the comment rather
+	# than the schema. Measured 15 Sep 2026: 161 of 422 expense lines sat in
+	# a different half-month than their voucher (38%), against 2 of 612 on
+	# Travel (0.3%), which is policed per visit_line. The deadline was
+	# bypassable by dating the parent inside the window.
 	_check_voucher_date_cutoff(expense_date, submitter=submitter)
+	for _s132_line in lines:
+		_s132_ld = _s132_line.get("expense_date") if isinstance(_s132_line, dict) else None
+		if _s132_ld:
+			_check_voucher_date_cutoff(_s132_ld, submitter=submitter)
 
 	# Per-line validation. Receipts are required for Hotel/Supplies and
 	# optional otherwise; any supplied receipt URL must resolve to a File row.
@@ -899,7 +924,12 @@ def submit_expense_voucher_draft(voucher_name: str) -> dict:
 
 	# Bi-monthly cutoff re-check (PD-S29-BACKFILL-PREVENTION). Draft may
 	# have been created during an open window and now sit past deadline.
+	# S132: re-checked per LINE as well, since a draft can gain lines from a
+	# period that closed while it sat there.
 	_check_voucher_date_cutoff(doc.expense_date, submitter=doc.submitter)
+	for _s132_line in (doc.expense_lines or []):
+		if _s132_line.expense_date:
+			_check_voucher_date_cutoff(_s132_line.expense_date, submitter=doc.submitter)
 
 	# doc.submit() triggers on_submit -> _audit("voucher.expense.submitted")
 	doc.submit()

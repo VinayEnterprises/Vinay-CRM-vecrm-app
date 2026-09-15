@@ -30,7 +30,8 @@
       "fieldtype": "Date",
       "insert_after": "category",
       "label": "Date",
-      "reqd": 0
+      "reqd": 1,
+      "description": "The date the expense was actually incurred. S132: made required — it drives the per-line submission cutoff and the payout period, and 16 live lines carried no date at all before this."
     },
     {
       "fieldname": "days",

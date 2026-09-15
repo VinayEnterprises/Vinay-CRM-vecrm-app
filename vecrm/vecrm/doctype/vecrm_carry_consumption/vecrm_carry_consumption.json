@@ -1,0 +1,74 @@
+{
+  "actions": [],
+  "allow_rename": 0,
+  "creation": "2026-09-15 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "istable": 1,
+  "field_order": [
+    "consumer_doctype",
+    "consumer_name",
+    "amount",
+    "settled_at",
+    "settled_by",
+    "period_key"
+  ],
+  "fields": [
+    {
+      "fieldname": "consumer_doctype",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Consumer Doctype",
+      "reqd": 1,
+      "description": "Doctype of the voucher that absorbed this slice of the parent's carry-forward. 'VECRM Expense Voucher' today; Data rather than Link so a Travel voucher can absorb later without a schema change."
+    },
+    {
+      "fieldname": "consumer_name",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Consumer Voucher",
+      "reqd": 1,
+      "description": "The voucher that absorbed this amount, e.g. 'VE/EV/00092/26-27'."
+    },
+    {
+      "fieldname": "amount",
+      "fieldtype": "Currency",
+      "in_list_view": 1,
+      "label": "Amount Consumed (Rs)",
+      "reqd": 1,
+      "description": "Rupees drawn from the parent voucher's carry_forward_amount by this consumer. outstanding = parent.carry_forward_amount - SUM(amount) across these rows. Never negative; a reversal is a new row on a corrective voucher, never an edit of this one."
+    },
+    {
+      "fieldname": "settled_at",
+      "fieldtype": "Datetime",
+      "label": "Settled At",
+      "read_only": 1,
+      "description": "When the consumption was recorded. Ruling B (S75) rows carry the consumer's approved_at; S132 rows carry the payout-run timestamp."
+    },
+    {
+      "fieldname": "settled_by",
+      "fieldtype": "Data",
+      "label": "Settled By",
+      "read_only": 1,
+      "description": "Actor who caused the consumption. Ruling B rows carry the approver; S132 rows carry the Accounts user who ran the cycle settlement."
+    },
+    {
+      "fieldname": "period_key",
+      "fieldtype": "Data",
+      "label": "Period Key",
+      "description": "Half-month key of the consuming voucher, e.g. '2026-08-H2'. Informational: lets Accounts see which payout cycle absorbed the carry."
+    }
+  ],
+  "idx": 0,
+  "links": [],
+  "modified": "2026-09-15 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "VECRM",
+  "name": "VECRM Carry Consumption",
+  "owner": "Administrator",
+  "permissions": [],
+  "sort_field": "creation",
+  "sort_order": "DESC",
+  "states": []
+}

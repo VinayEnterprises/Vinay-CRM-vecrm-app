@@ -20,6 +20,7 @@
     "advance_amount",
     "net_payable",
     "carry_forward_amount",
+    "carry_consumptions",
     "advance_ref",
     "advance_consumed",
     "approver_set",
@@ -61,7 +62,7 @@
       "in_list_view": 1,
       "label": "Expense Date",
       "reqd": 1,
-      "description": "Business date \u2014 drives FY allocation."
+      "description": "Business date — drives FY allocation."
     },
     {
       "fieldname": "site",
@@ -89,7 +90,7 @@
       "fieldname": "total_amount",
       "fieldtype": "Currency",
       "in_list_view": 1,
-      "label": "Total Amount (\u20b9)",
+      "label": "Total Amount (₹)",
       "read_only": 1,
       "description": "Sum of expense_lines.amount. Computed in validate().",
       "allow_on_submit": 1
@@ -123,6 +124,15 @@
       "read_only": 1,
       "default": "0",
       "description": "max(0, advance_amount - total_amount). Over-advance excess captured in validate(); consumed FIFO against this submitter's next Approved voucher (Ruling B)."
+    },
+    {
+      "fieldname": "carry_consumptions",
+      "fieldtype": "Table",
+      "label": "Carry Consumptions",
+      "options": "VECRM Carry Consumption",
+      "read_only": 1,
+      "allow_on_submit": 1,
+      "description": "S132: one row per slice of THIS voucher's carry_forward_amount absorbed by a later voucher. outstanding = carry_forward_amount - SUM(amount). allow_on_submit because settlement necessarily writes to a submitted source. Written only by the payout-run settlement; never edited by hand."
     },
     {
       "fieldname": "advance_ref",
@@ -161,7 +171,7 @@
       "fieldtype": "Data",
       "label": "Approved By (Role)",
       "read_only": 1,
-      "description": "Set by approve_expense_voucher() \u2014 approver's role at time of approval."
+      "description": "Set by approve_expense_voucher() — approver's role at time of approval."
     },
     {
       "fieldname": "approved_at",

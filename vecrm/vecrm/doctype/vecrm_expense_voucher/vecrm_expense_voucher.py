@@ -122,6 +122,32 @@ class VECRMExpenseVoucher(Document):
                 frappe.ValidationError,
             )
 
+        # S132: structural date rules on EVERY line. Deliberately OUTSIDE the
+        # validations bypass and needing no session, so they hold in patches,
+        # backfills and the resubmit path alike. The bi-monthly cutoff is a
+        # separate, session-aware policy check and lives in api.py.
+        #
+        # The line date had NO validation of any kind before this: not reqd,
+        # no forward bound, and the cutoff never looked at it. Measured
+        # 15 Sep 2026: 16 live lines carried no date at all, and one line was
+        # dated in the future on an already-approved voucher.
+        _today = frappe.utils.getdate()
+        for _idx, _line in enumerate(self.expense_lines, start=1):
+            if not _line.expense_date:
+                frappe.throw(
+                    _("Expense line {0} has no date. Every line must carry the "
+                      "date the expense was actually incurred.").format(_idx),
+                    frappe.ValidationError,
+                )
+            if frappe.utils.getdate(_line.expense_date) > _today:
+                frappe.throw(
+                    _("Expense line {0} is dated {1}, which is in the future. "
+                      "An expense voucher claims money already spent.").format(
+                        _idx, frappe.utils.formatdate(_line.expense_date)
+                    ),
+                    frappe.ValidationError,
+                )
+
         # S41 two-tier bypass: skip the per-line business rules (receipt
         # required, Food Allowance math, amount > 0) when global or this
         # submitter's user-level bypass is active. The name guard above and
@@ -308,94 +334,6 @@ class VECRMExpenseVoucher(Document):
             "payload": json.dumps(merged_payload, default=str),
         }).insert(ignore_permissions=True)
 
-def _consume_carry_forward(voucher) -> dict:
-    """Ruling B (S75): at approval, pull the submitter's OLDEST un-consumed
-    carry-forward (FIFO by source approved_at) and apply it against this
-    voucher's net_payable.
-
-    Sources are the submitter's OTHER vouchers with docstatus=1,
-    approval_status='Approved' and carry_forward_amount > 0, where
-    remaining = carry_forward_amount - SUM(advance_consumed of consumers
-    whose advance_ref points at the source). Remaining is DERIVED — there
-    is deliberately no mutable counter on the source (race-safer, single
-    writer per fact).
-
-    Applies min(remaining_of_oldest_source, this_net). ONE source per
-    approval (the schema has one advance_ref slot); residual carry on other
-    sources waits for the submitter's next voucher. Writes advance_ref,
-    advance_consumed and the reduced net_payable via
-    db_set(update_modified=False), then re-SELECTs to verify (Rule E:
-    never trust the writer's return).
-
-    Returns consumption facts for the audit payload; {} when nothing
-    was consumed.
-    """
-    this_net = float(voucher.net_payable or 0)
-    if this_net <= 0:
-        return {}
-    if float(voucher.advance_consumed or 0) > 0 or (voucher.advance_ref or "").strip():
-        # Defense in depth: approval is already once-only (approved_by
-        # guard), but never double-consume.
-        return {}
-    sources = frappe.db.sql(
-        """
-        SELECT
-            src.name,
-            src.carry_forward_amount,
-            src.approved_at,
-            COALESCE(SUM(cons.advance_consumed), 0) AS consumed_total
-        FROM `tabVECRM Expense Voucher` src
-        LEFT JOIN `tabVECRM Expense Voucher` cons
-               ON cons.advance_ref = src.name
-        WHERE src.submitter = %(submitter)s
-          AND src.name != %(this)s
-          AND src.docstatus = 1
-          AND src.approval_status = 'Approved'
-          AND src.carry_forward_amount > 0
-        GROUP BY src.name, src.carry_forward_amount, src.approved_at
-        HAVING (src.carry_forward_amount - consumed_total) > 0.0001
-        ORDER BY src.approved_at ASC, src.name ASC
-        LIMIT 1
-        """,
-        {"submitter": voucher.submitter, "this": voucher.name},
-        as_dict=True,
-    )
-    if not sources:
-        return {}
-    src = sources[0]
-    remaining = float(src.carry_forward_amount) - float(src.consumed_total)
-    pull = round(min(remaining, this_net), 2)
-    if pull <= 0:
-        return {}
-    new_net = round(this_net - pull, 2)
-    voucher.db_set("advance_ref", src.name, update_modified=False)
-    voucher.db_set("advance_consumed", pull, update_modified=False)
-    voucher.db_set("net_payable", new_net, update_modified=False)
-    check = frappe.db.sql(
-        """SELECT advance_ref, advance_consumed, net_payable
-           FROM `tabVECRM Expense Voucher` WHERE name = %s""",
-        (voucher.name,),
-        as_dict=True,
-    )[0]
-    if (
-        check.advance_ref != src.name
-        or abs(float(check.advance_consumed) - pull) > 0.0001
-        or abs(float(check.net_payable) - new_net) > 0.0001
-    ):
-        frappe.throw(
-            f"Carry-forward consumption write verification FAILED on "
-            f"{voucher.name}: read-back {dict(check)} vs expected "
-            f"ref={src.name}, consumed={pull}, net={new_net}.",
-            frappe.ValidationError,
-        )
-    return {
-        "carry_source": src.name,
-        "carry_pulled": pull,
-        "net_payable_before": this_net,
-        "net_payable_after": new_net,
-        "source_remaining_after": round(remaining - pull, 2),
-    }
-
 def approve_expense_voucher(
     voucher_name: str,
     approver_employee: str,
@@ -451,7 +389,15 @@ def approve_expense_voucher(
     if notes:
         voucher.db_set("approval_notes", notes, update_modified=False)
 
-    consumption = _consume_carry_forward(voucher)
+    # S132 R2: carry-forward consumption NO LONGER happens at approval.
+    # It ran here from Ruling B (S75) until 15 Sep 2026, and the outcome
+    # depended on the order the approver happened to click: consumption only
+    # looked backwards at sources already approved, and returned immediately
+    # when the consumer's own net was zero. Measured on Gunjan Pandya's batch,
+    # approved inside 66 seconds on 5 Sep — the ₹480 source was approved second
+    # from last, so nothing was left to absorb it.
+    # Settlement now happens once, at the payout run, across the whole cycle
+    # and independent of click order. One writer of the settlement fact.
     voucher._audit("voucher.expense.approved", {
         "actor_employee": approver_employee,
         "actor_role": approver.role,
@@ -459,7 +405,6 @@ def approve_expense_voucher(
         "notes": notes or "",
         "from_state": "submitted",
         "to_state": "approved",
-        "carry_forward": consumption or None,
     })
 
     try:
@@ -547,15 +492,21 @@ def list_outstanding_carry_forward(employee: str | None = None) -> list:
     if employee:
         conds.append("src.submitter = %(employee)s")
         params["employee"] = employee
+    # S132: consumption is a child ledger on the SOURCE, not a self-join over
+    # consumers. The old shape could express only ONE source per consumer (a
+    # single advance_ref slot); cycle settlement absorbs from several at once.
+    # Output shape is unchanged, so the portal needs no change.
     rows = frappe.db.sql(
         f"""
         SELECT
             src.name, src.submitter, src.expense_date, src.approved_at,
             src.total_amount, src.advance_amount, src.carry_forward_amount,
-            COALESCE(SUM(cons.advance_consumed), 0) AS consumed_total
+            COALESCE(SUM(cc.amount), 0) AS consumed_total
         FROM `tabVECRM Expense Voucher` src
-        LEFT JOIN `tabVECRM Expense Voucher` cons
-               ON cons.advance_ref = src.name
+        LEFT JOIN `tabVECRM Carry Consumption` cc
+               ON cc.parent = src.name
+              AND cc.parenttype = 'VECRM Expense Voucher'
+              AND cc.parentfield = 'carry_consumptions'
         WHERE {" AND ".join(conds)}
         GROUP BY src.name, src.submitter, src.expense_date, src.approved_at,
                  src.total_amount, src.advance_amount, src.carry_forward_amount
