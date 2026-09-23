@@ -133,12 +133,16 @@ class VECRMTravelVoucher(Document):
     def _lookup_rate(self, city: str) -> float:
         """Lookup rate_per_km in the Rate Card Single by city. Fail loud."""
         rate_card = frappe.get_single("VECRM Rate Card")
+        # S134 (R4): compare casefold, the same way vecrm_employee.py
+        # validates base city, so the two consumers of the card agree.
+        want = (city or "").strip().casefold()
         for row in rate_card.city_rates or []:
-            if row.city == city:
+            if (row.city or "").strip().casefold() == want:
                 return float(row.rate_per_km)
         frappe.throw(
             f"No rate configured for city '{city}' in VECRM Rate Card. "
-            f"Add it via Frappe Desk (Rate Card -> City Rates)."
+            f"Add it from the portal (Admin -> Users -> Add city) "
+            f"or in Frappe Desk (Rate Card -> City Rates)."
         )
 
     def validate(self) -> None:

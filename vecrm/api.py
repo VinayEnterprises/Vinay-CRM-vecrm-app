@@ -4910,6 +4910,122 @@ def get_base_cities() -> dict[str, Any]:
     return {"cities": cities}
 
 
+@frappe.whitelist()
+def add_rate_card_city(city: str = "", rate_per_km: Any = "") -> dict[str, Any]:
+    """S134. Admin or Head of Accounts & HR: append ONE city with its per-km
+    petrol rate to the VECRM Rate Card Single, from the portal, so a new base
+    city does not require a trip to Frappe Desk.
+
+    Create only. Editing or removing a rate changes future voucher money and
+    stays in Desk on purpose (ruling R3, 23 Sep 2026).
+
+    Rules:
+      - caller role must be Admin or Head of Accounts & HR (_require_user_admin)
+      - city is trimmed and internal whitespace collapsed; 2 to 60 chars
+      - a city already on the card, compared casefold, is refused and the
+        existing spelling is named (the controller also enforces this)
+      - rate must parse as a decimal, be > 0, have at most two decimals, and
+        be <= 50.00 (a fat-finger guard: 250 typed for 2.50 must not land)
+      - commit inside, then re-SELECT read-back; a write that did not persist
+        throws rather than returning success
+
+    Returns {"success": True, "city": <stored spelling>, "rate_per_km": <float>,
+             "cities": <sorted list, same shape as get_base_cities>}.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    _require_user_admin()
+
+    name = " ".join((city or "").split())
+    if len(name) < 2:
+        frappe.throw(frappe._("City name is required."), frappe.ValidationError)
+    if len(name) > 60:
+        frappe.throw(
+            frappe._("City name is too long (max 60 characters)."),
+            frappe.ValidationError,
+        )
+
+    try:
+        d = Decimal(str(rate_per_km).strip())
+    except (InvalidOperation, ValueError):
+        frappe.throw(
+            frappe._("Rate per km must be a number, for example 2.50."),
+            frappe.ValidationError,
+        )
+    if not d.is_finite() or d <= 0:
+        frappe.throw(
+            frappe._("Rate per km must be greater than zero."),
+            frappe.ValidationError,
+        )
+    if d != d.quantize(Decimal("0.01")):
+        frappe.throw(
+            frappe._("Rate per km may have at most two decimals."),
+            frappe.ValidationError,
+        )
+    if d > Decimal("50"):
+        frappe.throw(
+            frappe._(
+                "Rate per km {0} is above the 50.00 sanity limit. "
+                "Check the value (2.50, not 250)."
+            ).format(d),
+            frappe.ValidationError,
+        )
+    rate = float(d)
+
+    rc = frappe.get_single("VECRM Rate Card")
+    existing = {
+        (r.city or "").strip().casefold(): (r.city or "").strip()
+        for r in (rc.city_rates or [])
+    }
+    if name.casefold() in existing:
+        frappe.throw(
+            frappe._("'{0}' is already on the rate card as '{1}'.").format(
+                name, existing[name.casefold()]
+            ),
+            frappe.ValidationError,
+        )
+    n_before = len(rc.city_rates or [])
+
+    rc.append("city_rates", {"city": name, "rate_per_km": rate})
+    rc.save(ignore_permissions=True)
+    frappe.db.commit()
+
+    # Read-back. Never trust the in-memory doc for a money row.
+    row = frappe.db.get_value(
+        "VECRM Rate Card City",
+        {"parent": "VECRM Rate Card", "city": name},
+        ["city", "rate_per_km"],
+        as_dict=True,
+    )
+    n_after = frappe.db.count("VECRM Rate Card City", {"parent": "VECRM Rate Card"})
+    if (
+        not row
+        or n_after != n_before + 1
+        or abs(float(row.rate_per_km) - rate) > 0.0001
+    ):
+        frappe.log_error(
+            title="add_rate_card_city read-back mismatch",
+            message=f"city={name!r} rate={rate} row={row} before={n_before} after={n_after}",
+        )
+        frappe.throw(
+            frappe._("Rate card write did not persist as expected. Nothing to do; report this."),
+            frappe.ValidationError,
+        )
+
+    cities = sorted(
+        {
+            (r.city or "").strip()
+            for r in frappe.get_all(
+                "VECRM Rate Card City",
+                filters={"parent": "VECRM Rate Card"},
+                fields=["city"],
+            )
+            if (r.city or "").strip()
+        }
+    )
+    return {"success": True, "city": row.city, "rate_per_km": rate, "cities": cities}
+
+
 def _admin_issue_reset(employee_phone: str, kind: str) -> dict[str, Any]:
     """Shared impl for admin_send_invite / admin_send_reset_password. Admin
     creates a password reset token for `employee_phone` and returns the raw
