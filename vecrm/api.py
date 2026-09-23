@@ -3763,16 +3763,16 @@ def _check_voucher_date_cutoff(
 
     if d.day <= 15:
         period_label = f"H1 ({d.strftime('%b %Y')} 1-15)"
-        deadline = d.replace(day=17)
+        deadline = d.replace(day=20)
     else:
         last_day = calendar.monthrange(d.year, d.month)[1]
         period_label = f"H2 ({d.strftime('%b %Y')} 16-{last_day})"
         # H2 deadline = 2nd of the following month. Handle December
         # rollover into January of the next year.
         if d.month == 12:
-            deadline = d.replace(year=d.year + 1, month=1, day=2)
+            deadline = d.replace(year=d.year + 1, month=1, day=5)
         else:
-            deadline = d.replace(month=d.month + 1, day=2)
+            deadline = d.replace(month=d.month + 1, day=5)
 
     if today > deadline:
         frappe.throw(

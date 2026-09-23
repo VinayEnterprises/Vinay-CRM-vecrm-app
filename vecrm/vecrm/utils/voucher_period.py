@@ -77,11 +77,11 @@ def submit_window(d) -> tuple[datetime, datetime]:
     d = frappe.utils.getdate(d)
     open_dt = datetime.combine(on_time_day(d), time(21, 0, 0))
     if d.day <= 15:
-        close_day = date(d.year, d.month, 17)
+        close_day = date(d.year, d.month, 20)
     elif d.month == 12:
-        close_day = date(d.year + 1, 1, 2)
+        close_day = date(d.year + 1, 1, 5)
     else:
-        close_day = date(d.year, d.month + 1, 2)
+        close_day = date(d.year, d.month + 1, 5)
     close_dt = datetime.combine(close_day, time(23, 59, 59))
     return (open_dt, close_dt)
 

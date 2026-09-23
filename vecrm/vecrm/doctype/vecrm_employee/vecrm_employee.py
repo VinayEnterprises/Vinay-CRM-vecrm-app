@@ -26,6 +26,12 @@ class VECRMEmployee(Document):
 		city = (self.vecrm_base_city or "").strip()
 		if not city:
 			frappe.throw(_("Base City is required."))
+		from vecrm.vecrm.utils.role_config import role_is_external
+		if role_is_external(self.role):
+			# External roles draw no per-km petrol reimbursement, so rate
+			# card membership does not apply to them. Base City stays
+			# mandatory above, for posting and reporting.
+			return
 		rate_card = frappe.get_single("VECRM Rate Card")
 		known = {
 			(r.city or "").strip().casefold()

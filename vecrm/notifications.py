@@ -159,21 +159,49 @@ def daily_lead_reminder():
 
 def voucher_period_reminder():
 	"""Voucher fill reminder — only fires on specific dates."""
-	from datetime import date
-	day = date.today().day
-	# H1 period (1-15) reminder window: 13,14,15,16,17
-	# H2 period (16-end) reminder window: 28,29,30,1,2
-	if day in (13, 14, 15, 16, 17):
-		period = "first-half (1st-15th)"
-	elif day in (28, 29, 30, 1, 2):
-		period = "second-half (16th-end)"
+	from datetime import date, timedelta
+	import calendar
+	today = date.today()
+	day = today.day
+	last_day = calendar.monthrange(today.year, today.month)[1]
+	# H1 (1-15): window opens 15th 21:00 IST, closes 20th 23:59.
+	#            remind on 14 (heads-up), 15 (on-time day), 16-20 (window).
+	# H2 (16-end): window opens last day 21:00 IST, closes 5th 23:59.
+	#            remind on last_day-1, last_day, and 1-5 of next month.
+	# Days before the window opens are not reminder days: nobody can act
+	# on them, and the noise is part of why filing feels like a chore.
+	if 14 <= day <= 20:
+		period = "first half of {0} (1st to 15th)".format(today.strftime("%b"))
+		deadline = "20 {0}".format(today.strftime("%b"))
+		open_day = 15
+	elif day >= last_day - 1:
+		nxt = (today.replace(day=1) + timedelta(days=32)).replace(day=1)
+		period = "second half of {0} (16th to {1})".format(
+			today.strftime("%b"), last_day
+		)
+		deadline = "05 {0}".format(nxt.strftime("%b"))
+		open_day = last_day
+	elif day <= 5:
+		prev_last = today.replace(day=1) - timedelta(days=1)
+		period = "second half of {0} (16th to {1})".format(
+			prev_last.strftime("%b"), prev_last.day
+		)
+		deadline = "05 {0}".format(today.strftime("%b"))
+		open_day = None
 	else:
 		return  # not a reminder day
+	body = "Submit your {0} petrol, travel and expense vouchers by {1}.".format(
+		period, deadline
+	)
+	if open_day is not None and day == open_day:
+		body += " The window opens tonight at 9pm. File tonight to be recorded as on time."
+	elif open_day is not None and day == open_day - 1:
+		body += " The window opens tomorrow at 9pm."
 	tokens = _all_active_tokens()
 	send_push(
 		tokens,
-		"Fill your vouchers",
-		f"Reminder: please submit your {period} petrol/travel/expense vouchers in Anusuya Workspace.",
+		"Vouchers due {0}".format(deadline),
+		body,
 		{"screen": "vouchers"},
 	)
 
@@ -568,15 +596,15 @@ def voucher_approver_payment_reminder():
 		day = date.today().day
 		
 		messages = []
-		if day in (15, 16, 17):
-			messages.append("Please approve pending vouchers for the 1st-15th period.")
-		elif day in (1, 2, 3):
-			messages.append("Please approve pending vouchers for the preceding month.")
+		if day in (18, 19, 20, 21):
+			messages.append("Please approve pending vouchers for the 1st-15th period. Submission closed on the 20th.")
+		elif day in (3, 4, 5, 6):
+			messages.append("Please approve pending vouchers for the preceding month 16th-to-end period. Submission closed on the 5th.")
 			
-		if day == 20:
-			messages.append("Voucher payments for the 1st-15th period are due today.")
-		elif day == 5:
-			messages.append("Voucher payments for the preceding month are due today.")
+		if day == 21:
+			messages.append("Voucher payments for the 1st-15th period open today. Window is the 20th to the 25th.")
+		elif day == 8:
+			messages.append("Voucher payments for the preceding month 16th-to-end period open today. Window is the 8th to the 12th.")
 			
 		if not messages:
 			return
@@ -618,7 +646,7 @@ def _notify_employee(submitter_phone, title, body):
 
 
 def auto_submit_closed_period_vouchers():
-	"""Scheduled 18th & 3rd at 00:05 IST. Auto-submit the consolidated TRAVEL
+	"""Scheduled 21st & 6th at 00:05 IST. Auto-submit the consolidated TRAVEL
 	draft for the period whose grace window just closed; stamp Auto-Submitted
 	and notify the rep. Empty drafts are skipped with a 'no voucher filed'
 	notice (an empty voucher is never pushed through)."""
@@ -626,9 +654,9 @@ def auto_submit_closed_period_vouchers():
 	from vecrm.vecrm.utils.voucher_period import period_key
 
 	today = frappe.utils.getdate(frappe.utils.today())
-	if today.day == 18:
+	if today.day == 21:
 		anchor = date(today.year, today.month, 1)            # H1 this month
-	elif today.day == 3:
+	elif today.day == 6:
 		prev_last = today.replace(day=1) - timedelta(days=1)
 		anchor = date(prev_last.year, prev_last.month, 16)   # H2 previous month
 	else:
