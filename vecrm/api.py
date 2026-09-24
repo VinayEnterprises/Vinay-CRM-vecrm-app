@@ -3058,6 +3058,48 @@ def _consume_reset_token(token: str, expected_reset_for: str) -> Any:
 
 
 @frappe.whitelist(allow_guest=True, methods=["POST"])
+def check_reset_token(token: str = "", reset_for: str = "password") -> dict[str, Any]:
+    """S141b (24 Sep 2026): read-only pre-check for the set-password page.
+
+    Answers whether a reset/invite link can still be used, so the portal can
+    say "this link has expired" on load instead of failing on submit.
+
+    Never consumes the token, never writes, never audits, and never returns
+    who the token belongs to. Only the holder of a 256-bit token can ask about
+    it, so this adds no enumeration surface (invariant 6 concerns emails and
+    phones, which this method never touches).
+
+    Returns {"success": True, "valid": bool, "reason": None | "expired" |
+    "used" | "not_found", "minutes_left": int | None}.
+    """
+    if reset_for not in ("password", "pin"):
+        reset_for = "password"
+    dead = {"success": True, "valid": False, "reason": "not_found", "minutes_left": None}
+    if not token or len(token) > 200:
+        return dead
+    row = frappe.db.get_value(
+        "VECRM Auth Reset Token",
+        {"token_hash": hash_token(token)},
+        ["consumed_at", "expires_at", "reset_for"],
+        as_dict=True,
+    )
+    if not row or row.reset_for != reset_for:
+        return dead
+    if row.consumed_at:
+        return {**dead, "reason": "used"}
+    expires = get_datetime(row.expires_at)
+    now = now_datetime()
+    if expires < now:
+        return {**dead, "reason": "expired"}
+    return {
+        "success": True,
+        "valid": True,
+        "reason": None,
+        "minutes_left": max(1, int((expires - now).total_seconds() // 60)),
+    }
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
 def complete_password_reset(token: str = "", new_password: str = "") -> dict[str, Any]:
     """Consume a password reset token and set the new password.
 
