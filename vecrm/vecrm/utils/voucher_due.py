@@ -477,22 +477,39 @@ def _paid_row(doctype: str, name: str) -> dict | None:
 
 
 def _paid_mail(submitter: str, items: list, dry_run: bool, log: list) -> None:
+    """One mail per employee per mark-paid action. Vouchers fully covered by an
+    advance (net 0) are listed as settled against the advance, never as a
+    Rs 0.00 payment (S143 canary K6)."""
     email = frappe.db.get_value("VECRM Employee", submitter, "vecrm_email")
     if not email or not items:
         return
     who = frappe.db.get_value("VECRM Employee", submitter, "employee_name") or submitter
-    total_paid = sum(i["paid"] for i in items)
-    rows = [(i["name"], i["kind"], _inr(i["approved"]),
-             _inr(i["deducted"]) if i["deducted"] else "-", _inr(i["paid"])) for i in items]
-    body = (_p("Hi %s," % _esc(who))
-            + _p("%s has been paid to your bank account for the voucher(s) below." % _esc(_inr(total_paid)))
-            + _table(["Voucher", "Type", "Approved", "Advance deducted", "Paid"], rows))
+    paid = [i for i in items if i["paid"] > 0]
+    settled = [i for i in items if i["paid"] <= 0]
+    total_paid = sum(i["paid"] for i in paid)
+    body = _p("Hi %s," % _esc(who))
+    if paid:
+        body += (_p("%s has been paid to your bank account for the voucher(s) below."
+                    % _esc(_inr(total_paid)))
+                 + _table(["Voucher", "Type", "Approved", "Advance deducted", "Paid"],
+                          [(i["name"], i["kind"], _inr(i["approved"]),
+                            _inr(i["deducted"]) if i["deducted"] else "-", _inr(i["paid"]))
+                           for i in paid]))
+    if settled:
+        body += (_p("The voucher(s) below were fully covered by the advance you had already "
+                    "received, so no bank payment was made for them.")
+                 + _table(["Voucher", "Type", "Approved", "Covered by advance"],
+                          [(i["name"], i["kind"], _inr(i["approved"]), _inr(i["deducted"]))
+                           for i in settled]))
     if any(i["deducted"] for i in items):
         body += _p("Advance deducted is the advance you had already received against that "
                    "voucher, including any balance carried forward from an earlier trip.")
     body += _p(_link(PETROL_URL, "See your vouchers"))
-    _send(email, "Voucher payment: %s paid" % _inr(total_paid), body, "Voucher payment",
-          dry_run, log)
+    if paid:
+        subject = "Voucher payment: %s paid" % _inr(total_paid)
+    else:
+        subject = "Voucher settled against your advance: %s" % ", ".join(i["name"] for i in settled)
+    _send(email, subject, body, "Voucher payment", dry_run, log)
 
 
 def send_paid_mail_single(doc, dry_run: bool = False) -> list:
