@@ -330,6 +330,7 @@ def notify_lead_status(doc, method):
 				try:
 					frappe.sendmail(
 						recipients=email,
+						bcc=_s139_bcc_for(email),
 						subject=subject,
 						message=message,
 						delayed=False
@@ -746,3 +747,8 @@ def notify_intent_pending(doc, method):
 			)
 	except Exception as e:
 		frappe.log_error(frappe.get_traceback(), "Push Notification Error")
+
+def _s139_bcc_for(address):
+	"""S139 audit BCC for frappe.sendmail recipients (rule in vecrm/email_utils.py)."""
+	from vecrm.email_utils import _s139_audit_bcc
+	return _s139_audit_bcc([address], [], None)

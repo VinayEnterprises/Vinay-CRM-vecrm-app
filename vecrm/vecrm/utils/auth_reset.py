@@ -24,6 +24,9 @@ TOKEN_BYTES: Final[int] = 32
 # vecrm.api._LOCKOUT_MINUTES = 15; doubled because reset emails may sit in
 # inbox queues for several minutes before delivery).
 DEFAULT_TOKEN_TTL_MINUTES: Final[int] = 30
+# S139 (24 Sep 2026): admin set-password invites stay valid 72 hours so an
+# automatic invite survives until the recipient reads it. Resets keep 30.
+INVITE_TOKEN_TTL_MINUTES: Final[int] = 72 * 60
 
 # Rate limit: 3 reset requests per employee per 15-min window.
 # Window mirrors vecrm.api._LOCKOUT_MINUTES.

@@ -1493,6 +1493,7 @@ from frappe.utils.password import passlibctx
 
 from vecrm.vecrm.utils.auth_reset import (
     DEFAULT_TOKEN_TTL_MINUTES,
+    INVITE_TOKEN_TTL_MINUTES,
     RATE_LIMIT_MAX_REQUESTS,
     RATE_LIMIT_WINDOW_MINUTES,
     generate_token,
@@ -2649,7 +2650,8 @@ def _count_recent_reset_tokens(employee_name: str, reset_for: str) -> int:
     )
 
 
-def _create_reset_token_row(employee_name: str, reset_for: str) -> str:
+def _create_reset_token_row(employee_name: str, reset_for: str,
+                            ttl_minutes: int = DEFAULT_TOKEN_TTL_MINUTES) -> str:
     """Insert a VECRM Auth Reset Token row and return the raw token.
 
     The raw token is returned to the caller (request_*_reset) for inclusion
@@ -2663,7 +2665,7 @@ def _create_reset_token_row(employee_name: str, reset_for: str) -> str:
             "employee": employee_name,
             "reset_for": reset_for,
             "expires_at": now_datetime()
-            + timedelta(minutes=DEFAULT_TOKEN_TTL_MINUTES),
+            + timedelta(minutes=ttl_minutes),
             "ip_address": getattr(frappe.local, "request_ip", None),
         }
     )
@@ -5053,7 +5055,8 @@ def _admin_issue_reset(employee_phone: str, kind: str) -> dict[str, Any]:
             frappe.ValidationError,
         )
 
-    raw_token = _create_reset_token_row(phone, "password")
+    ttl = INVITE_TOKEN_TTL_MINUTES if kind == "invite" else DEFAULT_TOKEN_TTL_MINUTES  # S139
+    raw_token = _create_reset_token_row(phone, "password", ttl)
     try:
         _audit_auth(
             "auth.admin.invite" if kind == "invite" else "auth.admin.reset",
@@ -5073,6 +5076,7 @@ def _admin_issue_reset(employee_phone: str, kind: str) -> dict[str, Any]:
             "raw_token": raw_token,
             "employee_name": emp.employee_name or phone,
             "delivery_email": email,
+            "expires_minutes": ttl,
         },
     }
 

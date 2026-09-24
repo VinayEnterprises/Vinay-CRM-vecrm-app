@@ -31,7 +31,45 @@ def _get_graph_token():
     return resp.json()["access_token"]
 
 
-def send_email(to, subject, html_body, sender=None):
+
+
+# ──────────────────────────────────────────────
+# S139 (24 Sep 2026): audit BCC. Any mail with a recipient outside the
+# organisation carries a blind copy to the two audit mailboxes. A domain is
+# internal when it equals or is a subdomain of one listed below. Callers that
+# must never be copied pass bcc_policy="none" (none exist on this bench today:
+# VEHRMS sends no credentials by mail).
+# ──────────────────────────────────────────────
+_S139_INTERNAL_DOMAINS = (
+    "vinayenterprises.co.in", "anusuya.ai", "vinayenter.onmicrosoft.com",
+    "vemio.io", "vemio.in", "avalok.one", "vecs.net",
+)
+_S139_AUDIT_BCC = ("anil@vinayenterprises.co.in", "hello@anusuya.ai")
+
+
+def _s139_is_external(address):
+    a = str(address or "").strip().lower()
+    if "@" not in a:
+        return False
+    domain = a.rsplit("@", 1)[1]
+    return not any(domain == d or domain.endswith("." + d) for d in _S139_INTERNAL_DOMAINS)
+
+
+def _s139_audit_bcc(to, cc, bcc):
+    if isinstance(bcc, str):
+        bcc = [b.strip() for b in bcc.split(",") if b.strip()]
+    bcc = list(bcc or [])
+    visible = [str(a or "").strip().lower() for a in list(to or []) + list(cc or [])]
+    if not any(_s139_is_external(a) for a in visible):
+        return bcc
+    have = {str(b).strip().lower() for b in bcc}
+    for a in _S139_AUDIT_BCC:
+        if a not in visible and a not in have:
+            bcc.append(a)
+    return bcc
+
+
+def send_email(to, subject, html_body, sender=None, bcc_policy="auto"):
     """Send email via Microsoft Graph API.
 
     Args:
@@ -47,6 +85,8 @@ def send_email(to, subject, html_body, sender=None):
 
     if isinstance(to, str):
         to = [to]
+    # S139 audit BCC (see _s139_audit_bcc).
+    _bcc = _s139_audit_bcc(to, [], None) if bcc_policy != "none" else []
 
     token = _get_graph_token()
     resp = requests.post(
@@ -57,6 +97,7 @@ def send_email(to, subject, html_body, sender=None):
                 "subject": subject,
                 "body": {"contentType": "HTML", "content": html_body},
                 "toRecipients": [{"emailAddress": {"address": a}} for a in to],
+                "bccRecipients": [{"emailAddress": {"address": a}} for a in _bcc],
                 "attachments": [
                     {
                         "@odata.type": "#microsoft.graph.fileAttachment",
