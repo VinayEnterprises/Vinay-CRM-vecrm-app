@@ -1,7 +1,9 @@
 """S143 voucher-due (W2) reminders and voucher mails (VECRM).
 
 Rulings 24 Sep 2026 (Ajay):
-- W2 roles: Field Engineer, Network Security Engineer, Store Executive.
+- W2 roles (widened 24 Sep 2026, Ajay): Field Engineer, Network Security
+  Engineer, Store Executive, every sales role (Sales Rep, Sales Head, Senior
+  Business Acceleration Executive), Head of Engineers and Head of Stores.
 - Pop-up days: 16th to 20th (this month's H1) and 1st to 5th (previous
   month's H2). Personal reminders: 15th to 20th and last day to 5th.
 - Filed = a submitted Travel Voucher for the period, or a "No petrol claim
@@ -34,7 +36,9 @@ from vecrm.vecrm.utils.voucher_period import (
     submit_window,
 )
 
-W2_ROLES = ("Field Engineer", "Network Security Engineer", "Store Executive")
+W2_ROLES = ("Field Engineer", "Network Security Engineer", "Store Executive",
+            "Sales Rep", "Sales Head", "Senior Business Acceleration Executive",
+            "Head of Engineers", "Head of Stores")
 HEAD_ROLES = ("Head of Engineers", "Head of Stores", "Sales Head",
               "Senior Business Acceleration Executive")
 DAILY_LIST_ROLES = ("Accounts Executive", "HR", "Head of Accounts & HR", "Admin")
@@ -245,8 +249,8 @@ def declare_no_claim(phone: str, role: str, period: str, source: str = "Portal")
     """One-tap "No petrol claim this period". Rule E: self only, current
     period only, refused when a claim exists. Commits and reads back."""
     if role not in W2_ROLES:
-        frappe.throw(frappe._("Only field engineers, network security engineers and store "
-                              "executives file petrol vouchers."), frappe.PermissionError)
+        frappe.throw(frappe._("Your role does not file petrol vouchers, so there is nothing "
+                              "to declare."), frappe.PermissionError)
     if not phone:
         frappe.throw(frappe._("No employee on this session."), frappe.PermissionError)
     w = window_for(_today())
