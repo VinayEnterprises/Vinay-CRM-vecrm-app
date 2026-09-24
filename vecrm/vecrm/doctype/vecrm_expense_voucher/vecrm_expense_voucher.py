@@ -116,7 +116,16 @@ class VECRMExpenseVoucher(Document):
                 frappe.ValidationError,
             )
 
-        if not self.expense_lines:
+        # S144: a voucher draft created when an app advance is paid starts with
+        # no lines; the engineer adds them after the trip. Zero lines are
+        # allowed ONLY on such a draft. Submit (docstatus 1) always needs lines.
+        _s144_linked = 0.0
+        if self.name:
+            from vecrm.vecrm.utils.advance import linked_total
+            _s144_linked = linked_total(self.name)
+        if not self.expense_lines and not (
+            self.docstatus == 0 and (self.flags.vecrm_advance_draft or _s144_linked > 0)
+        ):
             frappe.throw(
                 _("At least one expense line is required."),
                 frappe.ValidationError,
@@ -200,6 +209,18 @@ class VECRMExpenseVoucher(Document):
         # structural invariants (a negative net payable is nonsensical), so
         # they run even under the validations bypass.
         total = float(self.total_amount or 0)
+
+        # S144: advances paid through the app are locked onto the voucher.
+        # linked_advance_amount is always server-computed; the engineer's own
+        # "Advance payment received" now means an OTHER advance received
+        # outside the app and adds on top. The total advance can never fall
+        # below what the app paid, whatever a client or REST call sends.
+        self.linked_advance_amount = _s144_linked
+        if _s144_linked > 0:
+            self.advance_received = 1
+            if float(self.advance_amount or 0) + 0.005 < _s144_linked:
+                self.advance_amount = _s144_linked
+
         if self.advance_received:
             advance = float(self.advance_amount or 0)
             if advance <= 0:
@@ -305,6 +326,27 @@ class VECRMExpenseVoucher(Document):
             "from_state": "rejected",
             "to_state": "pending",
         })
+
+    def on_trash(self) -> None:
+        """S144: a voucher carrying app advances cannot be deleted; the paid
+        advance would lose the only record that recovers it."""
+        from vecrm.vecrm.utils.advance import has_links
+        if has_links(self.name) and not self.flags.vecrm_allow_advance_unlink:
+            frappe.throw(
+                _("Voucher {0} carries expense advances paid through the app and cannot "
+                  "be deleted.").format(self.name),
+                frappe.ValidationError,
+            )
+
+    def before_cancel(self) -> None:
+        """S144: same guard as on_trash for cancellation."""
+        from vecrm.vecrm.utils.advance import has_links
+        if has_links(self.name) and not self.flags.vecrm_allow_advance_unlink:
+            frappe.throw(
+                _("Voucher {0} carries expense advances paid through the app and cannot "
+                  "be cancelled.").format(self.name),
+                frappe.ValidationError,
+            )
 
     def _audit(self, event: str, payload: dict | None = None) -> None:
         """Append-only audit row in VECRM Voucher Audit Log.
@@ -529,6 +571,7 @@ def voucher_resubmit_expense(
     advance_received=None,
     advance_amount=None,
     site=None,
+    location=None,
 ) -> str:
     """Apply edits to a Rejected Expense Voucher and resubmit via doc.save().
 
@@ -587,6 +630,9 @@ def voucher_resubmit_expense(
 
     if site is not None:
         voucher.site = site
+
+    if location is not None:
+        voucher.location = location
 
     # S42: optionally update the advance declaration on a draft/rejected edit.
     # Only touched when the caller explicitly supplies it (None/"" = leave as

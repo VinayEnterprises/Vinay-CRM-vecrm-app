@@ -698,6 +698,17 @@ def _apply_advance_on_record(voucher, advance, consumed, already_drawn, reason="
     new_carry = max(0.0, advance - total)
     new_net = max(0.0, total - applied - flt(consumed))
 
+    # S144: advances paid through the app are locked onto the voucher. An
+    # Accounts override (or a clear) may raise the advance, never take it
+    # below what the app paid; the payer's recorded payment is the fact.
+    from vecrm.vecrm.utils.advance import linked_total
+    _s144_linked = linked_total(voucher.name)
+    if advance + 0.005 < _s144_linked:
+        frappe.throw(
+            f"Cannot set the advance on {voucher.name} to ₹{advance}: ₹{_s144_linked} was "
+            f"paid to the employee through the app as expense advances on this voucher."
+        )
+
     if new_carry + 0.005 < flt(already_drawn):
         frappe.throw(
             f"Cannot set the advance on {voucher.name} to ₹{advance}: that leaves a "

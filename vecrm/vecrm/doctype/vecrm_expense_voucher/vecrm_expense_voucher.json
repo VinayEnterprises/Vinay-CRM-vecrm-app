@@ -13,9 +13,11 @@
     "submitter_role",
     "expense_date",
     "site",
+    "location",
     "fy_label",
     "expense_lines",
     "total_amount",
+    "linked_advance_amount",
     "advance_received",
     "advance_amount",
     "net_payable",
@@ -71,6 +73,13 @@
       "length": 140
     },
     {
+      "fieldname": "location",
+      "fieldtype": "Data",
+      "label": "Location",
+      "length": 140,
+      "description": "S144: trip location, carried from the expense advance."
+    },
+    {
       "fieldname": "fy_label",
       "fieldtype": "Data",
       "label": "FY (snapshot)",
@@ -94,6 +103,14 @@
       "read_only": 1,
       "description": "Sum of expense_lines.amount. Computed in validate().",
       "allow_on_submit": 1
+    },
+    {
+      "fieldname": "linked_advance_amount",
+      "fieldtype": "Currency",
+      "label": "Advances Paid Through the App (₹)",
+      "read_only": 1,
+      "default": "0",
+      "description": "S144: sum of paid VECRM Advance Requests linked to this voucher. Server-computed and locked; advance_amount can never be below it."
     },
     {
       "fieldname": "advance_received",
@@ -258,7 +275,7 @@
   ],
   "idx": 0,
   "links": [],
-  "modified": "2026-06-22 00:00:00.000000",
+  "modified": "2026-09-25 00:00:00.000000",
   "modified_by": "Administrator",
   "module": "VECRM",
   "name": "VECRM Expense Voucher",

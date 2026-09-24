@@ -1,0 +1,259 @@
+{
+  "actions": [],
+  "allow_rename": 0,
+  "autoname": "",
+  "naming_rule": "",
+  "creation": "2026-09-25 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "employee",
+    "employee_name",
+    "employee_role",
+    "status",
+    "trip_type",
+    "parent_advance",
+    "site",
+    "location",
+    "purpose",
+    "travel_from",
+    "travel_to",
+    "amount",
+    "fy_label",
+    "sb_request",
+    "requested_by",
+    "requested_by_role",
+    "requested_at",
+    "sb_decision",
+    "decided_by",
+    "decided_by_role",
+    "decided_at",
+    "decision_notes",
+    "sb_payment",
+    "paid_amount",
+    "payment_ref",
+    "paid_by",
+    "paid_by_role",
+    "paid_at",
+    "decline_reason",
+    "voucher",
+    "cancelled_by",
+    "cancelled_at"
+  ],
+  "fields": [
+    {
+      "fieldname": "employee",
+      "fieldtype": "Link",
+      "label": "Employee",
+      "options": "VECRM Employee",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "employee_name",
+      "fieldtype": "Data",
+      "label": "Employee Name",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "employee_role",
+      "fieldtype": "Data",
+      "label": "Employee Role"
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Pending Approval\nApproved\nPaid\nRejected\nPayment Declined\nCancelled",
+      "default": "Pending Approval",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "trip_type",
+      "fieldtype": "Select",
+      "label": "Trip",
+      "options": "New trip\nTop-up",
+      "default": "New trip",
+      "reqd": 1
+    },
+    {
+      "fieldname": "parent_advance",
+      "fieldtype": "Link",
+      "label": "Top-up of",
+      "options": "VECRM Advance Request"
+    },
+    {
+      "fieldname": "site",
+      "fieldtype": "Data",
+      "label": "Site",
+      "reqd": 1,
+      "length": 140
+    },
+    {
+      "fieldname": "location",
+      "fieldtype": "Data",
+      "label": "Location",
+      "reqd": 1,
+      "length": 140
+    },
+    {
+      "fieldname": "purpose",
+      "fieldtype": "Small Text",
+      "label": "Purpose",
+      "reqd": 1
+    },
+    {
+      "fieldname": "travel_from",
+      "fieldtype": "Date",
+      "label": "Travel From",
+      "reqd": 1
+    },
+    {
+      "fieldname": "travel_to",
+      "fieldtype": "Date",
+      "label": "Travel To",
+      "reqd": 1
+    },
+    {
+      "fieldname": "amount",
+      "fieldtype": "Currency",
+      "label": "Amount Requested",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "fy_label",
+      "fieldtype": "Data",
+      "label": "FY",
+      "read_only": 1
+    },
+    {
+      "fieldname": "sb_request",
+      "fieldtype": "Section Break",
+      "label": "Request"
+    },
+    {
+      "fieldname": "requested_by",
+      "fieldtype": "Link",
+      "label": "Requested By",
+      "options": "VECRM Employee"
+    },
+    {
+      "fieldname": "requested_by_role",
+      "fieldtype": "Data",
+      "label": "Requested By Role"
+    },
+    {
+      "fieldname": "requested_at",
+      "fieldtype": "Datetime",
+      "label": "Requested At"
+    },
+    {
+      "fieldname": "sb_decision",
+      "fieldtype": "Section Break",
+      "label": "Approval"
+    },
+    {
+      "fieldname": "decided_by",
+      "fieldtype": "Link",
+      "label": "Decided By",
+      "options": "VECRM Employee"
+    },
+    {
+      "fieldname": "decided_by_role",
+      "fieldtype": "Data",
+      "label": "Decided By Role"
+    },
+    {
+      "fieldname": "decided_at",
+      "fieldtype": "Datetime",
+      "label": "Decided At"
+    },
+    {
+      "fieldname": "decision_notes",
+      "fieldtype": "Small Text",
+      "label": "Decision Notes"
+    },
+    {
+      "fieldname": "sb_payment",
+      "fieldtype": "Section Break",
+      "label": "Payment"
+    },
+    {
+      "fieldname": "paid_amount",
+      "fieldtype": "Currency",
+      "label": "Paid Amount",
+      "default": "0"
+    },
+    {
+      "fieldname": "payment_ref",
+      "fieldtype": "Data",
+      "label": "UPI / Payment Reference",
+      "length": 64
+    },
+    {
+      "fieldname": "paid_by",
+      "fieldtype": "Link",
+      "label": "Paid By",
+      "options": "VECRM Employee"
+    },
+    {
+      "fieldname": "paid_by_role",
+      "fieldtype": "Data",
+      "label": "Paid By Role"
+    },
+    {
+      "fieldname": "paid_at",
+      "fieldtype": "Datetime",
+      "label": "Paid At"
+    },
+    {
+      "fieldname": "decline_reason",
+      "fieldtype": "Small Text",
+      "label": "Payment Decline Reason"
+    },
+    {
+      "fieldname": "voucher",
+      "fieldtype": "Link",
+      "label": "Expense Voucher",
+      "options": "VECRM Expense Voucher"
+    },
+    {
+      "fieldname": "cancelled_by",
+      "fieldtype": "Link",
+      "label": "Cancelled By",
+      "options": "VECRM Employee"
+    },
+    {
+      "fieldname": "cancelled_at",
+      "fieldtype": "Datetime",
+      "label": "Cancelled At"
+    }
+  ],
+  "idx": 0,
+  "links": [],
+  "modified": "2026-09-25 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "VECRM",
+  "name": "VECRM Advance Request",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "read": 1,
+      "role": "System Manager",
+      "print": 1,
+      "export": 1
+    },
+    {
+      "read": 1,
+      "role": "VECRM Admin"
+    }
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC",
+  "states": [],
+  "track_changes": 1,
+  "title_field": "employee_name"
+}

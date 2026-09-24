@@ -354,7 +354,7 @@ def voucher_resubmit_travel(
 def voucher_resubmit_expense(
 	voucher_name: str, expense_lines: str, expense_date: str = "",
 	advance_received: str = "", advance_amount: str = "",
-	site: str = ""
+	site: str = "", location: str = ""
 ) -> str:
 	"""Submitter or admin edits a Rejected Expense Voucher in place and resubmits.
 
@@ -392,7 +392,8 @@ def voucher_resubmit_expense(
 	return _resubmit(
 		voucher, expense_lines, expense_date or None,
 		advance_received or None, advance_amount or None,
-		site=site if site != "" else None
+		site=site if site != "" else None,
+		location=location if location != "" else None,
 	)
 
 
@@ -752,6 +753,7 @@ def create_expense_voucher_draft(
 	advance_received: str = "",
 	advance_amount: str = "",
 	site: str = "",
+	location: str = "",
 ) -> dict:
 	"""Create a VECRM Expense Voucher in DRAFT state (docstatus=0).
 
@@ -849,6 +851,7 @@ def create_expense_voucher_draft(
 	doc.submitter = submitter
 	doc.expense_date = expense_date
 	doc.site = site
+	doc.location = location  # S144
 
 	# S42 advance payment (submitter-declared, editable while Draft). The
 	# controller's validate() enforces advance_amount <= total_amount and
@@ -878,6 +881,7 @@ def create_expense_voucher_draft(
 		"submitter_role": doc.submitter_role,
 		"expense_date": str(doc.expense_date),
 		"site": doc.site,
+		"location": doc.get("location"),
 		"fy_label": doc.fy_label,
 		"total_amount": doc.total_amount,
 		"advance_received": doc.advance_received,
@@ -931,6 +935,15 @@ def submit_expense_voucher_draft(voucher_name: str) -> dict:
 
 	# Reuse PR #43 helper: only the submitter (or admin) may submit.
 	_require_voucher_submitter_self_or_admin(doc.submitter)
+
+	# S144: a draft created by an app advance was dated to the trip start
+	# (travel_from) before any line existed. On submit it takes the date of
+	# its latest line, so it lands in the payout cycle of the spend it claims.
+	from vecrm.vecrm.utils.advance import linked_total as _s144_linked_total
+	if _s144_linked_total(doc.name) > 0:
+		_s144_dates = [l.expense_date for l in (doc.expense_lines or []) if l.expense_date]
+		if _s144_dates:
+			doc.expense_date = max(frappe.utils.getdate(d) for d in _s144_dates)
 
 	# Bi-monthly cutoff re-check (PD-S29-BACKFILL-PREVENTION). Draft may
 	# have been created during an open window and now sit past deadline.
@@ -8676,3 +8689,69 @@ def declare_no_petrol_claim(period_key: str = "", source: str = "Portal") -> dic
     data = frappe.session.data or {}
     return declare_no_claim(data.get("vecrm_employee_phone"),
                             data.get("vecrm_employee_role"), period_key, source)
+
+
+# S144: expense advances tied to expense vouchers. All logic lives in
+# vecrm.vecrm.utils.advance; these wrappers only expose it. Identity and role
+# are read from the session phone and re-read LIVE from VECRM Employee there.
+@frappe.whitelist(methods=["GET"])
+def get_my_advances() -> list:
+    from vecrm.vecrm.utils.advance import list_mine
+    return list_mine()
+
+
+@frappe.whitelist(methods=["GET"])
+def get_advance_queue() -> dict:
+    from vecrm.vecrm.utils.advance import list_queue
+    return list_queue()
+
+
+@frappe.whitelist(methods=["GET"])
+def get_advance_request(name: str) -> dict:
+    from vecrm.vecrm.utils.advance import get_one
+    return get_one(name)
+
+
+@frappe.whitelist(methods=["GET"])
+def get_advance_open_trips(employee: str = "") -> list:
+    from vecrm.vecrm.utils.advance import open_trips
+    return open_trips(employee)
+
+
+@frappe.whitelist(methods=["GET"])
+def get_voucher_advances(voucher_name: str) -> dict:
+    from vecrm.vecrm.utils.advance import voucher_advances
+    return voucher_advances(voucher_name)
+
+
+@frappe.whitelist(methods=["POST"])
+def request_expense_advance(amount, purpose: str = "", site: str = "", location: str = "",
+                            travel_from: str = "", travel_to: str = "", employee: str = "",
+                            parent_advance: str = "") -> dict:
+    from vecrm.vecrm.utils.advance import request_advance
+    return request_advance(amount, purpose, site, location, travel_from, travel_to,
+                           employee=employee, parent_advance=parent_advance)
+
+
+@frappe.whitelist(methods=["POST"])
+def decide_expense_advance(name: str, action: str, notes: str = "") -> dict:
+    from vecrm.vecrm.utils.advance import decide_advance
+    return decide_advance(name, action, notes)
+
+
+@frappe.whitelist(methods=["POST"])
+def pay_expense_advance(name: str, paid_amount: str = "", payment_ref: str = "") -> dict:
+    from vecrm.vecrm.utils.advance import pay_advance
+    return pay_advance(name, paid_amount if paid_amount != "" else None, payment_ref)
+
+
+@frappe.whitelist(methods=["POST"])
+def decline_expense_advance_payment(name: str, reason: str = "") -> dict:
+    from vecrm.vecrm.utils.advance import decline_payment
+    return decline_payment(name, reason)
+
+
+@frappe.whitelist(methods=["POST"])
+def cancel_expense_advance(name: str) -> dict:
+    from vecrm.vecrm.utils.advance import cancel_advance
+    return cancel_advance(name)

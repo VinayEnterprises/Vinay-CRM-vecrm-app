@@ -165,6 +165,12 @@ def voucher_period_reminder():
 		run_daily()
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "voucher_due.run_daily")
+	# S144: expense advance chase, Accounts list and audit summary.
+	try:
+		from vecrm.vecrm.utils.advance import run_daily as _advance_daily
+		_advance_daily()
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "advance.run_daily")
 	_voucher_period_push()
 
 
