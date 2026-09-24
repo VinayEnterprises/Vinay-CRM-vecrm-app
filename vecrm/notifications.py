@@ -158,6 +158,17 @@ def daily_lead_reminder():
 
 
 def voucher_period_reminder():
+	"""S143: daily 10:00 entry point (hooks unchanged). Runs the voucher-due
+	mails first (they self-gate on the date), then the S133 push reminder."""
+	try:
+		from vecrm.vecrm.utils.voucher_due import run_daily
+		run_daily()
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "voucher_due.run_daily")
+	_voucher_period_push()
+
+
+def _voucher_period_push():
 	"""Voucher fill reminder — only fires on specific dates."""
 	from datetime import date, timedelta
 	import calendar
@@ -536,6 +547,11 @@ def notify_voucher_submitted(doc, method):
 				)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications.notify_voucher_submitted")
+	try:
+		from vecrm.vecrm.utils.voucher_due import send_submission_hod_mail
+		send_submission_hod_mail(doc)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "voucher_due.send_submission_hod_mail")
 
 
 def stale_inquiry_reminder():

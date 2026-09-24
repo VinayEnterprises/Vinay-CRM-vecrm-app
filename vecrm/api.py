@@ -213,6 +213,11 @@ def mark_travel_voucher_paid(voucher_name: str) -> dict:
 		notify_voucher_outcome(doc, "Paid")
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "mark_travel_voucher_paid.notify")
+	try:
+		from vecrm.vecrm.utils.voucher_due import send_paid_mail_single
+		send_paid_mail_single(doc)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "mark_travel_voucher_paid.paid_mail")
 
 	return {"status": "ok", "voucher_name": voucher_name}
 
@@ -252,6 +257,11 @@ def mark_expense_voucher_paid(voucher_name: str) -> dict:
 		notify_voucher_outcome(doc, "Paid")
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "mark_expense_voucher_paid.notify")
+	try:
+		from vecrm.vecrm.utils.voucher_due import send_paid_mail_single
+		send_paid_mail_single(doc)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "mark_expense_voucher_paid.paid_mail")
 
 	return {"status": "ok", "voucher_name": voucher_name}
 
@@ -4540,6 +4550,13 @@ def s2s_suspend_employee(vecrm_employee: str = "") -> dict[str, Any]:
 		return {"success": True, "already_suspended": True, "vecrm_employee": vid}
 	frappe.db.set_value("VECRM Employee", vid, "vecrm_account_status", "Suspended")
 	frappe.db.commit()
+	# S143: a suspended login keeps no live session (db.set_value skips on_update).
+	try:
+		from vecrm.vecrm.doctype.vecrm_employee.vecrm_employee import end_employee_sessions
+		end_employee_sessions(frappe.db.get_value("VECRM Employee", vid, "vecrm_phone") or vid, "suspended")
+		frappe.db.commit()
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "s2s_suspend_employee.end_sessions")
 	return {"success": True, "suspended": vid, "prev_status": cur}
 
 
@@ -8641,3 +8658,21 @@ def partner_lead_set_fee_slab(name=None, fee_slab_field=None, fee_slab_value=Non
     if not isinstance(data, dict) or not data.get("ok"):
         _partner_triage_fail(res)
     return data
+
+
+# S143 W2: voucher-due pop-up read and the "No petrol claim" declaration.
+@frappe.whitelist(methods=["GET"])
+def get_my_voucher_due() -> dict[str, Any]:
+    """Pop-up state for the signed-in employee (W2 roles, pop-up days only)."""
+    from vecrm.vecrm.utils.voucher_due import get_due
+    data = frappe.session.data or {}
+    return get_due(data.get("vecrm_employee_phone"), data.get("vecrm_employee_role"))
+
+
+@frappe.whitelist(methods=["POST"])
+def declare_no_petrol_claim(period_key: str = "", source: str = "Portal") -> dict[str, Any]:
+    """Self only: record "No petrol claim this period" for the current period."""
+    from vecrm.vecrm.utils.voucher_due import declare_no_claim
+    data = frappe.session.data or {}
+    return declare_no_claim(data.get("vecrm_employee_phone"),
+                            data.get("vecrm_employee_role"), period_key, source)

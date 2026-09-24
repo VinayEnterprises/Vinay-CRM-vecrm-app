@@ -1,0 +1,77 @@
+{
+  "actions": [],
+  "allow_rename": 0,
+  "autoname": "hash",
+  "creation": "2026-09-24 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "employee",
+    "employee_name",
+    "period_key",
+    "declared_at",
+    "source"
+  ],
+  "fields": [
+    {
+      "fieldname": "employee",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "label": "Employee",
+      "options": "VECRM Employee",
+      "reqd": 1,
+      "description": "The employee declaring no petrol claim (VECRM Employee name, the phone key)."
+    },
+    {
+      "fieldname": "employee_name",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Employee Name"
+    },
+    {
+      "fieldname": "period_key",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Period",
+      "reqd": 1,
+      "description": "Half-month key, e.g. 2026-09-H2. One declaration per employee per period."
+    },
+    {
+      "fieldname": "declared_at",
+      "fieldtype": "Datetime",
+      "in_list_view": 1,
+      "label": "Declared At",
+      "reqd": 1
+    },
+    {
+      "fieldname": "source",
+      "fieldtype": "Select",
+      "label": "Source",
+      "options": "Portal\nApp",
+      "default": "Portal"
+    }
+  ],
+  "idx": 0,
+  "links": [],
+  "modified": "2026-09-24 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "VECRM",
+  "name": "VECRM Voucher Declaration",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "read": 1,
+      "role": "System Manager",
+      "print": 1,
+      "export": 1
+    },
+    {
+      "read": 1,
+      "role": "VECRM Admin"
+    }
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC",
+  "states": []
+}

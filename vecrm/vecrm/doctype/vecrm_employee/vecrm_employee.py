@@ -7,6 +7,15 @@ from frappe.model.document import Document
 
 
 class VECRMEmployee(Document):
+	def on_update(self):
+		# S143: a role or account-status change ends this employee's live
+		# portal sessions, so no session keeps acting on the old role.
+		before = self.get_doc_before_save()
+		if not before:
+			return
+		if before.role != self.role or before.vecrm_account_status != self.vecrm_account_status:
+			end_employee_sessions(self.vecrm_phone or self.name, "role or status changed")
+
 	def validate(self):
 		self._validate_phone_immutable()
 		self._validate_base_city_in_rate_card()
@@ -44,3 +53,40 @@ class VECRMEmployee(Document):
 					"Add the city + rate to the Rate Card before provisioning this employee."
 				).format(city)
 			)
+
+
+def end_employee_sessions(phone, reason):
+	"""S143 (Rule E). Delete the live sessions of ONE VECRM employee. Every
+	portal session shares one Frappe user, so sessions are matched on the
+	vecrm_employee_phone stored in each session's data, exactly (an OFFB key
+	never matches); clear_sessions(user) would log everyone out. The audit
+	row commits (via _audit_auth). Returns the count ended."""
+	import ast
+
+	phone = (phone or "").strip()
+	if not phone:
+		return 0
+	rows = frappe.db.sql(
+		"SELECT sid, sessiondata FROM `tabSessions` WHERE sessiondata LIKE %s",
+		("%" + phone + "%",),
+		as_dict=True,
+	)
+	ended = []
+	for r in rows:
+		try:
+			data = ast.literal_eval(r.sessiondata or "{}")
+		except Exception:
+			continue
+		if not isinstance(data, dict) or data.get("vecrm_employee_phone") != phone:
+			continue
+		frappe.cache().hdel("session", r.sid)
+		frappe.db.delete("Sessions", {"sid": r.sid})
+		ended.append(r.sid[:8])
+	if ended:
+		try:
+			from vecrm.api import _audit_auth
+			_audit_auth("auth.sessions_ended", employee=phone, reason=reason,
+				extra={"count": len(ended), "sids": ended})
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "end_employee_sessions.audit")
+	return len(ended)

@@ -20,13 +20,15 @@ VOUCHER_LAST_DATA_COL = 13          # S73: last written column (see _write)
 VE_COMPANY = "Vinay Enterprises"
 VECS_COMPANY = "VECS"
 
-# Voucher VECS clubbed line credits the VECS YES BANK account (NOT the Axis
-# account salary uses). NEFT is chosen automatically because YESB != KKBK.
+# Voucher VECS clubbed line credits VE Computer Services' YES BANK account,
+# the same account payroll pays (vehrms kotak_cms._YES_BANK). S143, ruled
+# 24 Sep 2026: the old account 010127000001070 (YESB0000101) is retired.
+# NEFT is chosen automatically because YESB != KKBK.
 VECS_BANK_DETAILS = {
     "beneficiary_name": "VE COMPUTER SERVICES",
-    "beneficiary_bank": "YES BANK",
-    "ifsc_code": "YESB0000101",
-    "account_no": "010127000001070",
+    "beneficiary_bank": "YES BANK LTD",
+    "ifsc_code": "YESB0000007",
+    "account_no": "000763400008636",
 }
 
 VOUCHER_TYPES = (
@@ -467,6 +469,8 @@ def mark_voucher_targets_paid(targets):
         "VECRM Expense Voucher": mark_expense_voucher_paid,
     }
     marked, already_paid, missing, not_eligible = [], [], [], []
+    # S143: one grouped paid mail per employee after the loop, not one per voucher.
+    frappe.flags.vecrm_bulk_paid = True
 
     for dt, names in targets.items():
         fn = fns.get(dt)
@@ -486,6 +490,13 @@ def mark_voucher_targets_paid(targets):
                 continue
             fn(name)  # canonical single-voucher mark-paid (db_set + audit + notify)
             marked.append({"type": dt, "name": name, "amount": float(doc.total_amount or 0)})
+
+    frappe.flags.vecrm_bulk_paid = False
+    try:
+        from vecrm.vecrm.utils.voucher_due import send_paid_mail_bulk
+        send_paid_mail_bulk(marked)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "mark_voucher_targets_paid.paid_mail")
 
     return {
         "marked_count": len(marked),
