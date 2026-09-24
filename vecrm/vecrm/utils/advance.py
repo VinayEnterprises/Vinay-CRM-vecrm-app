@@ -426,6 +426,11 @@ def attach_to_voucher(doc) -> str:
         ev.advance_amount = 0
         ev.flags.vecrm_advance_draft = True
         ev.flags.ignore_permissions = True
+        # expense_lines is reqd in the voucher JSON; this draft starts empty on
+        # purpose. Skip only the mandatory check for this insert: the controller
+        # validate still runs and still refuses zero lines without the flag, and
+        # submit (docstatus 1) needs lines regardless.
+        ev.flags.ignore_mandatory = True
         ev.insert()
         target = ev.name
     doc.db_set("voucher", target, update_modified=False)
@@ -446,6 +451,8 @@ def refresh_voucher_advance(voucher_name: str) -> dict:
     ev.advance_amount = new_linked + other
     ev.flags.vecrm_advance_draft = True
     ev.flags.ignore_permissions = True
+    if not ev.expense_lines:
+        ev.flags.ignore_mandatory = True
     ev.save()
     return {"voucher": voucher_name, "linked": new_linked, "other": other}
 
