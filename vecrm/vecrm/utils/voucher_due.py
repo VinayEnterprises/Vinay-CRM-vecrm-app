@@ -323,29 +323,27 @@ def _window_day(today: date, w: dict, dry_run: bool, log: list) -> dict:
         rows.append((e, st))
     unfiled = [(e, st) for e, st in rows if st["state"] in ("none", "draft")]
 
+    from vecrm.vecrm.utils.lang import lang_of_phone, t
+
     reminded = []
     for e, st in unfiled:
         if not e.vecrm_email:
             continue
+        lg = lang_of_phone(e.name)  # S145b: in the engineer's language
         if st["state"] == "draft":
-            status = "is still a draft with %d line(s). A draft is not filed until you submit it." % st.get("lines", 0)
+            status = t("vd.rem.draft", lg, label=_esc(label), n=st.get("lines", 0))
         else:
-            status = "has not been filed yet."
-        if today == otd:
-            timing = ("The submission window opens tonight at 9 pm. File tonight to be recorded "
-                      "as on time.")
-        else:
-            timing = "Filing now is recorded as Late."
+            status = t("vd.rem.none", lg, label=_esc(label))
+        timing = t("vd.rem.ontime" if today == otd else "vd.rem.late", lg)
         body = (
-            _p("Hi %s," % _esc(e.employee_name))
-            + _p("Your petrol voucher for %s %s" % (_esc(label), _esc(status)))
-            + _p("The window closes on %s at 11:59 pm. %s" % (_esc(_fmt_day(deadline)), _esc(timing)))
-            + _p("Open it here: %s" % _link(PETROL_URL, "Petrol vouchers"))
-            + _p("If you had no petrol spend this period, open the Anusuya app and tap "
-                 "\"No petrol claim this period\" so you are not reminded again.")
+            _p(t("hi_name", lg, name=_esc(e.employee_name)))
+            + _p(status)
+            + _p(t("vd.rem.close", lg, date=_esc(_fmt_day(deadline))) + " " + timing)
+            + _p(t("vd.rem.open", lg, link=_link(PETROL_URL, t("vd.link.petrol", lg))))
+            + _p(_esc(t("vd.rem.noclaim", lg)))
         )
-        if _send(e.vecrm_email, "Petrol voucher due by %s: %s" % (_fmt_day(deadline), label),
-                 body, "Petrol voucher due", dry_run, log):
+        if _send(e.vecrm_email, t("vd.rem.subject", lg, deadline=_fmt_day(deadline), label=label),
+                 body, t("vd.rem.pre", lg), dry_run, log):
             reminded.append(e.employee_name)
         elif dry_run:
             reminded.append(e.employee_name)
@@ -360,20 +358,20 @@ def _window_day(today: date, w: dict, dry_run: bool, log: list) -> dict:
             for head in _people_in_roles([hr]):
                 if not head.vecrm_email:
                     continue
-                table = _table(["Name", "Role", "Status"], [
+                hl = lang_of_phone(head.name)  # S145b: in the head's language
+                table = _table([t("col.name", hl), t("col.role", hl), t("col.status", hl)], [
                     (m.employee_name, m.role,
-                     "Draft, %d line(s), not submitted" % s.get("lines", 0) if s["state"] == "draft"
-                     else "Not filed")
+                     t("vd.hod.st_draft", hl, n=s.get("lines", 0)) if s["state"] == "draft"
+                     else t("vd.hod.st_none", hl))
                     for m, s in members])
                 body = (
-                    _p("Hi %s," % _esc(head.employee_name))
-                    + _p("These people in your team have not filed their petrol voucher for %s. "
-                         "The window closes on %s at 11:59 pm." % (_esc(label), _esc(_fmt_day(deadline))))
+                    _p(t("hi_name", hl, name=_esc(head.employee_name)))
+                    + _p(t("vd.hod.body", hl, label=_esc(label), date=_esc(_fmt_day(deadline))))
                     + table
-                    + _p(_link(OVERVIEW_URL, "Open the voucher overview"))
+                    + _p(_link(OVERVIEW_URL, t("vd.link.overview", hl)))
                 )
-                _send(head.vecrm_email, "Petrol vouchers not filed: %s (%d)" % (label, len(members)),
-                      body, "Petrol vouchers not filed", dry_run, log)
+                _send(head.vecrm_email, t("vd.hod.subject", hl, label=label, n=len(members)),
+                      body, t("vd.hod.pre", hl), dry_run, log)
                 hod_mails.append({"to": head.employee_name, "count": len(members)})
 
     filed = [e.employee_name for e, st in rows if st["state"] == "submitted"]
@@ -442,17 +440,20 @@ def send_submission_hod_mail(doc, dry_run: bool = False) -> list:
     heads = [h for h in _people_in_roles(head_roles_for(role)) if h.name != submitter]
     if not heads:
         return log
+    from vecrm.vecrm.utils.lang import lang_of_phone, t
+
     who = frappe.db.get_value("VECRM Employee", submitter, "employee_name") or submitter
     kind = "petrol" if doc.doctype == "VECRM Travel Voucher" else "expense"
     for h in heads:
         if not h.vecrm_email:
             continue
-        body = (_p("Hi %s," % _esc(h.employee_name))
-                + _p("%s has submitted %s voucher %s for %s." % (
-                    _esc(who), kind, _esc(doc.name), _esc(_inr(doc.total_amount))))
-                + _p(_link(OVERVIEW_URL, "Review it in the voucher overview")))
-        _send(h.vecrm_email, "%s submitted a %s voucher: %s" % (who, kind, doc.name), body,
-              "Voucher submitted", dry_run, log)
+        hl = lang_of_phone(h.name)  # S145b: in the head's language
+        body = (_p(t("hi_name", hl, name=_esc(h.employee_name)))
+                + _p(t("vd.sub.body." + kind, hl, who=_esc(who), name=_esc(doc.name),
+                       amount=_esc(_inr(doc.total_amount))))
+                + _p(_link(OVERVIEW_URL, t("vd.link.review", hl))))
+        _send(h.vecrm_email, t("vd.sub.subject." + kind, hl, who=who, name=doc.name), body,
+              t("vd.sub.pre", hl), dry_run, log)
     return log
 
 
@@ -483,33 +484,35 @@ def _paid_mail(submitter: str, items: list, dry_run: bool, log: list) -> None:
     email = frappe.db.get_value("VECRM Employee", submitter, "vecrm_email")
     if not email or not items:
         return
+    from vecrm.vecrm.utils.lang import lang_of_phone, t
+
+    lg = lang_of_phone(submitter)  # S145b: in the submitter's language
     who = frappe.db.get_value("VECRM Employee", submitter, "employee_name") or submitter
     paid = [i for i in items if i["paid"] > 0]
     settled = [i for i in items if i["paid"] <= 0]
     total_paid = sum(i["paid"] for i in paid)
-    body = _p("Hi %s," % _esc(who))
+    body = _p(t("hi_name", lg, name=_esc(who)))
     if paid:
-        body += (_p("%s has been paid to your bank account for the voucher(s) below."
-                    % _esc(_inr(total_paid)))
-                 + _table(["Voucher", "Type", "Approved", "Advance deducted", "Paid"],
-                          [(i["name"], i["kind"], _inr(i["approved"]),
+        body += (_p(t("vd.paid.lead", lg, amount=_esc(_inr(total_paid))))
+                 + _table([t("col.voucher", lg), t("col.type", lg), t("col.approved", lg),
+                           t("col.advance_deducted", lg), t("col.paid", lg)],
+                          [(i["name"], t("kind." + i["kind"], lg), _inr(i["approved"]),
                             _inr(i["deducted"]) if i["deducted"] else "-", _inr(i["paid"]))
                            for i in paid]))
     if settled:
-        body += (_p("The voucher(s) below were fully covered by the advance you had already "
-                    "received, so no bank payment was made for them.")
-                 + _table(["Voucher", "Type", "Approved", "Covered by advance"],
-                          [(i["name"], i["kind"], _inr(i["approved"]), _inr(i["deducted"]))
+        body += (_p(_esc(t("vd.paid.settled", lg)))
+                 + _table([t("col.voucher", lg), t("col.type", lg), t("col.approved", lg),
+                           t("col.covered", lg)],
+                          [(i["name"], t("kind." + i["kind"], lg), _inr(i["approved"]), _inr(i["deducted"]))
                            for i in settled]))
     if any(i["deducted"] for i in items):
-        body += _p("Advance deducted is the advance you had already received against that "
-                   "voucher, including any balance carried forward from an earlier trip.")
-    body += _p(_link(PETROL_URL, "See your vouchers"))
+        body += _p(_esc(t("vd.paid.note", lg)))
+    body += _p(_link(PETROL_URL, t("vd.link.vouchers", lg)))
     if paid:
-        subject = "Voucher payment: %s paid" % _inr(total_paid)
+        subject = t("vd.paid.subject", lg, amount=_inr(total_paid))
     else:
-        subject = "Voucher settled against your advance: %s" % ", ".join(i["name"] for i in settled)
-    _send(email, subject, body, "Voucher payment", dry_run, log)
+        subject = t("vd.paid.subject_settled", lg, names=", ".join(i["name"] for i in settled))
+    _send(email, subject, body, t("vd.paid.pre", lg), dry_run, log)
 
 
 def send_paid_mail_single(doc, dry_run: bool = False) -> list:

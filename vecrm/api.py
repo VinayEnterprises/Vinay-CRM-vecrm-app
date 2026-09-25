@@ -2425,6 +2425,8 @@ def get_session_employee() -> dict[str, Any]:
         "role": employee_doc.role,
         "base_city": employee_doc.vecrm_base_city,
         "login_path": frappe.session.data.get("vecrm_login_path"),
+        # S145b: saved language for mails and pushes; the portal follows it.
+        "preferred_language": employee_doc.get("preferred_language") or "en",
     }
 
 
@@ -8755,3 +8757,60 @@ def decline_expense_advance_payment(name: str, reason: str = "") -> dict:
 def cancel_expense_advance(name: str) -> dict:
     from vecrm.vecrm.utils.advance import cancel_advance
     return cancel_advance(name)
+
+
+# S145b: saved language per employee (English, Hindi, Gujarati). Mails and
+# pushes to that employee follow it (vecrm.vecrm.utils.lang); the portal
+# language switch writes it; VEHRMS reads it over S2S for its own mails.
+def _s145_lang(language) -> str:
+    from vecrm.vecrm.utils.lang import LANGS
+    lang = (language or "").strip().lower()
+    if lang not in LANGS:
+        frappe.throw(frappe._("Language must be one of: {0}.").format(", ".join(LANGS)),
+                     frappe.ValidationError)
+    return lang
+
+
+@frappe.whitelist(methods=["POST"])
+def set_my_language(language: str = "") -> dict:
+    """Self only: save the signed-in employee's language."""
+    lang = _s145_lang(language)
+    phone = (frappe.session.data or {}).get("vecrm_employee_phone")
+    if not phone or not frappe.db.exists("VECRM Employee", phone):
+        frappe.throw(frappe._("Please sign in again."), frappe.PermissionError)
+    frappe.db.set_value("VECRM Employee", phone, "preferred_language", lang, update_modified=False)
+    frappe.db.commit()
+    return {"employee": phone,
+            "preferred_language": frappe.db.get_value("VECRM Employee", phone, "preferred_language")}
+
+
+@frappe.whitelist(methods=["POST"])
+def set_employee_language(employee: str = "", language: str = "") -> dict:
+    """HR, Head of Accounts & HR or Admin: set someone's language for them."""
+    _require_hr_or_admin()
+    lang = _s145_lang(language)
+    if not employee or not frappe.db.exists("VECRM Employee", employee):
+        frappe.throw(frappe._("Employee {0} not found.").format(employee), frappe.DoesNotExistError)
+    frappe.db.set_value("VECRM Employee", employee, "preferred_language", lang, update_modified=False)
+    frappe.db.commit()
+    return {"employee": employee,
+            "preferred_language": frappe.db.get_value("VECRM Employee", employee, "preferred_language")}
+
+
+@frappe.whitelist(methods=["POST"])
+def s2s_get_employee_languages(phones=None) -> dict:
+    """S2S (VEHRMS): saved language per VECRM Employee id. Unknown or unset -> "en"."""
+    _require_integration()
+    if isinstance(phones, str):
+        try:
+            phones = json.loads(phones)
+        except Exception:
+            phones = [phones]
+    phones = [str(p).strip() for p in (phones or []) if str(p).strip()][:500]
+    from vecrm.vecrm.utils.lang import norm
+    found = {}
+    if phones:
+        for r in frappe.get_all("VECRM Employee", filters={"name": ["in", phones]},
+                                fields=["name", "preferred_language"], ignore_permissions=True):
+            found[r.name] = norm(r.preferred_language)
+    return {"languages": {p: found.get(p, "en") for p in phones}}

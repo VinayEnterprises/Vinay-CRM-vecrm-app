@@ -89,14 +89,11 @@ def notify_voucher_outcome(doc, status_word):
 		submitter_email = _employee_email(getattr(doc, "submitter", None))
 		if not submitter_email:
 			return
-		title = f"Voucher {status_word}"
-		body = f"Your voucher {doc.name} was {status_word.lower()}"
+		# S145b: in the submitter's language.
+		from vecrm.vecrm.utils.lang import push_to_email
 		payload = {"screen": "vouchers", "voucher": doc.name, "doctype": doc.doctype}
-		tokens = _tokens_for_user(submitter_email)
-		if tokens:
-			send_push(tokens, title, body, payload)
-		else:
-			_log_notification(submitter_email, title, body, payload)
+		push_to_email(submitter_email, "push.voucher.%s.title" % status_word,
+					  "push.voucher.%s.body" % status_word, payload, name=doc.name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications.notify_voucher_outcome")
 
@@ -148,11 +145,11 @@ def _tokens_for_lead_audience():
 
 def daily_lead_reminder():
 	"""Daily nudge to log leads/meeting notes (sales-side roles only)."""
+	from vecrm.vecrm.utils.lang import push_tokens_by_language, t
 	tokens = _tokens_for_lead_audience()
-	send_push(
+	push_tokens_by_language(
 		tokens,
-		"Log today's meetings",
-		"Don't forget to add any leads or meeting notes in Anusuya Workspace.",
+		lambda lang: (t("push.lead_day.title", lang), t("push.lead_day.body", lang)),
 		{"screen": "leads"},
 	)
 
@@ -187,40 +184,34 @@ def _voucher_period_push():
 	#            remind on last_day-1, last_day, and 1-5 of next month.
 	# Days before the window opens are not reminder days: nobody can act
 	# on them, and the noise is part of why filing feels like a chore.
+	# S145b: the same reminder, rendered per recipient language.
+	from vecrm.vecrm.utils.lang import push_tokens_by_language, t
 	if 14 <= day <= 20:
-		period = "first half of {0} (1st to 15th)".format(today.strftime("%b"))
+		period_key_, period_kw = "push.period.h1", {"mon": today.strftime("%b")}
 		deadline = "20 {0}".format(today.strftime("%b"))
 		open_day = 15
 	elif day >= last_day - 1:
 		nxt = (today.replace(day=1) + timedelta(days=32)).replace(day=1)
-		period = "second half of {0} (16th to {1})".format(
-			today.strftime("%b"), last_day
-		)
+		period_key_, period_kw = "push.period.h2", {"mon": today.strftime("%b"), "last": last_day}
 		deadline = "05 {0}".format(nxt.strftime("%b"))
 		open_day = last_day
 	elif day <= 5:
 		prev_last = today.replace(day=1) - timedelta(days=1)
-		period = "second half of {0} (16th to {1})".format(
-			prev_last.strftime("%b"), prev_last.day
-		)
+		period_key_, period_kw = "push.period.h2", {"mon": prev_last.strftime("%b"), "last": prev_last.day}
 		deadline = "05 {0}".format(today.strftime("%b"))
 		open_day = None
 	else:
 		return  # not a reminder day
-	body = "Submit your {0} petrol, travel and expense vouchers by {1}.".format(
-		period, deadline
-	)
-	if open_day is not None and day == open_day:
-		body += " The window opens tonight at 9pm. File tonight to be recorded as on time."
-	elif open_day is not None and day == open_day - 1:
-		body += " The window opens tomorrow at 9pm."
-	tokens = _all_active_tokens()
-	send_push(
-		tokens,
-		"Vouchers due {0}".format(deadline),
-		body,
-		{"screen": "vouchers"},
-	)
+
+	def _render(lang):
+		body = t("push.period.body", lang, period=t(period_key_, lang, **period_kw), deadline=deadline)
+		if open_day is not None and day == open_day:
+			body += t("push.period.tonight", lang)
+		elif open_day is not None and day == open_day - 1:
+			body += t("push.period.tomorrow", lang)
+		return t("push.period.title", lang, deadline=deadline), body
+
+	push_tokens_by_language(_all_active_tokens(), _render, {"screen": "vouchers"})
 
 
 # ── Targeted notifications ──────────────────────────────────────────────────
@@ -283,15 +274,10 @@ def notify_lead_assigned(doc, method):
 		new_owner = doc.lead_owner
 		if not new_owner or new_owner == old_owner:
 			return
-		tokens = _tokens_for_user(new_owner)
-		if not tokens:
-			return
-		send_push(
-			tokens,
-			"New lead assigned",
-			f"New lead: {doc.company_name} assigned to you",
-			{"screen": "leads", "lead": doc.name},
-		)
+		from vecrm.vecrm.utils.lang import push_to_email
+		push_to_email(new_owner, "push.lead_assigned.title", "push.lead_assigned.body",
+					  {"screen": "leads", "lead": doc.name}, bell_fallback=False,
+					  company=doc.company_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications.notify_lead_assigned")
 
@@ -309,14 +295,11 @@ def notify_lead_status(doc, method):
 		if new_status == old_status:
 			return
 		# 1. Notify Lead Owner via Push
-		tokens = _tokens_for_user(doc.lead_owner)
-		if tokens:
-			send_push(
-				tokens,
-				f"Lead status: {doc.company_name}",
-				f"{doc.company_name}: {old_status or '-'} → {new_status or '-'}",
-				{"screen": "leads", "lead": doc.name},
-			)
+		from vecrm.vecrm.utils.lang import push_to_email
+		push_to_email(doc.lead_owner, "push.lead_status.title", "push.lead_status.body",
+					  {"screen": "leads", "lead": doc.name}, title_kw={"company": doc.company_name},
+					  bell_fallback=False, company=doc.company_name,
+					  old=old_status or "-", new=new_status or "-")
 			
 		# 2. If status is Closed-Won or Closed-Lost, notify Sales Head and Admin
 		# via Push + Email. (Was checking "Won"/"Lost" which never matched the
@@ -336,14 +319,11 @@ def notify_lead_status(doc, method):
 			)
 			
 			for email in recipients:
-				head_tokens = _tokens_for_user(email)
-				if head_tokens:
-					send_push(
-						head_tokens,
-						subject,
-						f"Lead marked as {new_status} by {_employee_name(doc.lead_owner)}",
-						{"screen": "leads", "lead": doc.name},
-					)
+				push_to_email(email, "push.lead_closed.title", "push.lead_closed.body",
+							  {"screen": "leads", "lead": doc.name},
+							  title_kw={"status": new_status, "company": doc.company_name},
+							  bell_fallback=False, status=new_status,
+							  owner=_employee_name(doc.lead_owner))
 				try:
 					frappe.sendmail(
 						recipients=email,
@@ -380,16 +360,14 @@ def notify_voucher_status(doc, method):
 			return
 
 		submitter_email = _employee_email(getattr(doc, "submitter", None))
-		tokens = _tokens_for_user(submitter_email)
-		if not tokens:
+		if not _tokens_for_user(submitter_email):
 			return
+		from vecrm.vecrm.utils.lang import push_to_email
 		for status_word in transitions:
-			send_push(
-				tokens,
-				f"Voucher {status_word}",
-				f"Your voucher {doc.name} was {status_word}",
-				{"screen": "vouchers", "voucher": doc.name, "doctype": doc.doctype},
-			)
+			push_to_email(submitter_email, "push.voucher.%s.title" % status_word,
+						  "push.voucher.%s.body" % status_word,
+						  {"screen": "vouchers", "voucher": doc.name, "doctype": doc.doctype},
+						  bell_fallback=False, name=doc.name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications.notify_voucher_status")
 
@@ -402,13 +380,14 @@ def notify_lead_converted(doc, method):
 			return
 		# Lead-conversion is a lead/inquiry event — sales-side roles only,
 		# not field engineers.
+		from vecrm.vecrm.utils.lang import push_tokens_by_language, t
 		tokens = _tokens_for_lead_audience()
 		if not tokens:
 			return
-		send_push(
+		push_tokens_by_language(
 			tokens,
-			"Lead converted",
-			f"Lead converted: {doc.company_name} → new inquiry {doc.name}",
+			lambda lang: (t("push.lead_converted.title", lang),
+						  t("push.lead_converted.body", lang, company=doc.company_name, inquiry=doc.name)),
 			{"screen": "inquiries", "inquiry": doc.name},
 		)
 	except Exception:
@@ -428,16 +407,11 @@ def follow_up_due_reminder():
 			fields=["name", "company_name", "lead_owner"],
 			ignore_permissions=True,
 		)
+		from vecrm.vecrm.utils.lang import push_to_email
 		for r in rows:
-			tokens = _tokens_for_user(r.lead_owner)
-			if not tokens:
-				continue
-			send_push(
-				tokens,
-				"Follow-up due today",
-				f"Follow-up due today for {r.company_name}",
-				{"screen": "leads", "lead": r.name},
-			)
+			push_to_email(r.lead_owner, "push.followup_today.title", "push.followup_today.body",
+						  {"screen": "leads", "lead": r.name}, bell_fallback=False,
+						  company=r.company_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications.follow_up_due_reminder")
 
@@ -452,16 +426,11 @@ def follow_up_upcoming_reminder():
 			fields=["name", "company_name", "lead_owner"],
 			ignore_permissions=True,
 		)
+		from vecrm.vecrm.utils.lang import push_to_email
 		for r in rows:
-			tokens = _tokens_for_user(r.lead_owner)
-			if not tokens:
-				continue
-			send_push(
-				tokens,
-				"Follow-up due tomorrow",
-				f"Upcoming follow-up tomorrow for {r.company_name}",
-				{"screen": "leads", "lead": r.name},
-			)
+			push_to_email(r.lead_owner, "push.followup_tomorrow.title", "push.followup_tomorrow.body",
+						  {"screen": "leads", "lead": r.name}, bell_fallback=False,
+						  company=r.company_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications.follow_up_upcoming_reminder")
 
@@ -542,15 +511,12 @@ def notify_voucher_submitted(doc, method):
 
 		approver_emails = [e.vecrm_email for e in approver_employees if e.vecrm_email]
 		
+		from vecrm.vecrm.utils.lang import push_to_email
+		body_key = "push.vsub.travel" if doc.doctype == "VECRM Travel Voucher" else "push.vsub.expense"
 		for email in approver_emails:
-			tokens = _tokens_for_user(email)
-			if tokens:
-				send_push(
-					tokens,
-					"New Voucher Submitted",
-					f"New {doc.doctype.replace('VECRM ', '')} submitted by {_employee_name(submitter_email)}",
-					{"screen": "vouchers", "voucher": doc.name, "doctype": doc.doctype}
-				)
+			push_to_email(email, "push.vsub.title", body_key,
+						  {"screen": "vouchers", "voucher": doc.name, "doctype": doc.doctype},
+						  bell_fallback=False, name=_employee_name(submitter_email))
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications.notify_voucher_submitted")
 	try:
@@ -573,15 +539,11 @@ def stale_inquiry_reminder():
 			fields=["name", "company_name", "inquiry_owner"]
 		)
 
+		from vecrm.vecrm.utils.lang import push_to_email
 		for r in stale_inquiries:
-			tokens = _tokens_for_user(r.inquiry_owner)
-			if tokens:
-				send_push(
-					tokens,
-					"Stale Inquiry",
-					f"Your inquiry for {r.company_name} hasn't been updated recently. Give them a call?",
-					{"screen": "inquiries", "inquiry": r.name}
-				)
+			push_to_email(r.inquiry_owner, "push.stale.title", "push.stale.body",
+						  {"screen": "inquiries", "inquiry": r.name}, bell_fallback=False,
+						  company=r.company_name)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications.stale_inquiry_reminder")
 
@@ -618,16 +580,16 @@ def voucher_approver_payment_reminder():
 		from datetime import date
 		day = date.today().day
 		
-		messages = []
+		messages = []  # S145b: message keys, rendered per approver language
 		if day in (18, 19, 20, 21):
-			messages.append("Please approve pending vouchers for the 1st-15th period. Submission closed on the 20th.")
+			messages.append("push.appr.h1")
 		elif day in (3, 4, 5, 6):
-			messages.append("Please approve pending vouchers for the preceding month 16th-to-end period. Submission closed on the 5th.")
+			messages.append("push.appr.h2")
 			
 		if day == 21:
-			messages.append("Voucher payments for the 1st-15th period open today. Window is the 20th to the 25th.")
+			messages.append("push.appr.pay_h1")
 		elif day == 8:
-			messages.append("Voucher payments for the preceding month 16th-to-end period open today. Window is the 8th to the 12th.")
+			messages.append("push.appr.pay_h2")
 			
 		if not messages:
 			return
@@ -641,29 +603,24 @@ def voucher_approver_payment_reminder():
 		
 		approver_emails = [e.vecrm_email for e in approver_employees if e.vecrm_email]
 		
+		from vecrm.vecrm.utils.lang import push_to_email
 		for email in approver_emails:
-			tokens = _tokens_for_user(email)
-			if tokens:
-				for msg in messages:
-					send_push(
-						tokens,
-						"Voucher Action Required",
-						msg,
-						{"screen": "vouchers"}
-					)
+			for msg in messages:
+				push_to_email(email, "push.appr.title", msg, {"screen": "vouchers"},
+							  bell_fallback=False)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications.voucher_approver_payment_reminder")
 
 
-def _notify_employee(submitter_phone, title, body):
-	"""Best-effort FCM push to a submitter (by VECRM Employee phone-id)."""
+def _notify_employee(submitter_phone, key_title, key_body, **kw):
+	"""Best-effort FCM push to a submitter (by VECRM Employee phone-id).
+	S145b: takes message keys and renders them in the submitter's language."""
 	try:
 		email = _employee_email(submitter_phone)
 		if not email:
 			return
-		tokens = _tokens_for_user(email)
-		if tokens:
-			send_push(tokens, title, body, {"screen": "vouchers"})
+		from vecrm.vecrm.utils.lang import push_to_email
+		push_to_email(email, key_title, key_body, {"screen": "vouchers"}, bell_fallback=False, **kw)
 	except Exception:
 		frappe.log_error(frappe.get_traceback(), "notifications._notify_employee")
 
@@ -696,21 +653,15 @@ def auto_submit_closed_period_vouchers():
 		try:
 			doc = frappe.get_doc("VECRM Travel Voucher", row.name)
 			if not doc.visit_lines:
-				_notify_employee(
-					doc.submitter,
-					"No voucher filed",
-					f"No travel voucher was filed for {target}. Nothing was submitted.",
-				)
+				_notify_employee(doc.submitter, "push.auto_none.title", "push.auto_none.body",
+								 period=target)
 				continue
 			doc.submitted_at = frappe.utils.now_datetime()
 			doc.submission_timeliness = "Auto-Submitted"
 			doc.submit()
 			frappe.db.commit()
-			_notify_employee(
-				doc.submitter,
-				"Voucher auto-submitted",
-				f"Your {target} travel voucher {doc.name} was auto-submitted for approval.",
-			)
+			_notify_employee(doc.submitter, "push.auto_done.title", "push.auto_done.body",
+							 period=target, name=doc.name)
 		except Exception:
 			frappe.db.rollback()
 			frappe.log_error(frappe.get_traceback(), "auto_submit_closed_period_vouchers")
@@ -741,11 +692,7 @@ def relock_expired_reopened_vouchers():
 			doc.db_set("reopened_by", None, update_modified=False)
 			doc.db_set("reopened_until", None, update_modified=False)
 			frappe.db.commit()
-			_notify_employee(
-				doc.submitter,
-				"Reopen window closed",
-				f"The 24-hour edit window for {doc.name} closed; it's back in the approval queue.",
-			)
+			_notify_employee(doc.submitter, "push.relock.title", "push.relock.body", name=doc.name)
 		except Exception:
 			frappe.db.rollback()
 			frappe.log_error(frappe.get_traceback(), "relock_expired_reopened_vouchers")
@@ -758,15 +705,12 @@ def notify_intent_pending(doc, method):
 	if doc.get("disposition"):
 		return
 	try:
+		from vecrm.vecrm.utils.lang import lang_of_email, push_to_email, t
 		email = _employee_email(doc.caller)
-		tokens = _tokens_for_user(email)
-		if tokens:
-			send_push(
-				tokens,
-				"Set call intent",
-				f"Update the intent for your call to {doc.get('contact_number') or 'a lead'}",
-				data={"screen": "lead", "lead": doc.get("lead") or "", "call": doc.name},
-			)
+		push_to_email(email, "push.intent.title", "push.intent.body",
+					  {"screen": "lead", "lead": doc.get("lead") or "", "call": doc.name},
+					  bell_fallback=False,
+					  number=doc.get("contact_number") or t("push.intent.a_lead", lang_of_email(email)))
 	except Exception as e:
 		frappe.log_error(frappe.get_traceback(), "Push Notification Error")
 

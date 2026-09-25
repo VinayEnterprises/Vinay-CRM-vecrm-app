@@ -576,139 +576,161 @@ def _payers(doc) -> list:
     return [p for p in _people_in_roles(PAYER_ROLES) if p.name != doc.employee]
 
 
-def _facts(doc, paid: bool = False) -> str:
-    rows = [("Advance", doc.name), ("Employee", "%s (%s)" % (doc.employee_name, doc.employee)),
-            ("Amount requested", _inr(doc.amount))]
+def _lg(person) -> str:
+    """S145b: the recipient's saved language (English if unset)."""
+    from vecrm.vecrm.utils.lang import lang_of_phone
+    return lang_of_phone(person.get("name") if person else None)
+
+
+def _facts(doc, lg: str = "en", paid: bool = False) -> str:
+    from vecrm.vecrm.utils.lang import t as tr
+    rows = [(tr("adv.f.advance", lg), doc.name),
+            (tr("adv.f.employee", lg), "%s (%s)" % (doc.employee_name, doc.employee)),
+            (tr("adv.f.requested", lg), _inr(doc.amount))]
     if paid:
-        rows.append(("Amount paid", _inr(doc.paid_amount)))
+        rows.append((tr("adv.f.paid", lg), _inr(doc.paid_amount)))
         if doc.payment_ref:
-            rows.append(("UPI / payment ref", doc.payment_ref))
-    rows += [("Site", doc.site), ("Location", doc.location),
-             ("Travel", "%s to %s" % (_fmt_day(doc.travel_from), _fmt_day(doc.travel_to))),
-             ("Purpose", doc.purpose)]
+            rows.append((tr("adv.f.ref", lg), doc.payment_ref))
+    rows += [(tr("adv.f.site", lg), doc.site), (tr("adv.f.location", lg), doc.location),
+             (tr("adv.f.travel", lg), tr("adv.f.travel_val", lg, start=_fmt_day(doc.travel_from),
+                                          end=_fmt_day(doc.travel_to))),
+             (tr("adv.f.purpose", lg), doc.purpose)]
     if doc.trip_type == "Top-up":
-        rows.append(("Top-up of", doc.parent_advance))
+        rows.append((tr("adv.f.topup_of", lg), doc.parent_advance))
     return _table(["", ""], rows)
 
 
-def _other_open(doc) -> str:
+def _other_open(doc, lg: str = "en") -> str:
+    from vecrm.vecrm.utils.lang import t as tr
     rows = frappe.get_all(ADV_DT, filters={"employee": doc.employee, "status": "Paid",
                                            "name": ["!=", doc.name]},
                           fields=["name", "paid_amount", "voucher", "site"],
                           order_by="paid_at desc", limit_page_length=20, ignore_permissions=True)
     rows = [r for r in rows if _voucher_state(r.voucher) != "Settled"]
     if not rows:
-        return _p("No other advance of %s is still open." % _esc(doc.employee_name))
-    return (_p("%s also holds these advances, not yet settled by a paid voucher:"
-               % _esc(doc.employee_name))
-            + _table(["Advance", "Paid", "Site", "Voucher"],
+        return _p(tr("adv.pay.none_open", lg, emp=_esc(doc.employee_name)))
+    return (_p(tr("adv.pay.open", lg, emp=_esc(doc.employee_name)))
+            + _table([tr("col.advance", lg), tr("col.paid", lg), tr("col.site", lg), tr("col.voucher", lg)],
                      [(r.name, _inr(r.paid_amount), r.site or "",
                        "%s (%s)" % (r.voucher or "", _voucher_state(r.voucher) or "")) for r in rows]))
 
 
 def dispatch_event(adv: str, kind: str, prior: str = "", dry_run: bool = False) -> list:
-    """Compose and send the mails and pushes for one advance event. Best-effort."""
+    """Compose and send the mails and pushes for one advance event. Best-effort.
+    S145b: every mail and push is rendered in its recipient's saved language."""
+    from vecrm.vecrm.utils.lang import t as tr
+
     log = []
     name, event = adv, kind
     try:
         doc = frappe.get_doc(ADV_DT, name)
         emp = _emp(doc.employee)
         who = _emp(doc.decided_by) if doc.decided_by else None
-        who_name = who.employee_name if who else "Admin"
-        link = _p(_link(_url(doc.name), "Open the advance"))
-
-        def mail(person, subject, body, pre):
-            if person and person.get("vecrm_email"):
-                _send(person.vecrm_email, subject, _p("Hi %s," % _esc(person.employee_name)) + body,
-                      pre, dry_run, log)
-
-        def push(person, title, body):
-            if not dry_run:
-                _push(person, title, body, doc.name)
-
         amt = _inr(doc.amount)
+
+        def mail(person, key_subject, subject_kw, build_body, key_pre):
+            """build_body(lg) -> HTML without the greeting."""
+            if person and person.get("vecrm_email"):
+                lg = _lg(person)
+                _send(person.vecrm_email, tr(key_subject, lg, **subject_kw),
+                      _p(tr("hi_name", lg, name=_esc(person.employee_name))) + build_body(lg),
+                      tr(key_pre, lg), dry_run, log)
+
+        def push(person, key_title, key_body, **kw):
+            if not dry_run and person:
+                lg = _lg(person)
+                _push(person, tr(key_title, lg, **kw), tr(key_body, lg, **kw), doc.name)
+
+        def link(lg, key="adv.link.open"):
+            return _p(_link(_url(doc.name), tr(key, lg)))
+
+        def who_name(lg):
+            return who.employee_name if who else "Admin"
+
         if event in ("requested", "requested_on_behalf"):
             if event == "requested":
-                mail(emp, "Advance request received: %s, %s" % (amt, doc.site),
-                     _p("Your advance request %s for %s is with %s for approval."
-                        % (_esc(doc.name), _esc(amt), _esc(" or ".join(approver_roles(doc.employee_role)))))
-                     + _facts(doc) + link, "Advance request received")
-                push(emp, "Advance requested", "%s for %s sent for approval" % (amt, doc.site))
+                mail(emp, "adv.req.subject", {"amount": amt, "site": doc.site},
+                     lambda lg: _p(tr("adv.req.body", lg, name=_esc(doc.name), amount=_esc(amt),
+                                      who=_esc(" / ".join(approver_roles(doc.employee_role)))))
+                     + _facts(doc, lg) + link(lg), "adv.req.pre")
+                push(emp, "adv.req.push_t", "adv.req.push_b", amount=amt, site=doc.site)
                 for h in _heads(doc):
-                    mail(h, "Advance to approve: %s, %s, %s" % (doc.employee_name, amt, doc.site),
-                         _p("%s has requested an expense advance. Please approve or reject it."
-                            % _esc(doc.employee_name)) + _facts(doc)
-                         + _p(_link(_url(doc.name), "Open to approve or reject")),
-                         "Advance to approve")
-                    push(h, "Advance to approve", "%s: %s for %s" % (doc.employee_name, amt, doc.site))
+                    mail(h, "adv.ask.subject", {"emp": doc.employee_name, "amount": amt, "site": doc.site},
+                         lambda lg: _p(tr("adv.ask.body", lg, emp=_esc(doc.employee_name)))
+                         + _facts(doc, lg) + link(lg, "adv.link.decide"), "adv.ask.pre")
+                    push(h, "adv.ask.pre", "adv.ask.push_b", emp=doc.employee_name, amount=amt,
+                         site=doc.site)
             else:
                 req = _emp(doc.requested_by)
-                mail(emp, "Advance raised for you: %s, %s" % (amt, doc.site),
-                     _p("%s raised advance %s for you and it counts as approved. It now goes to "
-                        "Accounts for payment." % (_esc(req.employee_name if req else "Your head"),
-                                                    _esc(doc.name))) + _facts(doc) + link,
-                     "Advance raised for you")
-                push(emp, "Advance raised for you", "%s for %s, approved" % (amt, doc.site))
+                mail(emp, "adv.obo.subject", {"amount": amt, "site": doc.site},
+                     lambda lg: _p(tr("adv.obo.body", lg,
+                                      who=_esc(req.employee_name if req else tr("adv.your_head", lg)),
+                                      name=_esc(doc.name)))
+                     + _facts(doc, lg) + link(lg), "adv.obo.pre")
+                push(emp, "adv.obo.pre", "adv.obo.push_b", amount=amt, site=doc.site)
                 _payment_request(doc, mail, push)
         elif event == "approved":
-            mail(emp, "Advance approved: %s, %s" % (amt, doc.site),
-                 _p("%s approved your advance %s. It now goes to Accounts for payment."
-                    % (_esc(who_name), _esc(doc.name))) + _facts(doc) + link, "Advance approved")
-            push(emp, "Advance approved", "%s for %s approved, awaiting payment" % (amt, doc.site))
+            mail(emp, "adv.ok.subject", {"amount": amt, "site": doc.site},
+                 lambda lg: _p(tr("adv.ok.body", lg, who=_esc(who_name(lg)), name=_esc(doc.name)))
+                 + _facts(doc, lg) + link(lg), "adv.ok.pre")
+            push(emp, "adv.ok.pre", "adv.ok.push_b", amount=amt, site=doc.site)
             _payment_request(doc, mail, push)
         elif event == "rejected":
-            mail(emp, "Advance not approved: %s, %s" % (amt, doc.site),
-                 _p("%s did not approve your advance %s." % (_esc(who_name), _esc(doc.name)))
-                 + _p("Reason: %s" % _esc(doc.decision_notes)) + _facts(doc) + link,
-                 "Advance not approved")
-            push(emp, "Advance not approved", "%s for %s: %s" % (amt, doc.site, doc.decision_notes))
+            mail(emp, "adv.no.subject", {"amount": amt, "site": doc.site},
+                 lambda lg: _p(tr("adv.no.body", lg, who=_esc(who_name(lg)), name=_esc(doc.name)))
+                 + _p(tr("reason", lg, reason=_esc(doc.decision_notes))) + _facts(doc, lg) + link(lg),
+                 "adv.no.pre")
+            push(emp, "adv.no.pre", "adv.no.push_b", amount=amt, site=doc.site,
+                 reason=doc.decision_notes)
         elif event == "paid":
-            ev_link = _p("Your expense voucher %s is ready with this advance on it. Add your "
-                         "expense lines and submit it after the trip: %s"
-                         % (_esc(doc.voucher), _link(_ev_url(doc.voucher), "Open the voucher")))
-            mail(emp, "Advance paid: %s, %s" % (_inr(doc.paid_amount), doc.site),
-                 _p("Your advance %s has been paid: %s."
-                    % (_esc(doc.name), _esc(_inr(doc.paid_amount))))
-                 + _facts(doc, paid=True) + ev_link, "Advance paid")
-            push(emp, "Advance paid", "%s paid for %s. Voucher %s is ready."
-                 % (_inr(doc.paid_amount), doc.site, doc.voucher))
+            paid_amt = _inr(doc.paid_amount)
+            mail(emp, "adv.paid.subject", {"amount": paid_amt, "site": doc.site},
+                 lambda lg: _p(tr("adv.paid.body", lg, name=_esc(doc.name), amount=_esc(paid_amt)))
+                 + _facts(doc, lg, paid=True)
+                 + _p(tr("adv.paid.voucher", lg, voucher=_esc(doc.voucher),
+                         link=_link(_ev_url(doc.voucher), tr("adv.link.voucher", lg)))),
+                 "adv.paid.pre")
+            push(emp, "adv.paid.pre", "adv.paid.push_b", amount=paid_amt, site=doc.site,
+                 voucher=doc.voucher)
         elif event == "declined":
-            mail(emp, "Advance payment declined: %s, %s" % (amt, doc.site),
-                 _p("Accounts declined payment of your advance %s." % _esc(doc.name))
-                 + _p("Reason: %s" % _esc(doc.decline_reason)) + _facts(doc) + link,
-                 "Advance payment declined")
-            push(emp, "Advance payment declined", "%s for %s: %s" % (amt, doc.site, doc.decline_reason))
+            mail(emp, "adv.dec.subject", {"amount": amt, "site": doc.site},
+                 lambda lg: _p(tr("adv.dec.body", lg, name=_esc(doc.name)))
+                 + _p(tr("reason", lg, reason=_esc(doc.decline_reason))) + _facts(doc, lg) + link(lg),
+                 "adv.dec.pre")
+            push(emp, "adv.dec.pre", "adv.no.push_b", amount=amt, site=doc.site,
+                 reason=doc.decline_reason)
             if who:
-                mail(who, "Advance payment declined: %s, %s" % (doc.employee_name, amt),
-                     _p("Accounts declined payment of advance %s, which you approved."
-                        % _esc(doc.name)) + _p("Reason: %s" % _esc(doc.decline_reason))
-                     + _facts(doc) + link, "Advance payment declined")
+                mail(who, "adv.dec.head_subject", {"emp": doc.employee_name, "amount": amt},
+                     lambda lg: _p(tr("adv.dec.head_body", lg, name=_esc(doc.name)))
+                     + _p(tr("reason", lg, reason=_esc(doc.decline_reason))) + _facts(doc, lg) + link(lg),
+                     "adv.dec.pre")
         elif event == "cancelled":
             for h in (_heads(doc) if prior == "Pending Approval" else []):
-                mail(h, "Advance request cancelled: %s, %s" % (doc.employee_name, amt),
-                     _p("Advance %s was cancelled before approval." % _esc(doc.name))
-                     + _facts(doc), "Advance cancelled")
+                mail(h, "adv.can.subject", {"emp": doc.employee_name, "amount": amt},
+                     lambda lg: _p(tr("adv.can.body", lg, name=_esc(doc.name))) + _facts(doc, lg),
+                     "adv.can.pre")
             if prior == "Approved":
                 for pz in _payers(doc):
-                    mail(pz, "Advance cancelled, do not pay: %s, %s" % (doc.employee_name, amt),
-                         _p("Advance %s was cancelled before payment. Do not pay it."
-                            % _esc(doc.name)) + _facts(doc), "Advance cancelled")
-                    push(pz, "Advance cancelled", "Do not pay %s to %s" % (amt, doc.employee_name))
+                    mail(pz, "adv.can.pay_subject", {"emp": doc.employee_name, "amount": amt},
+                         lambda lg: _p(tr("adv.can.pay_body", lg, name=_esc(doc.name))) + _facts(doc, lg),
+                         "adv.can.pre")
+                    push(pz, "adv.can.pre", "adv.can.push_b", amount=amt, emp=doc.employee_name)
     except Exception:
         frappe.log_error(frappe.get_traceback(), "S144 advance dispatch %s %s" % (name, event))
     return log
 
 
 def _payment_request(doc, mail, push) -> None:
+    from vecrm.vecrm.utils.lang import t as tr
+    amt = _inr(doc.amount)
     for pz in _payers(doc):
-        mail(pz, "Advance to pay: %s, %s, %s" % (doc.employee_name, _inr(doc.amount), doc.site),
-             _p("Advance %s is approved and waiting for payment. Pay it over UPI to %s (%s), "
-                "then open it and mark it paid." % (_esc(doc.name), _esc(doc.employee_name),
-                                                     _esc(doc.employee)))
-             + _facts(doc) + _other_open(doc)
-             + _p(_link(_url(doc.name), "Open to mark paid")),
-             "Advance to pay")
-        push(pz, "Advance to pay", "%s: %s for %s" % (doc.employee_name, _inr(doc.amount), doc.site))
+        mail(pz, "adv.pay.subject", {"emp": doc.employee_name, "amount": amt, "site": doc.site},
+             lambda lg: _p(tr("adv.pay.body", lg, name=_esc(doc.name), emp=_esc(doc.employee_name),
+                              phone=_esc(doc.employee)))
+             + _facts(doc, lg) + _other_open(doc, lg)
+             + _p(_link(_url(doc.name), tr("adv.link.pay", lg))),
+             "adv.pay.pre")
+        push(pz, "adv.pay.push_t", "adv.ask.push_b", emp=doc.employee_name, amount=amt, site=doc.site)
 
 
 # ── daily (called from notifications.voucher_period_reminder, 10:00) ─────
@@ -757,17 +779,17 @@ def _chase(today: date, dry_run: bool, log: list) -> list:
         if not emp or emp.vecrm_account_status != "Active":
             continue
         close = _period_close(r.trip_end)
-        body = (_p("Hi %s," % _esc(emp.employee_name))
-                + _p("Your trip to %s ended on %s. You hold %s in advances (%s) and voucher %s is "
-                     "still a draft." % (_esc(r.site), _esc(_fmt_day(r.trip_end)), _esc(_inr(r.paid)),
-                                         _esc(r.advances), _esc(r.voucher)))
-                + _p("Add your expense lines and submit it. Expenses from %s must be submitted by "
-                     "%s." % (_esc(_fmt_day(r.trip_end)), _esc(_fmt_day(close))))
-                + _p(_link(_ev_url(r.voucher), "Open the voucher")))
-        _send(emp.vecrm_email, "Submit your trip voucher: %s, %s advance" % (r.site, _inr(r.paid)),
-              body, "Trip voucher pending", dry_run, log)
+        from vecrm.vecrm.utils.lang import t as tr
+        lg = _lg(emp)  # S145b: in the engineer's language
+        body = (_p(tr("hi_name", lg, name=_esc(emp.employee_name)))
+                + _p(tr("adv.chase.body", lg, site=_esc(r.site), end=_esc(_fmt_day(r.trip_end)),
+                        amount=_esc(_inr(r.paid)), advances=_esc(r.advances), voucher=_esc(r.voucher)))
+                + _p(tr("adv.chase.body2", lg, end=_esc(_fmt_day(r.trip_end)), close=_esc(_fmt_day(close))))
+                + _p(_link(_ev_url(r.voucher), tr("adv.link.voucher", lg))))
+        _send(emp.vecrm_email, tr("adv.chase.subject", lg, site=r.site, amount=_inr(r.paid)),
+              body, tr("adv.chase.pre", lg), dry_run, log)
         if not dry_run:
-            _push(emp, "Trip voucher pending", "Add lines to %s and submit it" % r.voucher,
+            _push(emp, tr("adv.chase.push_t", lg), tr("adv.chase.push_b", lg, voucher=r.voucher),
                   r.advances.split(",")[0])
         sent.append({"employee": emp.employee_name, "voucher": r.voucher, "days": days})
     return sent

@@ -17,6 +17,7 @@
   "vecrm_base_city",
   "reporting_approver",
   "vecrm_account_status",
+  "preferred_language",
   "validation_bypass",
   "auth_section",
   "password_hash",
@@ -101,6 +102,14 @@
    "reqd": 1
   },
   {
+   "fieldname": "preferred_language",
+   "fieldtype": "Select",
+   "label": "Preferred Language",
+   "options": "en\nhi\ngu",
+   "default": "en",
+   "description": "S145b: language for this employee's mails and pushes (en English, hi Hindi, gu Gujarati). Set from the portal language switch."
+  },
+  {
    "default": "0",
    "description": "S41: when checked, this employee's vouchers skip the duplicate, period, and submission-window validations. Admin-set; use for data correction only.",
    "fieldname": "validation_bypass",
@@ -173,7 +182,7 @@
  ],
  "idx": 0,
  "links": [],
- "modified": "2026-05-16 12:00:00.000000",
+ "modified": "2026-09-25 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "VECRM",
  "name": "VECRM Employee",
