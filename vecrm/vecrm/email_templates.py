@@ -4,6 +4,11 @@
 import frappe
 from typing import Any
 
+# S145d (25 Sep 2026): Google Play badge in the shell footer, every branded mail.
+PLAY_URL = "https://play.google.com/store/apps/details?id=co.in.vinayenterprises.vecrm"
+PLAY_BADGE = "https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png"
+
+
 def render_email_layout(preheader: str, body_html: str) -> str:
     """Renders the Anusuya Workspace branded email layout (shared shell, mirrors VEHRMS email_utils.render_email_layout)."""
     logo_src = "https://app.anusuya.ai/anusuya/raster/anusuya-symbol-primary.png"
@@ -38,6 +43,7 @@ def render_email_layout(preheader: str, body_html: str) -> str:
           </tr>
           <tr>
             <td style="padding:24px 40px;background:#F8FAFC;text-align:center;color:#64748B;font-size:12px;">
+              <a href="{PLAY_URL}" style="display:inline-block;margin:0 0 12px;text-decoration:none;border:0;"><img src="{PLAY_BADGE}" alt="Get it on Google Play" width="160" height="62" style="display:block;width:160px;height:62px;border:0;outline:none;text-decoration:none;" /></a>
               <p style="margin:0 0 4px;">This is an automated message. Do not reply.</p>
               <p style="margin:0;">Vinay Enterprises · Est. 1993 · Ahmedabad, India</p>
             </td>

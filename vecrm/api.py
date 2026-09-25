@@ -7727,11 +7727,15 @@ def close_leads(lead_names, outcome: str, notes: str = "") -> dict:
                     to=recipients,
                     subject="Bulk lead closure: {0} lead{1} {2}".format(
                         closed, "s" if closed != 1 else "", outcome),
-                    html_body=(
+                    # S145d: branded shell (was a bare fragment); text escaped.
+                    html_body=render_email_layout(
+                        "Bulk lead closure",
                         "<p>{0} lead{1} bulk-closed as <b>{2}</b> by {3}."
                         "</p><p>Notes: {4}</p>".format(
-                            closed, "s" if closed != 1 else "", outcome,
-                            actor, notes or "-")),
+                            closed, "s" if closed != 1 else "",
+                            frappe.utils.escape_html(outcome),
+                            frappe.utils.escape_html(actor or ""),
+                            frappe.utils.escape_html(notes or "-"))),
                 )
         except Exception:
             frappe.log_error(
