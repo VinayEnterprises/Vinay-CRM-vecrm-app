@@ -245,6 +245,7 @@ MESSAGES: dict[str, tuple[str, str, str]] = {
     "adv.f.travel": ("Travel", "यात्रा", "મુસાફરી"),
     "adv.f.travel_val": ("{start} to {end}", "{start} से {end}", "{start} થી {end}"),
     "adv.f.purpose": ("Purpose", "काम", "કામ"),
+    "adv.f.travel_date": ("Travel date", "यात्रा की तारीख", "મુસાફરીની તારીખ"),
     "adv.f.topup_of": ("Top-up of", "इसका टॉप-अप", "આનું ટોપ-અપ"),
     "adv.link.open": ("Open the advance", "एडवांस खोलें", "એડવાન્સ ખોલો"),
     "adv.link.decide": ("Open to approve or reject", "मंज़ूर या नामंज़ूर करने के लिए खोलें",
@@ -365,11 +366,11 @@ MESSAGES: dict[str, tuple[str, str, str]] = {
     "adv.chase.subject": ("Submit your trip voucher: {site}, {amount} advance",
                           "अपनी ट्रिप का वाउचर जमा करें: {site}, {amount} एडवांस",
                           "તમારી ટ્રિપનું વાઉચર જમા કરો: {site}, {amount} એડવાન્સ"),
-    "adv.chase.body": ("Your trip to {site} ended on {end}. You hold {amount} in advances ({advances}) "
+    "adv.chase.body": ("You hold {amount} in advances ({advances}) for {site}, last travel date {end}, "
                        "and voucher {voucher} is still a draft.",
-                       "{site} की आपकी ट्रिप {end} को खत्म हुई। आपके पास {amount} एडवांस ({advances}) है "
+                       "{site} के लिए आपके पास {amount} एडवांस ({advances}) है, ट्रिप की आखिरी तारीख {end}, "
                        "और वाउचर {voucher} अभी ड्राफ्ट है।",
-                       "{site} ની તમારી ટ્રિપ {end} ના રોજ પૂરી થઈ. તમારી પાસે {amount} એડવાન્સ ({advances}) છે "
+                       "{site} માટે તમારી પાસે {amount} એડવાન્સ ({advances}) છે, ટ્રિપની છેલ્લી તારીખ {end}, "
                        "અને વાઉચર {voucher} હજી ડ્રાફ્ટ છે."),
     "adv.chase.body2": ("Add your expense lines and submit it. Expenses from {end} must be submitted by {close}.",
                         "अपने खर्च की लाइनें जोड़कर उसे जमा करें। {end} के खर्च {close} तक जमा करने होंगे।",

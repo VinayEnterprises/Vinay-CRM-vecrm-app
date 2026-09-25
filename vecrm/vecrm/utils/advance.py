@@ -239,8 +239,11 @@ def _shape(row, caller=None) -> dict:
 
 # ── actions ──────────────────────────────────────────────────────────────
 
-def request_advance(amount, purpose, site, location, travel_from, travel_to,
+def request_advance(amount, purpose="", site="", location="", travel_from=None, travel_to=None,
                     employee: str = "", parent_advance: str = "") -> dict:
+    """S146 (25 Sep 2026): the engineer enters amount, site and one travel date.
+    Purpose and location are optional and kept only if sent. travel_to is always
+    the travel date; it is what the voucher chase counts from."""
     caller = _caller()
     target = _emp(employee or caller.name)
     if not target or target.vecrm_account_status != "Active":
@@ -259,8 +262,10 @@ def request_advance(amount, purpose, site, location, travel_from, travel_to,
     doc.employee_role = target.role
     doc.amount = flt(amount)
     doc.purpose = (purpose or "").strip()
+    if not travel_from:
+        frappe.throw(_("The travel date is required."), frappe.ValidationError)
     doc.travel_from = travel_from
-    doc.travel_to = travel_to
+    doc.travel_to = travel_from  # S146: one travel date
     if parent_advance:
         parent = _get(parent_advance)
         if parent.employee != target.name or parent.status != "Paid":
@@ -591,10 +596,13 @@ def _facts(doc, lg: str = "en", paid: bool = False) -> str:
         rows.append((tr("adv.f.paid", lg), _inr(doc.paid_amount)))
         if doc.payment_ref:
             rows.append((tr("adv.f.ref", lg), doc.payment_ref))
-    rows += [(tr("adv.f.site", lg), doc.site), (tr("adv.f.location", lg), doc.location),
-             (tr("adv.f.travel", lg), tr("adv.f.travel_val", lg, start=_fmt_day(doc.travel_from),
-                                          end=_fmt_day(doc.travel_to))),
-             (tr("adv.f.purpose", lg), doc.purpose)]
+    rows += [(tr("adv.f.site", lg), doc.site),
+             (tr("adv.f.travel_date", lg), _fmt_day(doc.travel_from))]
+    # S146: location and purpose are no longer asked; shown only when a row has them.
+    if (doc.location or "").strip():
+        rows.append((tr("adv.f.location", lg), doc.location))
+    if (doc.purpose or "").strip():
+        rows.append((tr("adv.f.purpose", lg), doc.purpose))
     if doc.trip_type == "Top-up":
         rows.append((tr("adv.f.topup_of", lg), doc.parent_advance))
     return _table(["", ""], rows)
@@ -769,11 +777,12 @@ def _open_drafts() -> list:
 
 
 def _chase(today: date, dry_run: bool, log: list) -> list:
-    """Remind the engineer the day after the trip ends, then every 3 days."""
+    """S146: remind the engineer 3 days after the trip's latest travel date (a paid
+    top-up moves it), then every 3 days while the voucher is still a draft."""
     sent = []
     for r in _open_drafts():
         days = (today - getdate(r.trip_end)).days
-        if days < 1 or (days - 1) % 3:
+        if days < 3 or (days - 3) % 3:
             continue
         emp = _emp(r.employee)
         if not emp or emp.vecrm_account_status != "Active":
@@ -817,9 +826,9 @@ def _accounts_list(today: date, dry_run: bool, log: list) -> dict:
         body += (_p("Approved advances still waiting for payment:")
                  + _table(["Name", "Advance", "Amount", "Site", "Approved"], waiting))
     if overdue:
-        body += (_p("Paid advances whose trip ended %d or more days ago and whose voucher is "
+        body += (_p("Paid advances whose latest travel date was %d or more days ago and whose voucher is "
                     "still a draft:" % OVERDUE_DAYS)
-                 + _table(["Name", "Advances", "Paid", "Site", "Voucher", "Since trip end"], overdue))
+                 + _table(["Name", "Advances", "Paid", "Site", "Voucher", "Since travel date"], overdue))
     body += _p(_link(ADV_URL, "Open expense advances"))
     to = [p.vecrm_email for p in _people_in_roles(DAILY_LIST_ROLES) if p.vecrm_email]
     _send(to, "Expense advances needing attention (%d)" % (len(overdue) + len(waiting)), body,

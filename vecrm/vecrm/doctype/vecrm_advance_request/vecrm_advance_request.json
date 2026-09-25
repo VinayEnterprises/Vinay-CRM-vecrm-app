@@ -95,26 +95,26 @@
       "fieldname": "location",
       "fieldtype": "Data",
       "label": "Location",
-      "reqd": 1,
+      "reqd": 0,
       "length": 140
     },
     {
       "fieldname": "purpose",
       "fieldtype": "Small Text",
       "label": "Purpose",
-      "reqd": 1
+      "reqd": 0
     },
     {
       "fieldname": "travel_from",
       "fieldtype": "Date",
-      "label": "Travel From",
+      "label": "Travel Date",
       "reqd": 1
     },
     {
       "fieldname": "travel_to",
       "fieldtype": "Date",
       "label": "Travel To",
-      "reqd": 1
+      "reqd": 0
     },
     {
       "fieldname": "amount",
@@ -234,7 +234,7 @@
   ],
   "idx": 0,
   "links": [],
-  "modified": "2026-09-25 00:00:00.000000",
+  "modified": "2026-09-25 16:00:00.000000",
   "modified_by": "Administrator",
   "module": "VECRM",
   "name": "VECRM Advance Request",

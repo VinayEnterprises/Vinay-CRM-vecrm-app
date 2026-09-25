@@ -25,7 +25,7 @@ MAX_TRIP_DAYS = 60
 class VECRMAdvanceRequest(Document):
     def autoname(self) -> None:
         if not self.travel_from:
-            frappe.throw(_("Travel From is required to allocate the advance number."),
+            frappe.throw(_("The travel date is required to allocate the advance number."),
                          frappe.ValidationError)
         fy = fy_label(self.travel_from)
         n = next_number(series="ADV", fy=fy)
@@ -43,11 +43,13 @@ class VECRMAdvanceRequest(Document):
             frappe.throw(f"Unknown status {self.status!r}.", frappe.ValidationError)
         if flt(self.amount) <= 0:
             frappe.throw(_("The advance amount must be more than zero."), frappe.ValidationError)
-        for f, label in (("site", "Site"), ("location", "Location"), ("purpose", "Purpose")):
-            if not (self.get(f) or "").strip():
-                frappe.throw(_("{0} is required.").format(label), frappe.ValidationError)
-        if not self.travel_from or not self.travel_to:
-            frappe.throw(_("Travel From and Travel To are required."), frappe.ValidationError)
+        # S146: site and one travel date are required; location and purpose are optional.
+        if not (self.site or "").strip():
+            frappe.throw(_("Site is required."), frappe.ValidationError)
+        if not self.travel_from:
+            frappe.throw(_("The travel date is required."), frappe.ValidationError)
+        if not self.travel_to:
+            self.travel_to = self.travel_from
         tf, tt = getdate(self.travel_from), getdate(self.travel_to)
         if tt < tf:
             frappe.throw(_("Travel To cannot be before Travel From."), frappe.ValidationError)
